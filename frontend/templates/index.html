@@ -1,0 +1,1877 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Splitter — L4 Stream Proxy Manager</title>
+  <link rel="icon" type="image/svg+xml" href="/static/logo.svg" />
+  <link rel="apple-touch-icon" href="/static/favicon.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: { extend: {
+        fontFamily: { mono: ['ui-monospace','SFMono-Regular','Menlo','monospace'] },
+        keyframes: {
+          fadeUp:  { '0%': { opacity: 0, transform: 'translateY(14px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } },
+          fadeIn:  { '0%': { opacity: 0 }, '100%': { opacity: 1 } },
+          scaleIn: { '0%': { opacity: 0, transform: 'scale(.96)' }, '100%': { opacity: 1, transform: 'scale(1)' } },
+          slideIn: { '0%': { opacity: 0, transform: 'translateX(-12px)' }, '100%': { opacity: 1, transform: 'translateX(0)' } },
+          shimmer: { '0%': { backgroundPosition: '-200% 0' }, '100%': { backgroundPosition: '200% 0' } },
+          floaty:  { '0%,100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-6px)' } },
+          drift:   { '0%,100%': { backgroundPosition: '0% 50%' }, '50%': { backgroundPosition: '100% 50%' } },
+        },
+        animation: {
+          fadeUp:  'fadeUp .5s cubic-bezier(.22,1,.36,1) both',
+          fadeIn:  'fadeIn .45s ease both',
+          scaleIn: 'scaleIn .45s cubic-bezier(.22,1,.36,1) both',
+          slideIn: 'slideIn .45s cubic-bezier(.22,1,.36,1) both',
+          shimmer: 'shimmer 2.2s linear infinite',
+          floaty:  'floaty 7s ease-in-out infinite',
+        },
+      } },
+    };
+  </script>
+  <style>
+    :root {
+      /* fluid type + spacing scale — UI grows/shrinks with the viewport */
+      --fs-h1: clamp(1.35rem, 1.05rem + 1.4vw, 2rem);
+      --fs-h2: clamp(.85rem, .78rem + .35vw, 1rem);
+      --pad-shell: clamp(1rem, .4rem + 2.4vw, 2.5rem);
+      --gap: clamp(1rem, .7rem + 1vw, 1.5rem);
+    }
+    * { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+    html { scroll-behavior: smooth; }
+
+    /* animated, living background */
+    body {
+      background:
+        radial-gradient(900px 600px at 12% -10%, rgba(16,185,129,.16), transparent 60%),
+        radial-gradient(800px 600px at 110% 10%, rgba(56,189,248,.14), transparent 55%),
+        linear-gradient(135deg, #f1f5f9, #e9eef5 45%, #e2e8f0);
+      background-size: 100% 100%, 100% 100%, 200% 200%;
+      animation: drift 24s ease-in-out infinite;
+    }
+
+    /* fluid shell padding */
+    .shell { padding-inline: var(--pad-shell); padding-block: clamp(1.25rem, .8rem + 1.6vw, 2.25rem); }
+    .h1-fluid { font-size: var(--fs-h1); }
+
+    /* sidebar nav active state */
+    .nav-link { transition: background .2s ease, color .2s ease, transform .2s cubic-bezier(.22,1,.36,1), box-shadow .2s ease; }
+    .nav-link.active { background: linear-gradient(90deg, rgba(16,185,129,.22), rgba(16,185,129,.06)); color: #fff; box-shadow: inset 3px 0 0 #34d399, 0 6px 18px -10px rgba(16,185,129,.7); }
+    .nav-link:not(.active):hover { background: rgba(255,255,255,.07); transform: translateX(3px); }
+    .nav-link svg { transition: transform .25s cubic-bezier(.22,1,.36,1); }
+    .nav-link:hover svg { transform: scale(1.12); }
+
+    /* page transition */
+    .page { animation: fadeUp .45s cubic-bezier(.22,1,.36,1) both; }
+
+    /* frosted cards + hover lift (applied to existing .bg-white rounded-2xl cards) */
+    .card { backdrop-filter: blur(8px); transition: transform .3s cubic-bezier(.22,1,.36,1), box-shadow .3s ease, border-color .3s ease; }
+    .card:hover { transform: translateY(-3px); box-shadow: 0 22px 45px -28px rgba(15,23,42,.45); border-color: rgba(16,185,129,.35); }
+
+    /* staggered entrance for stat cards */
+    .stat { animation: scaleIn .5s cubic-bezier(.22,1,.36,1) both; }
+    .stat:nth-child(1){animation-delay:.04s} .stat:nth-child(2){animation-delay:.1s}
+    .stat:nth-child(3){animation-delay:.16s} .stat:nth-child(4){animation-delay:.22s}
+
+    /* buttons: subtle press + lift */
+    button, .btn { transition: transform .15s cubic-bezier(.22,1,.36,1), background-color .18s ease, color .18s ease, box-shadow .2s ease, opacity .2s ease; }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 14px 28px -14px rgba(16,185,129,.85); }
+    .btn-primary:active { transform: translateY(0) scale(.98); }
+
+    /* mappings table: tighter column padding so every column fits without a
+       horizontal scrollbar (px-6 cells were overflowing once Traffic was added) */
+    #page-mappings table th, #page-mappings table td { padding-left: .8rem; padding-right: .8rem; }
+    #page-mappings table th:first-child, #page-mappings table td:first-child { padding-left: 1.25rem; }
+    #page-mappings table th:last-child, #page-mappings table td:last-child { padding-right: 1.25rem; }
+
+    /* table rows slide in + smooth hover */
+    #rows tr, #user-rows tr { animation: fadeUp .4s cubic-bezier(.22,1,.36,1) both; transition: background-color .18s ease; }
+    #rows tr:nth-child(n+1){animation-delay:calc(.03s * var(--i, 0))}
+    #rows tr td:first-child { transition: padding-left .18s ease; }
+    #rows tr:hover td:first-child { padding-left: 1.75rem; }
+
+    /* inputs: focus glow */
+    input, select, textarea { transition: box-shadow .2s ease, border-color .2s ease, background-color .2s ease; }
+
+    /* shimmer skeleton helper */
+    .shimmer { background-image: linear-gradient(90deg, rgba(148,163,184,.15) 25%, rgba(148,163,184,.32) 37%, rgba(148,163,184,.15) 63%); background-size: 200% 100%; }
+
+    /* toast pop */
+    #toast { animation: scaleIn .3s cubic-bezier(.22,1,.36,1) both; }
+
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; border: 2px solid transparent; background-clip: content-box; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; background-clip: content-box; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, body { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body class="h-full bg-gradient-to-br from-slate-100 via-slate-100 to-slate-200 text-slate-800 w">
+  <div class="min-h-full lg:flex">
+
+    <!-- ============ Sidebar ============ -->
+    <aside class="lg:fixed lg:inset-y-0 lg:w-64 lg:flex lg:flex-col bg-gradient-to-b from-slate-900/95 to-slate-950/95 backdrop-blur-xl text-slate-300 z-20 border-r border-white/5 shadow-2xl shadow-slate-950/40 animate-slideIn">
+      <div class="px-5 py-5 flex items-center gap-3 border-b border-white/5">
+        <img src="/static/logo.svg" alt="Splitter logo" class="h-9 w-9 animate-floaty drop-shadow-[0_0_12px_rgba(16,185,129,.5)]" />
+        <div>
+          <h1 class="text-lg font-extrabold leading-tight tracking-tight text-white">Split<span class="text-emerald-400">ter</span></h1>
+          <p class="text-[11px] text-slate-500">L4 Proxy Manager</p>
+        </div>
+      </div>
+
+      <!-- nav -->
+      <nav class="flex-1 px-3 py-4 space-y-1">
+        <button data-page="mappings" class="nav-link active w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
+          <span>Active Mappings</span>
+          <span id="nav-count" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200">0</span>
+        </button>
+        <button data-page="form" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          <span id="nav-form-label">Add Mapping</span>
+        </button>
+        <button data-page="ssl" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"/></svg>
+          <span>SSL</span>
+        </button>
+        <button data-page="monitoring" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 0 0 6 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0 1 18 16.5h-2.25m-7.5 0h7.5m-7.5 0-1 3m8.5-3 1 3m0 0 .5 1.5m-.5-1.5h-9.5m0 0-.5 1.5M9 11.25v1.5M12 9v3.75m3-6v6"/></svg>
+          <span>Monitoring</span>
+        </button>
+        <button data-page="livemap" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M9 6.75V15m6-6v8.25m.503 3.498 4.875-2.437c.381-.19.622-.58.622-1.006V4.82c0-.836-.88-1.38-1.628-1.006l-3.869 1.934c-.317.159-.69.159-1.006 0L9.503 3.252a1.125 1.125 0 0 0-1.006 0L3.622 5.689C3.24 5.88 3 6.27 3 6.695V19.18c0 .836.88 1.38 1.628 1.006l3.869-1.934c.317-.159.69-.159 1.006 0l4.994 2.497c.317.158.69.158 1.006 0Z"/></svg>
+          <span>Live Mapping</span>
+        </button>
+        <button data-page="interfaces" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z"/></svg>
+          <span>Interfaces</span>
+        </button>
+        <button data-page="access" id="nav-access" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
+          <span>Access Lists</span>
+          <span id="nav-access-count" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200">0</span>
+        </button>
+        <button data-page="tools" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l5.654-4.655m5.65-5.65 2.496 3.03a2.652 2.652 0 0 1-3.586 3.586M11.42 15.17l5.65-5.65m0 0 3.03-2.496a2.652 2.652 0 0 0-3.586-3.586l-3.03 2.496"/></svg>
+          <span>Tools</span>
+        </button>
+        <button data-page="users" id="nav-users" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z"/></svg>
+          <span>Users</span>
+        </button>
+        <button data-page="activity" id="nav-activity" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
+          <span>Activity</span>
+        </button>
+        <button data-page="backup" id="nav-backup" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12c0 4.97 4.03 9 9 9s9-4.03 9-9-4.03-9-9-9a9 9 0 0 0-7.5 4.03M2.25 4.5v3.75H6"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 7.5V12l3 1.5"/></svg>
+          <span>Backup</span>
+        </button>
+        <button data-page="waf" id="nav-waf" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z"/></svg>
+          <span>WAF</span>
+        </button>
+        <button data-page="firewall" id="nav-firewall" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2.714A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z"/><g transform="translate(6.3 6.3) scale(0.46)"><path stroke-linecap="round" stroke-linejoin="round" d="M15.362 5.214A8.252 8.252 0 0 1 12 21 8.25 8.25 0 0 1 6.038 7.047 8.287 8.287 0 0 0 9 9.601a8.983 8.983 0 0 1 3.361-6.867 8.21 8.21 0 0 0 3 2.48Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 18a3.75 3.75 0 0 0 .495-7.467 5.99 5.99 0 0 0-1.925 3.546 5.974 5.974 0 0 1-2.133-1A3.75 3.75 0 0 0 12 18Z"/></g></svg>
+          <span>Firewall</span>
+          <span id="nav-firewall-badge" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200 hidden">off</span>
+        </button>
+      </nav>
+
+      <!-- account -->
+      <div class="px-3 py-4 border-t border-white/5">
+        <div class="flex items-center gap-3 rounded-lg px-2 py-2">
+          <div id="avatar" class="h-9 w-9 shrink-0 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-slate-900 font-bold grid place-items-center text-sm">?</div>
+          <div class="min-w-0 flex-1">
+            <div id="who" class="text-sm font-medium text-white truncate"></div>
+            <div id="mode-badge" class="text-[10px] font-semibold inline-block mt-0.5 px-2 py-0.5 rounded-full bg-slate-700">…</div>
+          </div>
+        </div>
+        <div class="flex gap-2 mt-2">
+          <button id="passwd-btn" title="Change my password" class="flex-1 text-xs text-slate-400 hover:text-white hover:bg-white/5 rounded-md px-2 py-1.5 transition">🔑 Password</button>
+          <button id="logout-btn" class="flex-1 text-xs text-slate-400 hover:text-white hover:bg-white/5 rounded-md px-2 py-1.5 transition">Log out ↪</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============ Main ============ -->
+    <main class="flex-1 lg:ml-64 overflow-hidden">
+      <div class="shell mx-auto w-full max-w-[120rem]">
+
+        <!-- ====== PAGE: Active Mappings ====== -->
+        <section id="page-mappings" class="page space-y-6">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Active Mappings</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Layer-4 stream proxies provisioned on this host.</p>
+            </div>
+            <button data-page="form" class="nav-jump btn-primary inline-flex items-center gap-2 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">
+              <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+              New Mapping
+            </button>
+          </div>
+
+          <!-- stats -->
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-[var(--gap)]">
+            <div class="stat card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-[clamp(.9rem,.6rem+.6vw,1.25rem)]">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px] shadow-emerald-400 animate-pulse"></span> Mappings
+              </div>
+              <div id="stat-total" class="text-[clamp(1.6rem,1.3rem+1vw,2.25rem)] leading-none font-extrabold text-slate-900 mt-2 tabular-nums">0</div>
+            </div>
+            <div class="stat card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-[clamp(.9rem,.6rem+.6vw,1.25rem)]">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-indigo-500 shadow-[0_0_8px] shadow-indigo-400"></span> TLS Certs
+              </div>
+              <div id="stat-ssl" class="text-[clamp(1.6rem,1.3rem+1vw,2.25rem)] leading-none font-extrabold text-slate-900 mt-2 tabular-nums">0</div>
+            </div>
+            <div class="stat card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-[clamp(.9rem,.6rem+.6vw,1.25rem)]">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-sky-500 shadow-[0_0_8px] shadow-sky-400"></span> Backends
+              </div>
+              <div id="stat-backends" class="text-[clamp(1.6rem,1.3rem+1vw,2.25rem)] leading-none font-extrabold text-slate-900 mt-2 tabular-nums">0</div>
+            </div>
+          </div>
+
+          <!-- table card -->
+          <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+              <div class="relative flex-1 min-w-[180px] max-w-xs">
+                <svg class="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.3-4.3M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/></svg>
+                <input id="search" placeholder="Filter domains…" class="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white" />
+              </div>
+              <div class="hidden sm:flex items-center gap-3 text-[11px] text-slate-400 mr-auto pl-2" title="Backend port reachability">
+                <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-emerald-500"></span> healthy</span>
+                <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-amber-500"></span> partial</span>
+                <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-red-500"></span> down</span>
+              </div>
+              <div class="flex items-center gap-1 text-xs">
+                <button id="export-btn" title="Download all mappings as a JSON backup" class="px-2.5 py-1.5 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition">Export</button>
+                <button id="import-btn" title="Restore mappings from a JSON backup" class="px-2.5 py-1.5 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition">Import</button>
+                <button id="reapply-btn" title="Re-provision every mapping onto the host (IPs + Nginx configs)" class="px-2.5 py-1.5 rounded-md font-medium text-emerald-700 hover:bg-emerald-50 transition">Re-apply all</button>
+                <button id="refresh-btn" class="px-2.5 py-1.5 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition">Refresh</button>
+                <input type="file" id="import-file" accept=".json,application/json" class="hidden" />
+              </div>
+            </div>
+            <!-- bulk-action bar (appears when rows are selected) -->
+            <div id="bulk-bar" class="hidden px-6 py-2.5 bg-emerald-50/70 border-b border-emerald-100 flex items-center gap-3 text-sm">
+              <span id="bulk-count" class="font-medium text-emerald-800">0 selected</span>
+              <div class="flex items-center gap-2 ml-auto">
+                <button id="bulk-export" class="px-3 py-1.5 rounded-md text-emerald-700 hover:bg-emerald-100 font-medium transition">Export selected</button>
+                <button id="bulk-delete" class="hidden px-3 py-1.5 rounded-md text-red-600 hover:bg-red-50 font-medium transition">Delete selected</button>
+                <button id="bulk-clear" class="px-3 py-1.5 rounded-md text-slate-500 hover:bg-slate-100 transition">Clear</button>
+              </div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                  <tr>
+                    <th class="px-4 py-3 w-10"><input type="checkbox" id="check-all" title="Select all" class="rounded border-slate-300 cursor-pointer align-middle" /></th>
+                    <th class="text-left px-6 py-3 font-medium">Domain</th>
+                    <th class="text-left px-6 py-3 font-medium">Health</th>
+                    <th class="text-left px-6 py-3 font-medium">Traffic</th>
+                    <th class="text-left px-6 py-3 font-medium">Bind IP</th>
+                    <th class="text-left px-6 py-3 font-medium">Sub-iface</th>
+                    <th class="text-left px-6 py-3 font-medium">Backend Pool</th>
+                    <th class="text-left px-6 py-3 font-medium">SSL</th>
+                    <th class="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody id="rows" class="divide-y divide-slate-100"></tbody>
+              </table>
+            </div>
+            <div id="empty" class="hidden px-6 py-16 text-center">
+              <div class="mx-auto h-12 w-12 rounded-full bg-slate-100 grid place-items-center text-slate-400 mb-3">
+                <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
+              </div>
+              <p class="text-sm text-slate-500">No mappings yet.</p>
+              <button data-page="form" class="nav-jump mt-3 text-sm font-medium text-emerald-700 hover:text-emerald-900">Add your first mapping →</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ====== PAGE: Add / Update Mapping ====== -->
+        <section id="page-form" class="page hidden">
+          <div class="grid gap-6 lg:grid-cols-5">
+            <div class="lg:col-span-3">
+              <div class="mb-5">
+                <h2 id="form-title" class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Add Mapping</h2>
+                <p class="text-sm text-slate-500 mt-0.5">Define a domain, its bind address and a load-balanced backend pool.</p>
+              </div>
+
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-[clamp(1.1rem,.8rem+1vw,1.75rem)]">
+                <div id="edit-banner" class="hidden mb-4 text-xs rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 flex items-center justify-between">
+                  <span>Editing <span id="edit-domain" class="font-mono font-semibold"></span></span>
+                  <button type="button" id="cancel-edit" class="underline hover:no-underline">cancel</button>
+                </div>
+                <form id="map-form" class="space-y-5">
+                  <!-- Original identity (domain:port) when editing, so the backend
+                       can overwrite that exact mapping and detect a rename. -->
+                  <input type="hidden" name="orig_domain" id="orig_domain" value="">
+                  <input type="hidden" name="orig_port" id="orig_port" value="">
+                  <!-- Identity -->
+                  <div>
+                    <label class="block text-sm font-medium mb-1">Domain Name</label>
+                    <input name="domain" id="domain" required placeholder="site4.example.com"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+                  </div>
+
+                  <!-- Transport (TCP / UDP) -->
+                  <div>
+                    <label class="block text-sm font-medium mb-1">Transport</label>
+                    <div class="flex gap-2">
+                      <label class="flex-1 cursor-pointer">
+                        <input type="radio" name="transport" value="tcp" class="peer sr-only" checked />
+                        <div class="text-center text-sm rounded-lg border border-slate-300 px-3 py-2 peer-checked:border-emerald-500 peer-checked:bg-emerald-50 peer-checked:text-emerald-700">TCP</div>
+                      </label>
+                      <label class="flex-1 cursor-pointer">
+                        <input type="radio" name="transport" value="udp" class="peer sr-only" />
+                        <div class="text-center text-sm rounded-lg border border-slate-300 px-3 py-2 peer-checked:border-violet-500 peer-checked:bg-violet-50 peer-checked:text-violet-700">UDP</div>
+                      </label>
+                    </div>
+                  </div>
+
+                  <!-- Protocol (filtered by transport) + listen port -->
+                  <div class="grid grid-cols-2 gap-3">
+                    <div>
+                      <label class="block text-sm font-medium mb-1">Protocol</label>
+                      <select name="protocol" id="protocol"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                        <option value="https" data-port="443" data-transport="tcp">HTTPS — 443 (TLS)</option>
+                        <option value="http" data-port="80" data-transport="tcp">HTTP — 80</option>
+                        <option value="smtp" data-port="25" data-transport="tcp">SMTP — 25</option>
+                        <option value="mysql" data-port="3306" data-transport="tcp">MySQL — 3306</option>
+                        <option value="postgresql" data-port="5432" data-transport="tcp">PostgreSQL — 5432</option>
+                        <option value="redis" data-port="6379" data-transport="tcp">Redis — 6379</option>
+                        <option value="rdp" data-port="3389" data-transport="tcp">RDP — 3389</option>
+                        <option value="custom-tcp" data-port="" data-transport="tcp">Custom…</option>
+                        <option value="dns" data-port="53" data-transport="udp">DNS — 53</option>
+                        <option value="wireguard" data-port="51820" data-transport="udp">WireGuard — 51820</option>
+                        <option value="quic" data-port="443" data-transport="udp">QUIC / HTTP3 — 443</option>
+                        <option value="ntp" data-port="123" data-transport="udp">NTP — 123</option>
+                        <option value="custom-udp" data-port="" data-transport="udp">Custom…</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium mb-1">Listen Port</label>
+                      <input name="listen_port" id="listen_port" type="number" min="1" max="65535" value="443"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+                    </div>
+                  </div>
+                  <p id="port-ssl-hint" class="text-xs text-slate-400 -mt-2">Port 443 → TLS termination (configure a certificate below).</p>
+
+                  <div id="parent-iface-block">
+                    <label class="block text-sm font-medium mb-1">Parent Interface</label>
+                    <select name="interface" id="interface"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                      <option>loading…</option>
+                    </select>
+                    <p id="iface-info" class="text-xs text-slate-400 mt-1"></p>
+                    <p id="direct-bind-note" class="hidden text-xs text-emerald-600 mt-1">Sub-interface creation is disabled — this mapping will bind directly to the interface's existing IP. Enable it on the <b>Interfaces</b> page to provision a dedicated IP.</p>
+                  </div>
+
+                  <!-- Managed sub-interface picker (shown when the toggle is ON) -->
+                  <div id="subiface-pick" class="hidden">
+                    <label class="block text-sm font-medium mb-1">Sub-interface</label>
+                    <select name="subiface" id="subiface-select"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"></select>
+                    <p id="subiface-pick-note" class="text-xs text-slate-400 mt-1">Bind to a sub-interface managed on the <b>Interfaces</b> page. Several mappings can share one on different ports.</p>
+                  </div>
+
+                  <div id="subiface-fields" class="space-y-4">
+                  <div class="grid grid-cols-3 gap-3">
+                    <div>
+                      <label class="block text-sm font-medium mb-1">VLAN ID <span class="text-slate-400 font-normal">(opt)</span></label>
+                      <input name="vlan_id" id="vlan_id" type="number" min="1" max="4094" placeholder="e.g. 50"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+                    </div>
+                    <div class="col-span-2">
+                      <label class="block text-sm font-medium mb-1">MAC Address <span class="text-slate-400 font-normal">(blank = random)</span></label>
+                      <div class="flex gap-2">
+                        <input name="mac" id="mac" placeholder="auto-generated"
+                          class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+                        <button type="button" id="gen-mac" title="Generate random MAC"
+                          class="px-3 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm">⟳</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label class="block text-sm font-medium mb-1">IP Allocation</label>
+                    <div class="flex gap-2">
+                      <label class="flex-1 cursor-pointer">
+                        <input type="radio" name="alloc_method" value="dhcp" class="peer sr-only" checked />
+                        <div class="text-center text-sm rounded-lg border border-slate-300 px-3 py-2 peer-checked:border-emerald-500 peer-checked:bg-emerald-50 peer-checked:text-emerald-700">DHCP (macvlan)</div>
+                      </label>
+                      <label class="flex-1 cursor-pointer">
+                        <input type="radio" name="alloc_method" value="static" class="peer sr-only" />
+                        <div class="text-center text-sm rounded-lg border border-slate-300 px-3 py-2 peer-checked:border-emerald-500 peer-checked:bg-emerald-50 peer-checked:text-emerald-700">Static</div>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-3 gap-3" id="static-row">
+                    <div class="col-span-2">
+                      <label class="block text-sm font-medium mb-1">Bind IP Address</label>
+                      <input name="bind_ip" id="bind_ip" placeholder="192.168.10.15"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium mb-1">Prefix</label>
+                      <input name="bind_prefix" id="bind_prefix" placeholder="24"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+                    </div>
+                  </div>
+                  <p id="dhcp-note" class="hidden text-xs text-amber-600">A macvlan sub-interface will be created and a DHCP lease requested for a real IP.</p>
+                  </div><!-- /#subiface-fields -->
+
+                  <!-- Backend pool -->
+                  <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                    <div class="flex items-center justify-between mb-2">
+                      <label class="block text-sm font-semibold">Backend Pool <span class="font-normal text-slate-400">load balanced</span></label>
+                      <button type="button" id="add-backend" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add Backend</button>
+                    </div>
+                    <div id="backends" class="space-y-2"></div>
+                  </div>
+
+                  <!-- Load balancing (auto-opens with 2+ backends) -->
+                  <div class="rounded-lg border border-slate-200">
+                    <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
+                      <span class="text-sm font-medium">Load balancing
+                        <span id="lb-auto-hint" class="hidden text-xs font-normal text-emerald-600">· auto (2+ backends)</span></span>
+                      <input type="checkbox" id="lb_enabled" class="h-4 w-4 rounded" />
+                    </label>
+                    <div id="lb-section" class="hidden px-3 pb-3 space-y-2">
+                      <label class="block text-xs font-medium mb-1">Method</label>
+                      <select name="lb_method" id="lb_method"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                        <option value="round_robin">Round Robin (default)</option>
+                        <option value="least_conn">Least Connections — least_conn</option>
+                        <option value="hash">Hash</option>
+                        <option value="random">Random</option>
+                      </select>
+
+                      <div id="lb-hash" class="hidden mt-2 rounded-lg bg-slate-50 border border-slate-200 p-3 space-y-2">
+                        <div>
+                          <label class="block text-xs font-medium mb-1">Hash key</label>
+                          <input name="hash_key" id="hash_key" value="$remote_addr"
+                            class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                        </div>
+                        <label class="flex items-center gap-2 text-xs text-slate-700">
+                          <input type="checkbox" name="hash_consistent" id="hash_consistent" value="1" class="rounded" />
+                          consistent (ketama) — minimal remap when servers change
+                        </label>
+                      </div>
+
+                      <div id="lb-random" class="hidden mt-2 rounded-lg bg-slate-50 border border-slate-200 p-3">
+                        <label class="flex items-center gap-2 text-xs text-slate-700">
+                          <input type="checkbox" name="random_two" id="random_two" value="1" class="rounded" />
+                          two — pick 2 at random, then least_conn (power of two choices)
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Active-passive priority failover -->
+                  <div class="rounded-lg border border-slate-200">
+                    <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
+                      <span class="text-sm font-medium">Active-passive failover
+                        <span class="text-xs font-normal text-slate-400">· automatic backup promotion</span></span>
+                      <input type="checkbox" name="failover" id="failover" value="on" class="h-4 w-4 rounded" />
+                    </label>
+                    <div id="failover-section" class="hidden px-3 pb-3 space-y-2">
+                      <p class="text-xs text-slate-500">Pick a <b>failover role</b> for each backend below. Traffic runs on the <b>Primary</b> tier; if every Primary backend goes down, Splitter promotes the next tier automatically and fails back once Primary recovers. Put two backends on the same tier for active-active within it.</p>
+                      <div class="rounded-lg bg-slate-50 border border-slate-200 p-3">
+                        <div class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">Failover order</div>
+                        <div id="failover-preview" class="space-y-1"></div>
+                        <p id="failover-warn" class="hidden text-xs text-amber-600 mt-2">All backends share one tier, so there's nothing to fail over to. Set at least one backend to a lower tier (Backup) below.</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Rate limit (Layer-4: connection cap + bandwidth) -->
+                  <div class="rounded-lg border border-slate-200">
+                    <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
+                      <span class="text-sm font-medium">Rate limit
+                        <span class="text-xs font-normal text-slate-400">· per client IP / connection</span></span>
+                      <input type="checkbox" name="rate_limit" id="rate_limit_enabled" value="1" class="h-4 w-4 rounded" />
+                    </label>
+                    <div id="rate-section" class="hidden px-3 pb-3 space-y-3">
+                      <div>
+                        <label class="block text-xs font-medium mb-1">Max connections / client IP</label>
+                        <input name="limit_conn" id="limit_conn" type="number" min="1" placeholder="e.g. 10"
+                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                        <p class="text-[11px] text-slate-400 mt-1">Caps simultaneous connections from one IP (<span class="font-mono">limit_conn</span>). Blank = unlimited.</p>
+                      </div>
+                      <div class="grid grid-cols-2 gap-3">
+                        <div>
+                          <label class="block text-xs font-medium mb-1">Download rate</label>
+                          <input name="proxy_download_rate" id="proxy_download_rate" placeholder="e.g. 1m"
+                            class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                        </div>
+                        <div>
+                          <label class="block text-xs font-medium mb-1">Upload rate</label>
+                          <input name="proxy_upload_rate" id="proxy_upload_rate" placeholder="e.g. 512k"
+                            class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                        </div>
+                      </div>
+                      <p class="text-[11px] text-slate-400">Bytes/sec <b>per connection</b> (<span class="font-mono">k</span>/<span class="font-mono">m</span> suffix, e.g. <span class="font-mono">1m</span>). Blank = unlimited.</p>
+                    </div>
+                  </div>
+
+                  <!-- Advanced: proxy timeouts -->
+                  <details class="group rounded-lg border border-slate-200">
+                    <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 flex items-center justify-between">
+                      Advanced (timeouts) <span class="text-xs text-slate-400 group-open:hidden">show</span>
+                    </summary>
+                    <div class="px-3 pb-3 grid grid-cols-2 gap-3">
+                      <div>
+                        <label class="block text-xs font-medium mb-1">proxy_timeout</label>
+                        <input name="proxy_timeout" id="proxy_timeout" placeholder="10m"
+                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-medium mb-1">proxy_connect_timeout</label>
+                        <input name="proxy_connect_timeout" id="proxy_connect_timeout" placeholder="5s"
+                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                      </div>
+                    </div>
+                  </details>
+
+                  <!-- SSL -->
+                  <div id="ssl-section">
+                    <label class="block text-sm font-medium mb-1">SSL / TLS</label>
+                    <div id="ssl-keep" class="hidden mb-2 text-xs rounded-md bg-slate-100 text-slate-600 px-3 py-2">
+                      Keeping current certificate (<span id="ssl-keep-mode" class="font-mono"></span>). Pick an option to change it.
+                    </div>
+                    <div class="grid grid-cols-2 gap-1 mb-3 text-xs">
+                      <button type="button" data-ssl="none" class="ssl-tab rounded-md px-2 py-1.5 border">None (plain / passthrough)</button>
+                      <button type="button" data-ssl="existing" class="ssl-tab rounded-md px-2 py-1.5 border">Use a managed cert</button>
+                    </div>
+                    <input type="hidden" name="ssl_mode" id="ssl_mode" value="none" />
+
+                    <div id="ssl-existing" class="hidden">
+                      <label class="block text-xs font-medium mb-1">Certificate</label>
+                      <select name="ssl_existing" id="ssl_existing"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                      </select>
+                      <p id="ssl-existing-empty" class="hidden text-xs text-amber-600 mt-1">
+                        No certificates yet — add one on the <b>SSL</b> page first.
+                      </p>
+                    </div>
+
+                    <div id="ssl-terminate" class="hidden mt-2 rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-xs text-slate-700 space-y-2">
+                      <p>nginx will <b>terminate TLS</b> on <span class="font-mono">:443</span> with this certificate (<span class="font-mono">listen … ssl</span>).</p>
+                      <label class="flex items-center gap-2">
+                        <input type="checkbox" name="proxy_ssl" id="proxy_ssl" value="1" checked class="rounded" />
+                        Re-encrypt to backend (<span class="font-mono">proxy_ssl on</span>) — keep on for TLS backends (:443)
+                      </label>
+                    </div>
+                  </div>
+
+                  <!-- Access list (allow/deny) -->
+                  <div>
+                    <label class="block text-sm font-medium mb-1">Access list</label>
+                    <select name="access_list" id="access_list"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                      <option value="__default__">Use global default</option>
+                      <option value="">None — allow all</option>
+                    </select>
+                    <p class="text-xs text-slate-400 mt-1">Only the networks in the selected list may connect (others denied). Manage lists on the <b>Access Lists</b> page.</p>
+                  </div>
+
+                  <!-- Hostname restriction (SNI) -->
+                  <label id="sni-section" class="flex items-start gap-2 text-xs text-slate-700 rounded-lg border border-slate-200 p-3">
+                    <input type="checkbox" name="sni_guard" id="sni_guard" value="1" class="mt-0.5 rounded" />
+                    <span><b>Only allow this hostname</b> — drop any connection whose TLS SNI isn't this domain.
+                    Requires TLS passthrough (don't terminate a certificate on this mapping).</span>
+                  </label>
+
+                  <div class="flex gap-2 pt-1">
+                    <button type="submit" id="apply-btn"
+                      class="btn-primary flex-1 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25 disabled:opacity-50">
+                      Save / Apply
+                    </button>
+                    <button type="button" id="preview-btn"
+                      class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">
+                      Preview
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <!-- Provisioning log (sticky side rail) -->
+            <div class="lg:col-span-2">
+              <div class="lg:sticky lg:top-8">
+                <div id="log-card" class="hidden card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                  <h3 class="text-sm font-semibold mb-3 flex items-center gap-2">
+                    <span class="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span> Provisioning Steps
+                  </h3>
+                  <ol id="steps" class="space-y-2 text-sm"></ol>
+                </div>
+                <div id="log-hint" class="bg-white/60 rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+                  Provisioning output and config previews will appear here.
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ====== PAGE: Users ====== -->
+        <section id="page-users" class="page hidden">
+          <div class="mb-5">
+            <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Users</h2>
+            <p class="text-sm text-slate-500 mt-0.5">Admins manage everything. Creators may add/edit mappings and export, but cannot delete, import, or re-apply.</p>
+          </div>
+
+          <div id="users-card" class="hidden grid gap-6 lg:grid-cols-3">
+            <!-- create user -->
+            <div class="lg:col-span-1">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                <h3 class="text-sm font-semibold mb-4">Add a user</h3>
+                <form id="user-form" class="space-y-3">
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Username</label>
+                    <input name="username" id="u-username" required placeholder="jane"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Password</label>
+                    <input name="password" id="u-password" type="password" required placeholder="min 8 chars"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Role</label>
+                    <select name="role" id="u-role"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                      <option value="creator">creator</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </div>
+                  <button type="submit" class="btn-primary w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Add user</button>
+                </form>
+              </div>
+            </div>
+
+            <!-- user list -->
+            <div class="lg:col-span-2">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
+                  <h3 class="text-sm font-semibold">Team members</h3>
+                  <button id="user-bulk-delete" type="button" class="hidden text-xs font-medium text-red-600 hover:text-red-800">Delete selected (<span id="user-bulk-count">0</span>)</button>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                      <tr>
+                        <th class="px-4 py-3 w-10"><input type="checkbox" id="user-check-all" title="Select all" class="rounded border-slate-300 cursor-pointer align-middle" /></th>
+                        <th class="text-left px-6 py-3 font-medium">Username</th>
+                        <th class="text-left px-6 py-3 font-medium">Role</th>
+                        <th class="px-6 py-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody id="user-rows" class="divide-y divide-slate-100"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ====== PAGE: SSL Management ====== -->
+        <section id="page-ssl" class="page hidden">
+          <div class="mb-5">
+            <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">SSL Management</h2>
+            <p class="text-sm text-slate-500 mt-0.5">Manage TLS certificates here. Mappings pick one of these (or none) — they no longer create certs inline. Stored in <span class="font-mono" id="ssl-dir-label">/etc/nginx/ssl</span>.</p>
+          </div>
+
+          <div class="grid gap-6 lg:grid-cols-3">
+            <!-- create -->
+            <div class="lg:col-span-1 space-y-6">
+              <!-- self-signed -->
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                <h3 class="text-sm font-semibold mb-4">Generate self-signed</h3>
+                <form id="ssl-selfsigned-form" class="space-y-3">
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Domain / Name</label>
+                    <input name="name" id="ssl-ss-name" required placeholder="app.example.com"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <p class="text-xs text-slate-500">A SAN self-signed cert (CN + <span class="font-mono">*.domain</span>) is generated with <span class="font-mono">openssl</span>.</p>
+                  <button type="submit" class="btn-primary w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Generate</button>
+                </form>
+              </div>
+
+              <!-- upload -->
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                <h3 class="text-sm font-semibold mb-4">Upload certificate</h3>
+                <form id="ssl-upload-form" class="space-y-3">
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Domain / Name</label>
+                    <input name="name" id="ssl-up-name" required placeholder="app.example.com"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Certificate (.crt/.pem)</label>
+                    <input type="file" name="cert" accept=".crt,.pem"
+                      class="block w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Private Key (.key)</label>
+                    <input type="file" name="key" accept=".key,.pem"
+                      class="block w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200" />
+                  </div>
+                  <button type="submit" class="btn-primary w-full bg-slate-800 hover:bg-slate-900 text-white text-sm font-semibold rounded-xl px-4 py-2.5">Upload</button>
+                </form>
+              </div>
+            </div>
+
+            <!-- list -->
+            <div class="lg:col-span-2">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                  <h3 class="text-sm font-semibold">Managed certificates</h3>
+                  <button id="ssl-refresh" class="text-xs text-slate-500 hover:text-slate-900 px-2 py-1 rounded-md hover:bg-slate-100">Refresh</button>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                      <tr>
+                        <th class="text-left px-6 py-3 font-medium">Name</th>
+                        <th class="text-left px-6 py-3 font-medium">Source</th>
+                        <th class="text-left px-6 py-3 font-medium">Expires</th>
+                        <th class="text-left px-6 py-3 font-medium">In use</th>
+                        <th class="px-6 py-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody id="ssl-rows" class="divide-y divide-slate-100"></tbody>
+                  </table>
+                </div>
+                <div id="ssl-empty" class="hidden px-6 py-10 text-center text-sm text-slate-400">No certificates yet — generate or upload one.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ====== PAGE: Access Lists ====== -->
+        <section id="page-access" class="page hidden">
+          <div class="mb-5">
+            <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Access Lists</h2>
+            <p class="text-sm text-slate-500 mt-0.5">IP/CIDR allow lists. A mapping picks one (or the global default) and only those networks may connect — everything else is denied. Snippets live in <span class="font-mono" id="acl-dir-label">/etc/nginx/acl.d</span>.</p>
+          </div>
+
+          <!-- global default -->
+          <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-5 mb-6 flex flex-wrap items-center gap-3">
+            <div class="flex-1 min-w-[14rem]">
+              <label class="block text-sm font-semibold">Global default list</label>
+              <p class="text-xs text-slate-500 mt-0.5">Applied to mappings set to “Use global default”. Changing it updates them all without re-applying.</p>
+            </div>
+            <select id="acl-default-select"
+              class="rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 min-w-[12rem]"></select>
+          </div>
+
+          <div class="grid gap-6 lg:grid-cols-3">
+            <!-- create / edit -->
+            <div class="lg:col-span-1">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 id="acl-form-title" class="text-sm font-semibold">New access list</h3>
+                  <button type="button" id="acl-cancel-edit" class="hidden text-xs underline text-slate-500 hover:text-slate-900">cancel edit</button>
+                </div>
+                <form id="acl-form" class="space-y-3">
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Name <span class="text-slate-400 font-normal">(filename: name.conf)</span></label>
+                    <input name="name" id="acl-name" required placeholder="office"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    <p class="text-[11px] text-slate-400 mt-1">lower-case letters, digits, <span class="font-mono">- _</span></p>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Label <span class="text-slate-400 font-normal">(optional)</span></label>
+                    <input name="label" id="acl-label" placeholder="Office network"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Networks (CIDR) — one per line</label>
+                    <textarea name="entries" id="acl-entries" rows="6" placeholder="203.0.113.0/24&#10;198.51.100.10/32&#10;# comments allowed"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Source URL <span class="text-slate-400 font-normal">(optional — auto-refresh)</span></label>
+                    <input name="source_url" id="acl-source-url" placeholder="http://mrlg.tas-ix.uz/index.php"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    <p class="text-[11px] text-slate-400 mt-1">Set a URL to re-fetch CIDRs in the background like a cron. Leave blank for a manual list.</p>
+                  </div>
+                  <div class="grid grid-cols-2 gap-3 items-end">
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Refresh (hours)</label>
+                      <input name="refresh_hours" id="acl-refresh-hours" type="number" min="1" value="24"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                    <label class="flex items-center gap-2 text-xs text-slate-700 pb-2">
+                      <input type="checkbox" name="include_private" id="acl-include-private" value="1" checked class="rounded" />
+                      Allow loopback (127.0.0.1)
+                    </label>
+                  </div>
+                  <button type="submit" id="acl-save-btn" class="btn-primary w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Save list</button>
+                </form>
+              </div>
+            </div>
+
+            <!-- list -->
+            <div class="lg:col-span-2">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                  <h3 class="text-sm font-semibold">Lists</h3>
+                  <button id="acl-refresh-all" class="text-xs text-slate-500 hover:text-slate-900 px-2 py-1 rounded-md hover:bg-slate-100">Reload</button>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                      <tr>
+                        <th class="text-left px-6 py-3 font-medium">List</th>
+                        <th class="text-left px-6 py-3 font-medium">Type</th>
+                        <th class="text-left px-6 py-3 font-medium">Networks</th>
+                        <th class="text-left px-6 py-3 font-medium">Last refresh</th>
+                        <th class="px-6 py-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody id="acl-rows" class="divide-y divide-slate-100"></tbody>
+                  </table>
+                </div>
+                <div id="acl-empty" class="hidden px-6 py-10 text-center text-sm text-slate-400">No access lists yet — create one on the left.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ====== PAGE: Monitoring ====== -->
+        <section id="page-monitoring" class="page hidden">
+          <div class="mb-5 flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Monitoring</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Live host resource usage · <span id="mon-updated" class="text-slate-400">—</span></p>
+            </div>
+            <button id="mon-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-[var(--gap)]">
+            <!-- CPU -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                  <span class="h-2 w-2 rounded-full bg-emerald-500"></span> CPU usage
+                </div>
+                <span id="mon-cpu-pct" class="text-2xl font-extrabold tabular-nums text-slate-900">—</span>
+              </div>
+              <div class="mt-3 h-2.5 rounded-full bg-slate-100 overflow-hidden">
+                <div id="mon-cpu-bar" class="h-full w-0 rounded-full bg-emerald-500 transition-all duration-500"></div>
+              </div>
+              <div id="mon-cpu-meta" class="mt-2 text-xs text-slate-400">—</div>
+            </div>
+
+            <!-- RAM -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                  <span class="h-2 w-2 rounded-full bg-indigo-500"></span> Memory usage
+                </div>
+                <span id="mon-mem-pct" class="text-2xl font-extrabold tabular-nums text-slate-900">—</span>
+              </div>
+              <div class="mt-3 h-2.5 rounded-full bg-slate-100 overflow-hidden">
+                <div id="mon-mem-bar" class="h-full w-0 rounded-full bg-indigo-500 transition-all duration-500"></div>
+              </div>
+              <div id="mon-mem-meta" class="mt-2 text-xs text-slate-400">—</div>
+            </div>
+
+            <!-- Storage -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                  <span class="h-2 w-2 rounded-full bg-amber-500"></span> Storage usage
+                </div>
+                <span id="mon-disk-pct" class="text-2xl font-extrabold tabular-nums text-slate-900">—</span>
+              </div>
+              <div class="mt-3 h-2.5 rounded-full bg-slate-100 overflow-hidden">
+                <div id="mon-disk-bar" class="h-full w-0 rounded-full bg-amber-500 transition-all duration-500"></div>
+              </div>
+              <div id="mon-disk-meta" class="mt-2 text-xs text-slate-400">—</div>
+            </div>
+
+            <!-- Network -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-sky-500"></span> Network throughput
+              </div>
+              <div class="mt-3 grid grid-cols-2 gap-3">
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">↓ Download</div>
+                  <div id="mon-net-rx" class="text-lg font-bold tabular-nums text-sky-700">—</div>
+                </div>
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">↑ Upload</div>
+                  <div id="mon-net-tx" class="text-lg font-bold tabular-nums text-emerald-700">—</div>
+                </div>
+              </div>
+              <div id="mon-net-meta" class="mt-2 text-xs text-slate-400">—</div>
+            </div>
+          </div>
+
+          <!-- Live per-interface throughput (moved from Interfaces page) -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 mt-[var(--gap)]">
+            <div class="flex items-center justify-between mb-1">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-sky-500"></span> Live throughput per interface
+              </div>
+              <span id="iface-tree-updated" class="text-xs text-slate-400">—</span>
+            </div>
+            <div id="iface-tree" class="mt-3 divide-y divide-slate-100 text-sm">
+              <div class="py-6 text-center text-slate-400">Loading interfaces…</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ====== PAGE: Live Mapping ====== -->
+        <section id="page-livemap" class="page hidden">
+
+          <!-- Live routing map (built from real mappings) -->
+          <figure class="card bg-white/80 rounded-2xl border border-slate-200/70 overflow-hidden shadow-sm">
+            <figcaption class="flex items-center justify-between px-6 py-4 border-b border-slate-100 font-mono text-xs text-slate-400">
+              <span class="tracking-widest">LIVE ROUTING MAP</span>
+              <div class="flex items-center gap-4">
+                <div class="flex items-center gap-1 text-slate-500">
+                  <button id="route-zoom-out" type="button" class="h-6 w-6 rounded-md hover:bg-slate-100 hover:text-slate-900 text-base leading-none" title="Zoom out">−</button>
+                  <button id="route-zoom-reset" type="button" class="px-1.5 h-6 rounded-md hover:bg-slate-100 hover:text-slate-900 text-[11px] tabular-nums" title="Reset zoom">100%</button>
+                  <button id="route-zoom-in" type="button" class="h-6 w-6 rounded-md hover:bg-slate-100 hover:text-slate-900 text-base leading-none" title="Zoom in">+</button>
+                </div>
+                <span id="route-status" class="flex items-center gap-2 text-emerald-600">
+                  <span class="relative flex h-2 w-2">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                  <span id="route-status-text">TRAFFIC FLOWING</span>
+                </span>
+              </div>
+            </figcaption>
+            <div class="relative">
+              <div id="route-scroll" class="overflow-auto p-4 sm:p-6 cursor-grab select-none" style="height:calc(100vh - 120px);min-height:420px;background-color:#fff;background-image:radial-gradient(circle, rgba(148,163,184,.4) 1px, transparent 1.6px);background-size:22px 22px;background-attachment:local">
+                <svg id="route-map" viewBox="0 0 1000 380" class="h-auto block" style="width:100%" aria-label="Live traffic routing visualization"></svg>
+              </div>
+            </div>
+          </figure>
+        </section>
+
+        <!-- ====== PAGE: Tools ====== -->
+        <section id="page-tools" class="page hidden">
+          <div class="mb-5 flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Tools</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Network diagnostics and inspection utilities.</p>
+            </div>
+          </div>
+
+          <!-- Tool card -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+
+            <!-- Tab strip -->
+            <div class="flex overflow-x-auto bg-slate-50/70 border-b border-slate-200 px-4 pt-3 gap-0.5">
+              <button data-tool="ping"        class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">01</span> Ping
+              </button>
+              <button data-tool="port"        class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">02</span> Port Tester
+              </button>
+              <button data-tool="dns"         class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">03</span> DNS Lookup
+              </button>
+              <button data-tool="traceroute"  class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">04</span> Traceroute
+              </button>
+              <button data-tool="tcpdump"     class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">05</span> Packet Capture
+              </button>
+              <button data-tool="whois"       class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">06</span> WHOIS
+              </button>
+              <button data-tool="routes"      class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">07</span> Routing Tables
+              </button>
+            </div>
+
+            <!-- ── 01 Ping ─────────────────────────────────────────── -->
+            <div id="toolpanel-ping" class="tool-panel p-6 flex gap-6 flex-col lg:flex-row">
+              <div class="w-full lg:w-72 shrink-0 space-y-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Host / IP Address</label>
+                  <input id="ping-host" type="text" placeholder="8.8.8.8 or example.com"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Count</label>
+                  <input id="ping-count" type="number" min="1" max="20" value="4"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100">
+                </div>
+                <button onclick="runTool('ping')"
+                  class="tool-run-btn w-full flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[.98] transition-all">
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347c-.75.412-1.667-.13-1.667-.986V5.653Z"/></svg>
+                  Run Ping
+                </button>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-bold font-mono tracking-widest text-slate-400">OUTPUT</span>
+                  <div class="flex gap-2">
+                    <button onclick="copyToolOutput('ping')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy</button>
+                    <button onclick="clearToolOutput('ping')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Clear</button>
+                  </div>
+                </div>
+                <pre id="tool-output-ping" class="flex-1 overflow-auto rounded-xl bg-slate-900 p-4 text-xs font-mono text-emerald-400 leading-relaxed min-h-[300px] whitespace-pre-wrap break-all">Enter parameters and click Run.</pre>
+              </div>
+            </div>
+
+            <!-- ── 02 Port Tester ──────────────────────────────────── -->
+            <div id="toolpanel-port" class="tool-panel hidden p-6 flex gap-6 flex-col lg:flex-row">
+              <div class="w-full lg:w-72 shrink-0 space-y-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Host / IP Address</label>
+                  <input id="port-host" type="text" placeholder="192.168.1.1 or example.com"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Port</label>
+                  <input id="port-port" type="number" min="1" max="65535" placeholder="80"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Timeout</label>
+                  <select id="port-timeout" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100">
+                    <option value="2">2 seconds</option>
+                    <option value="5" selected>5 seconds</option>
+                    <option value="10">10 seconds</option>
+                    <option value="30">30 seconds</option>
+                  </select>
+                </div>
+                <button onclick="runTool('port')"
+                  class="tool-run-btn w-full flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[.98] transition-all">
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347c-.75.412-1.667-.13-1.667-.986V5.653Z"/></svg>
+                  Test Port
+                </button>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-bold font-mono tracking-widest text-slate-400">OUTPUT</span>
+                  <div class="flex gap-2">
+                    <button onclick="copyToolOutput('port')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy</button>
+                    <button onclick="clearToolOutput('port')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Clear</button>
+                  </div>
+                </div>
+                <pre id="tool-output-port" class="flex-1 overflow-auto rounded-xl bg-slate-900 p-4 text-xs font-mono text-emerald-400 leading-relaxed min-h-[300px] whitespace-pre-wrap break-all">Enter parameters and click Run.</pre>
+              </div>
+            </div>
+
+            <!-- ── 03 DNS Lookup ───────────────────────────────────── -->
+            <div id="toolpanel-dns" class="tool-panel hidden p-6 flex gap-6 flex-col lg:flex-row">
+              <div class="w-full lg:w-72 shrink-0 space-y-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Hostname</label>
+                  <input id="dns-host" type="text" placeholder="example.com"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Record Type</label>
+                  <select id="dns-type" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100">
+                    <option value="A" selected>A — IPv4</option>
+                    <option value="AAAA">AAAA — IPv6</option>
+                    <option value="MX">MX — Mail Exchange</option>
+                    <option value="NS">NS — Name Servers</option>
+                    <option value="TXT">TXT — Text Records</option>
+                    <option value="CNAME">CNAME — Alias</option>
+                    <option value="PTR">PTR — Reverse DNS</option>
+                    <option value="SOA">SOA — Start of Authority</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">DNS Server <span class="text-slate-400 font-normal normal-case">(optional)</span></label>
+                  <input id="dns-server" type="text" placeholder="8.8.8.8"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                </div>
+                <button onclick="runTool('dns')"
+                  class="tool-run-btn w-full flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[.98] transition-all">
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347c-.75.412-1.667-.13-1.667-.986V5.653Z"/></svg>
+                  Lookup
+                </button>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-bold font-mono tracking-widest text-slate-400">OUTPUT</span>
+                  <div class="flex gap-2">
+                    <button onclick="copyToolOutput('dns')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy</button>
+                    <button onclick="clearToolOutput('dns')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Clear</button>
+                  </div>
+                </div>
+                <pre id="tool-output-dns" class="flex-1 overflow-auto rounded-xl bg-slate-900 p-4 text-xs font-mono text-emerald-400 leading-relaxed min-h-[300px] whitespace-pre-wrap break-all">Enter parameters and click Run.</pre>
+              </div>
+            </div>
+
+            <!-- ── 04 Traceroute ───────────────────────────────────── -->
+            <div id="toolpanel-traceroute" class="tool-panel hidden p-6 flex gap-6 flex-col lg:flex-row">
+              <div class="w-full lg:w-72 shrink-0 space-y-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Host / IP Address</label>
+                  <input id="traceroute-host" type="text" placeholder="8.8.8.8 or example.com"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Max Hops</label>
+                  <input id="traceroute-maxhops" type="number" min="1" max="64" value="30"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100">
+                </div>
+                <button onclick="runTool('traceroute')"
+                  class="tool-run-btn w-full flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[.98] transition-all">
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347c-.75.412-1.667-.13-1.667-.986V5.653Z"/></svg>
+                  Trace
+                </button>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-bold font-mono tracking-widest text-slate-400">OUTPUT</span>
+                  <div class="flex gap-2">
+                    <button onclick="copyToolOutput('traceroute')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy</button>
+                    <button onclick="clearToolOutput('traceroute')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Clear</button>
+                  </div>
+                </div>
+                <pre id="tool-output-traceroute" class="flex-1 overflow-auto rounded-xl bg-slate-900 p-4 text-xs font-mono text-emerald-400 leading-relaxed min-h-[300px] whitespace-pre-wrap break-all">Enter parameters and click Run.</pre>
+              </div>
+            </div>
+
+            <!-- ── 05 Packet Capture ───────────────────────────────── -->
+            <div id="toolpanel-tcpdump" class="tool-panel hidden p-6 flex gap-6 flex-col lg:flex-row">
+              <div class="w-full lg:w-72 shrink-0 space-y-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Interface</label>
+                  <select id="tcpdump-interface" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100">
+                    <option value="any">any</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Packet Count</label>
+                  <input id="tcpdump-count" type="number" min="1" max="500" value="50"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Filter Expression <span class="text-slate-400 font-normal normal-case">(optional)</span></label>
+                  <input id="tcpdump-filter" type="text" placeholder="host 10.0.0.1 and port 80"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                  <p class="mt-1 text-[10px] text-slate-400">Standard BPF filter syntax.</p>
+                </div>
+                <button onclick="runTool('tcpdump')"
+                  class="tool-run-btn w-full flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[.98] transition-all">
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347c-.75.412-1.667-.13-1.667-.986V5.653Z"/></svg>
+                  Start Capture
+                </button>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-bold font-mono tracking-widest text-slate-400">OUTPUT</span>
+                  <div class="flex gap-2">
+                    <button onclick="copyToolOutput('tcpdump')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy</button>
+                    <button onclick="clearToolOutput('tcpdump')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Clear</button>
+                  </div>
+                </div>
+                <pre id="tool-output-tcpdump" class="flex-1 overflow-auto rounded-xl bg-slate-900 p-4 text-xs font-mono text-emerald-400 leading-relaxed min-h-[300px] whitespace-pre-wrap break-all">Enter parameters and click Run.</pre>
+              </div>
+            </div>
+
+            <!-- ── 06 WHOIS ────────────────────────────────────────── -->
+            <div id="toolpanel-whois" class="tool-panel hidden p-6 flex gap-6 flex-col lg:flex-row">
+              <div class="w-full lg:w-72 shrink-0 space-y-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Domain / IP Address</label>
+                  <input id="whois-query" type="text" placeholder="example.com or 8.8.8.8"
+                    class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                </div>
+                <button onclick="runTool('whois')"
+                  class="tool-run-btn w-full flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[.98] transition-all">
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347c-.75.412-1.667-.13-1.667-.986V5.653Z"/></svg>
+                  Lookup
+                </button>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-bold font-mono tracking-widest text-slate-400">OUTPUT</span>
+                  <div class="flex gap-2">
+                    <button onclick="copyToolOutput('whois')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy</button>
+                    <button onclick="clearToolOutput('whois')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Clear</button>
+                  </div>
+                </div>
+                <pre id="tool-output-whois" class="flex-1 overflow-auto rounded-xl bg-slate-900 p-4 text-xs font-mono text-emerald-400 leading-relaxed min-h-[300px] whitespace-pre-wrap break-all">Enter parameters and click Run.</pre>
+              </div>
+            </div>
+
+            <!-- ── 07 Routing Tables ───────────────────────────────── -->
+            <div id="toolpanel-routes" class="tool-panel hidden p-6 flex gap-6 flex-col lg:flex-row">
+              <div class="w-full lg:w-72 shrink-0 space-y-4">
+                <p class="text-xs text-slate-500 leading-relaxed">Shows the host's kernel routing tables (<span class="font-mono">netstat -nr</span>) — destinations, gateways and the interface each route uses.</p>
+                <button onclick="runTool('routes')"
+                  class="tool-run-btn w-full flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[.98] transition-all">
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347c-.75.412-1.667-.13-1.667-.986V5.653Z"/></svg>
+                  Show Routes
+                </button>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-bold font-mono tracking-widest text-slate-400">OUTPUT</span>
+                  <div class="flex gap-2">
+                    <button onclick="copyToolOutput('routes')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy</button>
+                    <button onclick="clearToolOutput('routes')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Clear</button>
+                  </div>
+                </div>
+                <pre id="tool-output-routes" class="flex-1 overflow-auto rounded-xl bg-slate-900 p-4 text-xs font-mono text-emerald-400 leading-relaxed min-h-[300px] whitespace-pre-wrap break-all">Click Show Routes.</pre>
+              </div>
+            </div>
+
+          </div><!-- /card -->
+        </section>
+
+        <!-- ====== PAGE: Interfaces ====== -->
+        <section id="page-interfaces" class="page hidden space-y-6">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Interfaces</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Sub-interface policy and host network settings.</p>
+            </div>
+            <button id="iface-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
+          </div>
+
+          <!-- Sub-interface toggle (admin) -->
+          <div id="iface-settings-card" class="hidden card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <div class="text-sm font-semibold text-slate-800">Create a sub-interface per mapping</div>
+                <p class="text-xs text-slate-500 mt-1 max-w-xl">When <b>on</b>, saving a mapping provisions a real macvlan sub-interface with its own MAC/IP (VLAN, MAC and static/DHCP options appear in the form). When <b>off</b> (default), a mapping binds nginx straight to the chosen interface's existing IP — distinguished by listen port.</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                <input type="checkbox" id="subiface-toggle" class="sr-only peer" />
+                <div class="w-12 h-6 bg-slate-300 rounded-full peer peer-checked:bg-emerald-500 transition-colors"></div>
+                <div class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-6"></div>
+              </label>
+            </div>
+            <p id="subiface-toggle-msg" class="hidden text-xs mt-3"></p>
+          </div>
+
+          <!-- Sub-interfaces manager (admin, only when the toggle is on) -->
+          <div id="subiface-manager" class="hidden card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+            <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+              <div class="text-sm font-semibold text-slate-800">Sub-interfaces <span class="font-normal text-slate-400">macvlan devices mappings can bind</span></div>
+              <div class="flex items-center gap-3">
+                <button id="si-bulk-delete" type="button" class="hidden text-xs font-medium text-red-600 hover:text-red-800">Delete selected (<span id="si-bulk-count">0</span>)</button>
+                <span id="subiface-form-title" class="text-xs text-slate-400"></span>
+              </div>
+            </div>
+
+            <form id="subiface-form" class="flex flex-wrap items-end gap-3">
+              <input type="hidden" id="si-edit-name" value="" />
+              <div class="flex-1 min-w-[150px]">
+                <label class="block text-xs font-medium mb-1">Parent interface</label>
+                <select id="si-interface" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 outline-none"></select>
+              </div>
+              <div class="w-28">
+                <label class="block text-xs font-medium mb-1">Label <span class="text-slate-400 font-normal">(opt)</span></label>
+                <input id="si-label" placeholder="web" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+              </div>
+              <div class="w-24">
+                <label class="block text-xs font-medium mb-1">VLAN <span class="text-slate-400 font-normal">(opt)</span></label>
+                <input id="si-vlan" type="number" min="1" max="4094" placeholder="50" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+              </div>
+              <div class="w-44">
+                <label class="block text-xs font-medium mb-1">MAC <span class="text-slate-400 font-normal">(blank=random)</span></label>
+                <div class="flex gap-2">
+                  <input id="si-mac" placeholder="auto" class="flex-1 min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+                  <button type="button" id="si-gen-mac" title="Generate" class="px-3 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm">⟳</button>
+                </div>
+              </div>
+              <div class="w-40">
+                <label class="block text-xs font-medium mb-1">Bind IP</label>
+                <input id="si-bind-ip" placeholder="192.168.50.20" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+              </div>
+              <div class="w-20">
+                <label class="block text-xs font-medium mb-1">Prefix</label>
+                <input id="si-bind-prefix" placeholder="24" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+              </div>
+              <div class="flex gap-2">
+                <button type="submit" id="si-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Create</button>
+                <button type="button" id="si-cancel" class="hidden text-sm text-slate-500 hover:text-slate-800 rounded-lg px-3 py-2">Cancel</button>
+              </div>
+            </form>
+
+            <div class="mt-5 overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="text-xs text-slate-400 border-b border-slate-200">
+                  <tr>
+                    <th class="py-2 pr-3 w-8"><input type="checkbox" id="si-check-all" title="Select all" class="rounded border-slate-300 cursor-pointer align-middle" /></th>
+                    <th class="text-left py-2 pr-4 font-medium">Device</th>
+                    <th class="text-left py-2 pr-4 font-medium">Parent</th>
+                    <th class="text-left py-2 pr-4 font-medium">VLAN</th>
+                    <th class="text-left py-2 pr-4 font-medium">Alloc</th>
+                    <th class="text-left py-2 pr-4 font-medium">Address</th>
+                    <th class="text-left py-2 pr-4 font-medium">Used by</th>
+                    <th class="text-right py-2 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="subiface-rows"></tbody>
+              </table>
+              <div id="subiface-empty" class="hidden py-5 text-center text-slate-400 text-sm">No sub-interfaces yet — create one above.</div>
+            </div>
+          </div>
+
+          <!-- Host network settings (admin) — Phase 2 -->
+          <div id="iface-network-card" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-[var(--gap)]">
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="flex items-center justify-between mb-3">
+                <div class="text-sm font-semibold text-slate-800">DNS servers <span class="font-normal text-slate-400">/etc/resolv.conf</span></div>
+                <button id="dns-add" type="button" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add</button>
+              </div>
+              <div id="dns-rows" class="space-y-2"></div>
+              <div class="flex items-center gap-3 mt-4">
+                <button id="dns-save" type="button" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save DNS</button>
+                <span id="dns-msg" class="text-xs"></span>
+              </div>
+            </div>
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="text-sm font-semibold text-slate-800 mb-3">Hosts file <span class="font-normal text-slate-400">/etc/hosts</span></div>
+              <textarea id="hosts-text" rows="8" spellcheck="false"
+                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" placeholder="127.0.0.1   localhost"></textarea>
+              <div class="flex items-center gap-3 mt-3">
+                <button id="hosts-save" type="button" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save hosts</button>
+                <span id="hosts-msg" class="text-xs"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- System / danger zone (admin) -->
+          <div id="iface-system-card" class="hidden card bg-white/80 rounded-2xl border border-red-200/70 shadow-sm p-5">
+            <div class="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <div class="text-sm font-semibold text-red-700">Reboot host</div>
+                <p class="text-xs text-slate-500 mt-1 max-w-xl">Restarts the whole operating system. All proxied connections drop and the dashboard is unreachable until the host comes back up. Mappings and settings persist and are re-applied on boot.</p>
+              </div>
+              <button id="reboot-host" type="button" class="shrink-0 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-sm font-semibold rounded-lg px-4 py-2.5 shadow">Reboot host</button>
+            </div>
+            <p id="reboot-msg" class="hidden text-xs mt-3"></p>
+          </div>
+
+        </section>
+
+        <!-- ====== PAGE: Activity ====== -->
+        <section id="page-activity" class="page hidden">
+          <div class="mb-5 flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Activity</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Audit trail — who logged in and what they added, changed, deleted, imported or exported.</p>
+            </div>
+            <button id="activity-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
+          </div>
+
+          <div id="activity-card" class="hidden card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                  <tr>
+                    <th class="text-left px-6 py-3 font-medium">When</th>
+                    <th class="text-left px-6 py-3 font-medium">User</th>
+                    <th class="text-left px-6 py-3 font-medium">Action</th>
+                    <th class="text-left px-6 py-3 font-medium">Target</th>
+                    <th class="text-left px-6 py-3 font-medium">Details</th>
+                    <th class="text-left px-6 py-3 font-medium">From</th>
+                  </tr>
+                </thead>
+                <tbody id="activity-rows" class="divide-y divide-slate-100"></tbody>
+              </table>
+            </div>
+            <div id="activity-empty" class="hidden px-6 py-10 text-center text-sm text-slate-400">No activity recorded yet.</div>
+          </div>
+        </section>
+
+        <!-- ====== PAGE: Backup ====== -->
+        <section id="page-backup" class="page hidden space-y-6">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Backup &amp; Restore</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Full-system snapshots — mappings, users, certificates, sub-interfaces, settings &amp; SSL keys.</p>
+            </div>
+            <button id="backup-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+            <!-- Actions -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+              <div class="text-sm font-semibold text-slate-800 mb-1">Snapshot now</div>
+              <p class="text-xs text-slate-500 mb-4">Capture the current system. Save it on the server (restorable any time) or download a copy.</p>
+              <div class="flex flex-wrap items-center gap-2">
+                <input id="backup-label" placeholder="Optional label (e.g. before-upgrade)" class="flex-1 min-w-[180px] rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                <button id="backup-now" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save snapshot</button>
+                <button id="backup-download" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2">Download full backup</button>
+              </div>
+              <div class="border-t border-slate-100 mt-5 pt-4">
+                <div class="text-sm font-semibold text-slate-800 mb-1">Import &amp; restore</div>
+                <p class="text-xs text-slate-500 mb-3">Upload a backup file to restore the system to that point. <span class="text-amber-600">This overwrites current data (including users &amp; certs).</span></p>
+                <button id="backup-import-btn" class="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2">Choose backup file…</button>
+                <input type="file" id="backup-import-file" accept=".zip,application/zip" class="hidden" />
+              </div>
+            </div>
+
+            <!-- Schedule -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-semibold text-slate-800">Automatic backups</div>
+                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input type="checkbox" id="sched-enabled" class="sr-only peer" />
+                  <div class="w-12 h-6 bg-slate-300 rounded-full peer peer-checked:bg-emerald-500 transition-colors"></div>
+                  <div class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-6"></div>
+                </label>
+              </div>
+              <p class="text-xs text-slate-500 mt-1 mb-4">Take a timestamped snapshot on a schedule and keep the most recent N.</p>
+              <label class="block text-xs font-medium mb-1">Every</label>
+              <select id="sched-interval" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 mb-3">
+                <option value="1">hour</option>
+                <option value="6">6 hours</option>
+                <option value="12">12 hours</option>
+                <option value="24" selected>day (24h)</option>
+                <option value="168">week</option>
+              </select>
+              <label class="block text-xs font-medium mb-1">Keep last</label>
+              <input id="sched-retention" type="number" min="1" value="7" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500 mb-3" />
+              <button id="sched-save" class="w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save schedule</button>
+              <p id="sched-last" class="text-xs text-slate-400 mt-3"></p>
+            </div>
+          </div>
+
+          <!-- Stored backups -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
+              <h3 class="text-sm font-semibold">Stored backups</h3>
+              <button id="backup-bulk-delete" type="button" class="hidden text-xs font-medium text-red-600 hover:text-red-800">Delete selected (<span id="backup-bulk-count">0</span>)</button>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                  <tr>
+                    <th class="px-4 py-3 w-10"><input type="checkbox" id="backup-check-all" title="Select all" class="rounded border-slate-300 cursor-pointer align-middle" /></th>
+                    <th class="text-left px-6 py-3 font-medium">Created</th>
+                    <th class="text-left px-6 py-3 font-medium">Type</th>
+                    <th class="text-left px-6 py-3 font-medium">Contents</th>
+                    <th class="text-left px-6 py-3 font-medium">Size</th>
+                    <th class="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody id="backup-rows" class="divide-y divide-slate-100"></tbody>
+              </table>
+            </div>
+            <div id="backup-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No backups yet — take a snapshot above.</div>
+          </div>
+        </section>
+
+        <!-- ── WAF (ModSecurity + OWASP CRS) ─────────────────────── -->
+        <section id="page-waf" class="page hidden space-y-6">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Web Application Firewall</h2>
+              <p class="text-sm text-slate-500 mt-0.5">ModSecurity + OWASP Core Rule Set in front of this dashboard — blocks SQLi/XSS/RCE, rate-limits login.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="waf-repair-btn" class="hidden bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Reinstall / Repair</button>
+              <button id="waf-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
+            </div>
+          </div>
+
+          <!-- Not installed notice -->
+          <div id="waf-notinstalled" class="hidden card bg-amber-50 border border-amber-200 rounded-2xl p-5">
+            <div class="text-sm font-semibold text-amber-800 mb-1">WAF is not installed on this host</div>
+            <p class="text-xs text-amber-700 mb-3">Install ModSecurity + the OWASP Core Rule Set in front of this dashboard. It builds the engine, installs the rules, and starts in Detection mode (logs, never blocks — can’t lock you out). Takes a few minutes.</p>
+            <button id="waf-install-btn" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Install WAF now</button>
+          </div>
+
+          <!-- Install / repair progress -->
+          <div id="waf-install-panel" class="hidden card bg-slate-900 rounded-2xl border border-slate-700 p-4">
+            <div class="flex items-center gap-2 mb-2">
+              <span id="waf-install-spin" class="hidden h-3 w-3 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin"></span>
+              <span id="waf-install-title" class="text-xs font-semibold text-slate-200">Installing WAF…</span>
+            </div>
+            <pre id="waf-install-log" class="text-[11px] leading-relaxed font-mono text-slate-300 whitespace-pre-wrap max-h-64 overflow-auto"></pre>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+            <!-- Engine mode -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-semibold text-slate-800">Protection mode</div>
+                <span id="waf-mode-badge" class="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">—</span>
+              </div>
+              <p class="text-xs text-slate-500 mt-1 mb-4">Detection logs attacks without blocking (tune first). Enforce actively blocks. Off disables all rules.</p>
+              <div class="grid grid-cols-3 gap-2">
+                <button data-mode="Off" class="waf-mode-btn text-sm font-semibold rounded-lg px-3 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 transition">Off</button>
+                <button data-mode="DetectionOnly" class="waf-mode-btn text-sm font-semibold rounded-lg px-3 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 transition">Detection</button>
+                <button data-mode="On" class="waf-mode-btn text-sm font-semibold rounded-lg px-3 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 transition">Enforce</button>
+              </div>
+              <div id="waf-loopback-warn" class="hidden mt-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                ⚠ The app is bound to <span id="waf-app-host" class="font-mono"></span>, not loopback — attackers can reach it directly and bypass the WAF. Bind it to <code class="font-mono">127.0.0.1</code> (set <code class="font-mono">SPLITTER_HOST=127.0.0.1</code> and restart the service).
+              </div>
+            </div>
+
+            <!-- Status -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="text-sm font-semibold text-slate-800 mb-3">Status</div>
+              <dl class="space-y-2 text-sm">
+                <div class="flex justify-between"><dt class="text-slate-500">Installed</dt><dd id="waf-stat-installed" class="font-medium">—</dd></div>
+                <div class="flex justify-between"><dt class="text-slate-500">Listen</dt><dd id="waf-stat-port" class="font-mono">—</dd></div>
+                <div class="flex justify-between"><dt class="text-slate-500">Proxies to</dt><dd id="waf-stat-upstream" class="font-mono text-xs">—</dd></div>
+                <div class="flex justify-between"><dt class="text-slate-500">App binding</dt><dd id="waf-stat-bind" class="font-mono text-xs">—</dd></div>
+              </dl>
+            </div>
+          </div>
+
+          <!-- Settings -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+            <div class="text-sm font-semibold text-slate-800 mb-1">Bindings &amp; rate limits</div>
+            <p class="text-xs text-slate-500 mb-4">The TLS port the WAF listens on and per-IP request rates. Nginx is validated (<span class="font-mono">nginx -t</span>) and reloaded on save.</p>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label class="block text-xs font-medium mb-1">Listen port (TLS)</label>
+                <input id="waf-port" type="number" min="1" max="65535" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium mb-1">Login rate <span class="text-slate-400">(/api/login)</span></label>
+                <input id="waf-login-rate" placeholder="10r/m" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium mb-1">API rate <span class="text-slate-400">(everything else)</span></label>
+                <input id="waf-api-rate" placeholder="30r/s" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+              </div>
+            </div>
+            <div class="mt-4 flex justify-end">
+              <button id="waf-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save &amp; reload</button>
+            </div>
+          </div>
+
+          <!-- Protected apps (bind / unbind WAF per mapping) -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-100">
+              <h3 class="text-sm font-semibold">Protected apps</h3>
+              <p class="text-xs text-slate-500 mt-0.5">Bind a mapping to route it through the WAF (HTTP reverse proxy + ModSecurity). Only HTTPS mappings are eligible — L4/UDP apps can’t be inspected.</p>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                  <tr>
+                    <th class="text-left px-6 py-3 font-medium">App / mapping</th>
+                    <th class="text-left px-4 py-3 font-medium">Backend</th>
+                    <th class="text-left px-4 py-3 font-medium">Type</th>
+                    <th class="text-right px-6 py-3 font-medium">WAF</th>
+                  </tr>
+                </thead>
+                <tbody id="waf-apps" class="divide-y divide-slate-100"></tbody>
+              </table>
+            </div>
+            <div id="waf-apps-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No mappings yet — add one on the Mappings page.</div>
+            <div id="waf-apps-needinstall" class="hidden px-6 py-3 text-center text-xs text-amber-600 bg-amber-50 border-t border-amber-100">Install the WAF above before binding apps.</div>
+          </div>
+
+          <!-- Recent events + steps -->
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden lg:col-span-2">
+              <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                <h3 class="text-sm font-semibold">Recent ModSecurity events</h3>
+                <span class="text-xs text-slate-400">from <span class="font-mono" id="waf-log-path">audit log</span></span>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                    <tr>
+                      <th class="text-left px-4 py-3 font-medium">Rule</th>
+                      <th class="text-left px-4 py-3 font-medium">Message</th>
+                      <th class="text-left px-4 py-3 font-medium">Severity</th>
+                      <th class="text-left px-4 py-3 font-medium">Client IP</th>
+                      <th class="text-left px-4 py-3 font-medium">URI</th>
+                    </tr>
+                  </thead>
+                  <tbody id="waf-events" class="divide-y divide-slate-100"></tbody>
+                </table>
+              </div>
+              <div id="waf-events-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No events logged yet.</div>
+            </div>
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="text-sm font-semibold text-slate-800 mb-3">Last action</div>
+              <ol id="waf-steps" class="space-y-2 text-xs font-mono"></ol>
+            </div>
+          </div>
+        </section>
+
+        <!-- ====== PAGE: Firewall ====== -->
+        <section id="page-firewall" class="page hidden space-y-6">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Firewall</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Per-interface iptables rules — every interface gets its own rule set, like a security group. Off by default.</p>
+            </div>
+            <button id="fw-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
+          </div>
+
+          <div id="fw-simulate-notice" class="hidden card bg-sky-50 border border-sky-200 rounded-2xl p-4 text-xs text-sky-700">Running in simulation mode — no real iptables commands are executed; the commands that would run are shown in each action's steps log.</div>
+
+          <!-- master switch -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <div class="text-sm font-semibold text-slate-800">Firewall enforcement</div>
+                <p class="text-xs text-slate-500 mt-1 max-w-xl">Master switch. <b>Off</b> (default) — no iptables rules are installed, no matter what's configured below. <b>On</b> — every interface marked "enforce" gets its chain installed. Established connections and this dashboard's own port are always allowed first, so a bad rule can't lock you out of Splitter itself.</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                <input type="checkbox" id="fw-master-toggle" class="sr-only peer" />
+                <div class="w-12 h-6 bg-slate-300 rounded-full peer peer-checked:bg-emerald-500 transition-colors"></div>
+                <div class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-6"></div>
+              </label>
+            </div>
+            <p id="fw-master-msg" class="hidden text-xs mt-3"></p>
+          </div>
+
+          <div class="grid gap-6 lg:grid-cols-3">
+            <!-- interfaces list -->
+            <div class="lg:col-span-1">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+                <div class="px-5 py-4 border-b border-slate-100">
+                  <h3 class="text-sm font-semibold">Interfaces</h3>
+                  <p class="text-xs text-slate-400 mt-0.5">Select one to edit its rules.</p>
+                </div>
+                <div id="fw-iface-list" class="divide-y divide-slate-100"></div>
+                <div id="fw-iface-list-empty" class="hidden px-5 py-8 text-center text-sm text-slate-400">No interfaces detected.</div>
+              </div>
+            </div>
+
+            <!-- selected interface: policy + rules -->
+            <div class="lg:col-span-2 space-y-6">
+              <div id="fw-iface-empty" class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-10 text-center text-sm text-slate-400">Select an interface on the left.</div>
+
+              <div id="fw-iface-detail" class="hidden space-y-6">
+                <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                  <div class="flex items-center justify-between gap-4 flex-wrap">
+                    <div>
+                      <div class="text-sm font-semibold text-slate-800 font-mono" id="fw-detail-name">—</div>
+                      <p class="text-xs text-slate-500 mt-1">Enforce rules on this interface (also needs the master switch above).</p>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                      <input type="checkbox" id="fw-iface-enabled" class="sr-only peer" />
+                      <div class="w-12 h-6 bg-slate-300 rounded-full peer peer-checked:bg-emerald-500 transition-colors"></div>
+                      <div class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-6"></div>
+                    </label>
+                  </div>
+                  <div class="grid grid-cols-2 gap-3 mt-4">
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Inbound default</label>
+                      <select id="fw-inbound-policy" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="accept">Accept — allow unless a rule drops it</option>
+                        <option value="drop">Drop — deny unless a rule allows it (security-group style)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Outbound default</label>
+                      <select id="fw-outbound-policy" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="accept">Accept — allow all outbound</option>
+                        <option value="drop">Drop — deny unless a rule allows it</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3 mt-4">
+                    <button id="fw-iface-save" type="button" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save</button>
+                    <span id="fw-iface-msg" class="text-xs"></span>
+                  </div>
+                </div>
+
+                <!-- rule form -->
+                <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                  <div class="flex items-center justify-between mb-3">
+                    <h3 id="fw-rule-form-title" class="text-sm font-semibold">New rule</h3>
+                    <button type="button" id="fw-rule-cancel-edit" class="hidden text-xs underline text-slate-500 hover:text-slate-900">cancel edit</button>
+                  </div>
+                  <!-- one-click presets for the services people actually open -->
+                  <div class="mb-4">
+                    <p class="text-xs text-slate-500 mb-2">Pick a common service, then choose who may reach it:</p>
+                    <div id="fw-presets" class="flex flex-wrap gap-2"></div>
+                  </div>
+
+                  <form id="fw-rule-form" class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <input type="hidden" id="fw-rule-id" value="" />
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Direction</label>
+                      <select id="fw-rule-direction" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="in">Inbound — traffic coming to this host</option>
+                        <option value="out">Outbound — traffic leaving this host</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Protocol</label>
+                      <select id="fw-rule-protocol" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="tcp">TCP</option>
+                        <option value="udp">UDP</option>
+                        <option value="icmp">ICMP (ping)</option>
+                        <option value="all">All protocols</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Port <span class="text-slate-400 font-normal">(blank = any)</span></label>
+                      <input id="fw-rule-port" placeholder="443 or 8000-9000" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Action</label>
+                      <select id="fw-rule-action" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="accept">Allow</option>
+                        <option value="drop">Drop (silent)</option>
+                        <option value="reject">Reject (send error)</option>
+                      </select>
+                    </div>
+                    <div class="col-span-2 md:col-span-4">
+                      <div class="flex items-center justify-between mb-1">
+                        <label class="block text-xs font-medium">Who may connect <span class="text-slate-400 font-normal">(source — blank = anyone on the internet)</span></label>
+                        <div class="flex items-center gap-2">
+                          <button type="button" id="fw-src-myip" class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100">Only my IP</button>
+                          <button type="button" id="fw-src-private" class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200">My LAN</button>
+                          <button type="button" id="fw-src-any" class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200">Anyone</button>
+                        </div>
+                      </div>
+                      <input id="fw-rule-source" placeholder="203.0.113.0/24 — blank means anyone" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                    <div class="col-span-2 md:col-span-4">
+                      <label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label>
+                      <input id="fw-rule-description" placeholder="Allow office VPN" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+
+                    <!-- live plain-English rendering of whatever is in the form -->
+                    <div class="col-span-2 md:col-span-4 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
+                      <div class="text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">This rule will</div>
+                      <p id="fw-rule-preview" class="text-sm text-slate-700">—</p>
+                      <p id="fw-rule-cmd" class="hidden mt-2 text-[11px] font-mono text-slate-400 break-all"></p>
+                    </div>
+                    <div id="fw-rule-warn" class="hidden col-span-2 md:col-span-4 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-xs text-amber-800"></div>
+
+                    <details class="col-span-2 md:col-span-4 rounded-xl border border-slate-200 px-4 py-2">
+                      <summary class="text-xs font-medium text-slate-600 cursor-pointer select-none">Advanced</summary>
+                      <div class="grid grid-cols-2 gap-3 pt-3 pb-1">
+                        <div>
+                          <label class="block text-xs font-medium mb-1">Priority</label>
+                          <input id="fw-rule-priority" type="number" min="1" max="65535" value="100" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                          <p class="text-[11px] text-slate-400 mt-1">Lower runs first. Leave at 100 unless rules overlap.</p>
+                        </div>
+                        <div class="flex items-end">
+                          <label class="flex items-center gap-2 text-xs text-slate-700 pb-2">
+                            <input type="checkbox" id="fw-rule-enabled" checked class="rounded" /> Enabled
+                          </label>
+                        </div>
+                      </div>
+                    </details>
+
+                    <div class="col-span-2 md:col-span-4">
+                      <button type="submit" id="fw-rule-save" class="btn-primary bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Save rule</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- rules table -->
+                <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+                  <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                    <h3 class="text-sm font-semibold">Rules</h3>
+                  </div>
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                      <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                        <tr>
+                          <th class="text-left px-4 py-3 font-medium">Pri</th>
+                          <th class="text-left px-4 py-3 font-medium">Dir</th>
+                          <th class="text-left px-4 py-3 font-medium">Proto</th>
+                          <th class="text-left px-4 py-3 font-medium">Port</th>
+                          <th class="text-left px-4 py-3 font-medium">Source</th>
+                          <th class="text-left px-4 py-3 font-medium">Action</th>
+                          <th class="text-left px-6 py-3 font-medium">Description</th>
+                          <th class="px-6 py-3"></th>
+                        </tr>
+                      </thead>
+                      <tbody id="fw-rule-rows" class="divide-y divide-slate-100"></tbody>
+                    </table>
+                  </div>
+                  <div id="fw-rule-empty" class="hidden px-6 py-10 text-center text-sm text-slate-400">No rules on this interface yet.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Danger zone -->
+          <div class="card bg-white/80 rounded-2xl border border-red-200/70 shadow-sm p-5">
+            <div class="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <div class="text-sm font-semibold text-red-700">Panic — disable firewall</div>
+                <p class="text-xs text-slate-500 mt-1 max-w-xl">Immediately tears down every managed iptables chain on every interface and turns the master switch off. Saved rules aren't deleted and can be re-applied later. Use this if a rule change locks something out.</p>
+              </div>
+              <button id="fw-panic-btn" type="button" class="shrink-0 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-sm font-semibold rounded-lg px-4 py-2.5 shadow">Panic — disable now</button>
+            </div>
+            <p id="fw-panic-msg" class="hidden text-xs mt-3"></p>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <!-- Diagnose panel -->
+  <div id="diag-overlay" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/50 backdrop-blur-sm animate-fadeIn">
+    <div class="card bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[88vh] flex flex-col animate-scaleIn">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+        <div>
+          <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+            <span class="h-2.5 w-2.5 rounded-full bg-sky-500 animate-pulse"></span>
+            Diagnose · <span id="diag-domain" class="font-mono"></span>
+          </h3>
+          <p class="text-[11px] text-slate-500">Live status + nginx error log (auto-refresh) · <span id="diag-updated">—</span></p>
+        </div>
+        <button id="diag-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none px-2">&times;</button>
+      </div>
+
+      <div class="px-5 py-4 overflow-y-auto space-y-4">
+        <!-- status checks -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div class="rounded-lg border border-slate-200 p-3">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Listener</div>
+            <div id="diag-listener" class="text-sm font-medium mt-0.5 text-slate-500">checking…</div>
+          </div>
+          <div class="rounded-lg border border-slate-200 p-3">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Active connections</div>
+            <div id="diag-conns" class="text-sm font-medium mt-0.5 text-slate-500">—</div>
+          </div>
+          <div class="rounded-lg border border-slate-200 p-3">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Backends</div>
+            <div id="diag-backends-sum" class="text-sm font-medium mt-0.5 text-slate-500">—</div>
+          </div>
+        </div>
+
+        <!-- per-backend -->
+        <div id="diag-backends" class="space-y-1"></div>
+
+        <!-- error log -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-xs font-semibold text-slate-600">nginx error log <span class="text-slate-400">(filtered to this mapping)</span></span>
+            <span id="diag-log-path" class="text-[11px] font-mono text-slate-400"></span>
+          </div>
+          <pre id="diag-log" class="text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-all bg-slate-950 text-slate-200 rounded-lg p-3 max-h-72 overflow-y-auto">…</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="hidden fixed bottom-6 right-6 max-w-sm rounded-lg px-4 py-3 text-sm shadow-lg z-50"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

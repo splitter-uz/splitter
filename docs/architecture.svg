@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 700" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <marker id="blue" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="orange" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#ea580c"/>
+    </marker>
+    <marker id="grey" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#10b981"/>
+    </marker>
+    <style>
+      .hdr{font-size:22px;font-weight:700;letter-spacing:.04em}
+      .sub{font-size:12px;fill:#64748b}
+      .dom{font-size:16px;font-weight:600;fill:#1e3a8a;font-family:ui-monospace,Menlo,monospace}
+      .card-t{font-size:13px;font-weight:600;fill:#0f172a;font-family:ui-monospace,Menlo,monospace}
+      .card-s{font-size:12px;fill:#475569;font-family:ui-monospace,Menlo,monospace}
+      .pool-t{font-size:13px;font-weight:600;fill:#7c2d12;font-family:ui-monospace,Menlo,monospace}
+      .lbl{font-size:11px;fill:#ea580c;font-weight:600}
+      .badge{font-size:10px;font-weight:700;letter-spacing:.03em}
+      .reg-t{font-size:13px;font-weight:700;fill:#065f46;font-family:ui-monospace,Menlo,monospace}
+      .reg-s{font-size:11.5px;fill:#047857;font-family:ui-monospace,Menlo,monospace}
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="700" fill="#ffffff"/>
+
+  <!-- column headers -->
+  <text x="150" y="46" class="hdr" fill="#2563eb" text-anchor="middle">FROM THE INTERNET</text>
+  <text x="560" y="46" class="hdr" fill="#0f172a" text-anchor="middle">SPLITTER · LINUX HOST</text>
+  <text x="1015" y="46" class="hdr" fill="#ea580c" text-anchor="middle">TO YOUR BACKENDS</text>
+  <text x="24" y="64" font-size="11" fill="#c2410c">optionally filtered by the per-interface firewall (iptables)</text>
+
+  <!-- HTTPS / SNI badge -->
+  <rect x="490" y="64" width="140" height="26" rx="13" fill="#ecfdf5" stroke="#10b981"/>
+  <text x="560" y="81" font-size="12" fill="#047857" text-anchor="middle" font-weight="600">TLS passthrough · SNI</text>
+
+  <!-- ===== host container ===== -->
+  <rect x="350" y="104" width="440" height="556" rx="16" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="370" y="130" font-size="13" font-weight="700" fill="#0f172a">nginx  stream { }  +  Splitter manager</text>
+  <text x="370" y="148" class="sub">binds an interface IP or a managed sub-interface · UI :8088</text>
+
+  <!-- ===== lane A: direct bind (sub-interface toggle OFF) ===== -->
+  <rect x="24" y="160" width="262" height="60" rx="10" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="40" y="186" class="dom">site1.example.com</text>
+  <text x="40" y="206" class="sub">:443 · TLS (self-signed / upload)</text>
+  <rect x="372" y="158" width="300" height="72" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="388" y="183" class="card-t">listen 192.168.10.5:443</text>
+  <text x="388" y="201" class="card-s">eth0 · interface's existing IP</text>
+  <rect x="600" y="166" width="64" height="18" rx="9" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="632" y="179" class="badge" fill="#1d4ed8" text-anchor="middle">DIRECT</text>
+  <text x="388" y="219" class="card-s">no device created</text>
+  <rect x="858" y="158" width="298" height="72" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="874" y="183" class="pool-t">upstream pool</text>
+  <text x="874" y="203" class="card-s">10.0.0.10:8443</text>
+  <text x="874" y="221" class="card-s">10.0.0.11:8443</text>
+
+  <!-- ===== lane B: managed sub-interface ===== -->
+  <rect x="24" y="278" width="262" height="60" rx="10" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="40" y="304" class="dom">site2.example.com</text>
+  <text x="40" y="324" class="sub">:443 · binds a sub-interface</text>
+  <rect x="372" y="276" width="300" height="72" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="388" y="301" class="card-t">listen 192.168.50.20:443</text>
+  <text x="388" y="319" class="card-s">mv-web-0 · macvlan · VLAN 50</text>
+  <rect x="588" y="284" width="76" height="18" rx="9" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <text x="626" y="297" class="badge" fill="#047857" text-anchor="middle">SUB-IFACE</text>
+  <rect x="858" y="276" width="298" height="72" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="874" y="301" class="pool-t">upstream pool</text>
+  <text x="874" y="321" class="card-s">192.168.50.10:443</text>
+  <text x="874" y="339" class="card-s">192.168.50.11:443</text>
+
+  <!-- ===== lane C: shared sub-interface (different port) ===== -->
+  <rect x="24" y="396" width="262" height="60" rx="10" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="40" y="422" class="dom">site3.example.com</text>
+  <text x="40" y="442" class="sub">:8443 · shares the sub-interface</text>
+  <rect x="372" y="394" width="300" height="72" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="388" y="419" class="card-t">listen 192.168.50.20:8443</text>
+  <text x="388" y="437" class="card-s">mv-web-0 · shared (different port)</text>
+  <rect x="588" y="402" width="76" height="18" rx="9" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <text x="626" y="415" class="badge" fill="#047857" text-anchor="middle">SUB-IFACE</text>
+  <rect x="858" y="394" width="298" height="72" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="874" y="419" class="pool-t">upstream pool</text>
+  <text x="874" y="439" class="card-s">192.168.60.40:443</text>
+  <text x="874" y="457" class="card-s">(single backend)</text>
+
+  <!-- ===== sub-interface registry lane (managed on the Interfaces page) ===== -->
+  <rect x="362" y="500" width="416" height="142" rx="12" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="380" y="525" class="reg-t">Sub-interface registry — Interfaces page</text>
+  <text x="380" y="544" class="reg-s">ip link add … macvlan · static IP · optional 802.1Q VLAN / MAC</text>
+  <rect x="380" y="556" width="378" height="32" rx="8" fill="#ffffff" stroke="#bbf7d0"/>
+  <text x="394" y="576" class="reg-s">mv-web-0 · 192.168.50.20/24 · VLAN 50 · static</text>
+  <rect x="380" y="596" width="378" height="32" rx="8" fill="#ffffff" stroke="#bbf7d0"/>
+  <text x="394" y="616" class="reg-s">mv-api-0 · 192.168.50.21/24 · static</text>
+
+  <!-- ===== connectors: client -> listen block (blue) ===== -->
+  <path d="M286,190 C330,190 330,194 372,194" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+  <path d="M286,308 C330,308 330,312 372,312" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+  <path d="M286,426 C330,426 330,430 372,430" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+
+  <!-- ===== connectors: listen block -> pool (orange, load balanced) ===== -->
+  <path d="M672,194 C770,194 760,194 858,194" fill="none" stroke="#ea580c" stroke-width="2" marker-end="url(#orange)"/>
+  <path d="M672,312 C770,312 760,312 858,312" fill="none" stroke="#ea580c" stroke-width="2" marker-end="url(#orange)"/>
+  <path d="M672,430 C770,430 760,430 858,430" fill="none" stroke="#ea580c" stroke-width="2" marker-end="url(#orange)"/>
+  <text x="765" y="185" class="lbl" text-anchor="middle">proxy_pass</text>
+  <text x="765" y="303" class="lbl" text-anchor="middle">load balance</text>
+  <text x="765" y="421" class="lbl" text-anchor="middle">proxy_pass</text>
+
+  <!-- ===== connectors: registry -> sub-interface mappings (green dotted, "select") ===== -->
+  <path d="M470,500 C470,485 470,480 470,466" fill="none" stroke="#10b981" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#grey)"/>
+  <path d="M700,556 C740,556 742,330 740,330 C740,322 700,322 674,322" fill="none" stroke="#10b981" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#grey)"/>
+  <text x="486" y="488" font-size="11" fill="#059669" font-weight="600">selected by mappings</text>
+
+  <!-- footer flow note -->
+  <text x="565" y="680" font-size="12" fill="#64748b" text-anchor="middle">
+    Apply → bind the interface IP (direct) or a managed sub-interface → write stream.d/*.conf → nginx -t → reload
+  </text>
+</svg>

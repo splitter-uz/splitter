@@ -1,0 +1,34 @@
+# systemd unit for Splitter — install to /etc/systemd/system/splitter.service
+# Then:  systemctl daemon-reload && systemctl enable --now splitter
+[Unit]
+Description=Splitter - L4 Stream Proxy Manager
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root so `ip addr add`, writing /etc/nginx, and `nginx -s reload`
+# work without an extra sudo hop. If you prefer a dedicated user, use the
+# sudoers snippet in deploy/splitter.sudoers and set SPLITTER_SUDO=sudo.
+User=root
+WorkingDirectory=/opt/splitter
+Environment=SPLITTER_SIMULATE=0
+# Persistent store — MUST stay outside the app dir so a redeploy never wipes it.
+Environment=SPLITTER_DATA_DIR=/var/lib/splitter
+Environment=SPLITTER_NIC=eth0
+Environment=SPLITTER_BIND_PREFIX=24
+Environment=SPLITTER_SUDO=
+Environment=SPLITTER_HOST=0.0.0.0
+Environment=SPLITTER_PORT=8088
+# Reload/restart nginx via the nginx binary (nginx -s reload / stop+start),
+# not systemctl — drives nginx directly so freshly-added bind IPs come up.
+ExecStart=/opt/splitter/.venv/bin/python /opt/splitter/backend/app.py
+Restart=on-failure
+RestartSec=3
+
+# Hardening (still allows the operations we need)
+NoNewPrivileges=false
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

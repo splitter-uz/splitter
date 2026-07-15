@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Splitter — Sign in</title>
+  <link rel="icon" type="image/svg+xml" href="/static/logo.svg" />
+  <link rel="apple-touch-icon" href="/static/favicon.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: {
+      fontFamily: { mono: ['ui-monospace','SFMono-Regular','Menlo','monospace'] },
+      keyframes: {
+        fadeUp:  { '0%': { opacity: 0, transform: 'translateY(14px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } },
+        scaleIn: { '0%': { opacity: 0, transform: 'scale(.96)' }, '100%': { opacity: 1, transform: 'scale(1)' } },
+        floaty:  { '0%,100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-6px)' } },
+        drift:   { '0%,100%': { backgroundPosition: '0% 50%' }, '50%': { backgroundPosition: '100% 50%' } },
+      },
+      animation: {
+        fadeUp:  'fadeUp .5s cubic-bezier(.22,1,.36,1) both',
+        scaleIn: 'scaleIn .5s cubic-bezier(.22,1,.36,1) both',
+        floaty:  'floaty 7s ease-in-out infinite',
+      },
+    } } };
+  </script>
+  <style>
+    * { -webkit-font-smoothing: antialiased; }
+    body {
+      background:
+        radial-gradient(800px 500px at 15% -10%, rgba(16,185,129,.20), transparent 60%),
+        radial-gradient(700px 500px at 110% 110%, rgba(56,189,248,.18), transparent 55%),
+        linear-gradient(135deg, #f1f5f9, #e9eef5 45%, #e2e8f0);
+      background-size: 100% 100%, 100% 100%, 200% 200%;
+      animation: drift 24s ease-in-out infinite;
+    }
+    input { transition: box-shadow .2s ease, border-color .2s ease; }
+    button { transition: transform .15s cubic-bezier(.22,1,.36,1), box-shadow .2s ease, opacity .2s ease; }
+    #submit-btn:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 14px 28px -14px rgba(16,185,129,.85); }
+    #submit-btn:not(:disabled):active { transform: translateY(0) scale(.98); }
+    @media (prefers-reduced-motion: reduce) { *, body { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body class="h-full text-slate-800">
+  <div class="min-h-full flex items-center justify-center px-6 py-12">
+    <div class="w-full max-w-[min(24rem,100%)] animate-fadeUp">
+      <div class="flex flex-col items-center mb-6">
+        <img src="/static/logo.svg" alt="Splitter logo" class="h-12 w-12 mb-3 animate-floaty drop-shadow-[0_0_14px_rgba(16,185,129,.5)]" />
+        <h1 class="text-xl font-extrabold tracking-tight">Split<span class="text-emerald-500">ter</span></h1>
+        <p id="subtitle" class="text-xs text-slate-500 mt-1">Layer-4 Stream Proxy Manager</p>
+      </div>
+
+      <div class="bg-white/80 backdrop-blur-xl rounded-2xl shadow-xl shadow-slate-900/5 border border-white/60 p-6 animate-scaleIn">
+        <h2 id="title" class="text-base font-semibold mb-1">Sign in</h2>
+        <p id="hint" class="text-xs text-slate-500 mb-4"></p>
+
+        <form id="auth-form" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium mb-1">Username</label>
+            <input name="username" id="username" required autocomplete="username"
+              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Password</label>
+            <input name="password" id="password" type="password" required
+              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+          </div>
+          <div id="confirm-wrap" class="hidden">
+            <label class="block text-sm font-medium mb-1">Confirm password</label>
+            <input name="confirm" id="confirm" type="password"
+              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
+          </div>
+
+          <p id="error" class="hidden text-xs text-red-600"></p>
+
+          <button type="submit" id="submit-btn"
+            class="w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25 disabled:opacity-50">
+            Sign in
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    let SETUP = false;
+
+    function showError(msg) {
+      const e = $("#error");
+      e.textContent = msg;
+      e.classList.toggle("hidden", !msg);
+    }
+
+    async function init() {
+      let st = {};
+      try {
+        st = await (await fetch("/api/auth/status")).json();
+      } catch (_) { /* show login form anyway */ }
+      if (st.authenticated) { window.location.href = "/"; return; }
+      SETUP = !!st.needs_setup;
+      if (SETUP) {
+        $("#title").textContent = "Create the admin account";
+        $("#hint").textContent = "First run — set up the initial administrator.";
+        $("#confirm-wrap").classList.remove("hidden");
+        $("#confirm").required = true;
+        $("#password").autocomplete = "new-password";
+        $("#submit-btn").textContent = "Create admin & sign in";
+      }
+      $("#username").focus();
+    }
+
+    $("#auth-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      showError("");
+      const btn = $("#submit-btn");
+      const fd = new FormData(e.target);
+      if (SETUP && fd.get("password") !== fd.get("confirm")) {
+        return showError("Passwords do not match.");
+      }
+      btn.disabled = true;
+      try {
+        const r = await fetch(SETUP ? "/api/setup" : "/api/login",
+          { method: "POST", body: fd });
+        const j = await r.json();
+        if (j.ok) { window.location.href = "/"; return; }
+        showError(j.error || "Sign in failed.");
+      } catch (err) {
+        showError("Request failed: " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>

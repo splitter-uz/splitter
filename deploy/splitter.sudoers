@@ -1,0 +1,53 @@
+# Optional: run Splitter as an unprivileged `splitter` user instead of root.
+# Install to /etc/sudoers.d/splitter (chmod 0440) and set SPLITTER_SUDO=sudo.
+# Grants ONLY the specific privileged commands the tool needs — nothing else.
+#
+# NOTE: the default/recommended deployment runs as root (the systemd unit sets
+# User=root, SPLITTER_SUDO=""), in which case this file is NOT used at all.
+#
+# Binary locations differ across distros, so the common paths are listed for
+# each command. `ip`/`nginx` usually live in /usr/sbin, `systemctl` in /usr/bin.
+
+# Network sub-interface + addresses (macvlan/VLAN create, up, and IP assign).
+Cmnd_Alias SPLITTER_IP = /usr/sbin/ip addr add *, /sbin/ip addr add *, \
+                         /usr/sbin/ip addr del *, /sbin/ip addr del *, \
+                         /usr/sbin/ip link add *, /sbin/ip link add *, \
+                         /usr/sbin/ip link del *, /sbin/ip link del *, \
+                         /usr/sbin/ip link set *, /sbin/ip link set *
+
+# Nginx: config test, reload, and full stop + start (the app drives the nginx
+# binary directly rather than systemctl).
+Cmnd_Alias SPLITTER_NGINX = /usr/sbin/nginx -t, \
+                            /usr/sbin/nginx -s reload, \
+                            /usr/sbin/nginx -s stop, \
+                            /usr/sbin/nginx
+
+# Kernel: let nginx bind not-yet-up bind IPs (the ip_nonlocal_bind fix).
+Cmnd_Alias SPLITTER_SYSCTL = /usr/sbin/sysctl -w net.ipv4.ip_nonlocal_bind=1, \
+                             /sbin/sysctl -w net.ipv4.ip_nonlocal_bind=1, \
+                             /usr/sbin/sysctl -w net.ipv6.ip_nonlocal_bind=1, \
+                             /sbin/sysctl -w net.ipv6.ip_nonlocal_bind=1
+
+# DHCP allocation on a macvlan (acquire is wrapped in `timeout`, plus release).
+Cmnd_Alias SPLITTER_DHCP = /usr/bin/timeout * dhclient *, /bin/timeout * dhclient *, \
+                           /usr/sbin/dhclient -r *, /sbin/dhclient -r *
+
+# Read the (root-owned) nginx error log for the per-mapping Diagnose panel.
+Cmnd_Alias SPLITTER_LOG = /usr/bin/tail -n * /var/log/nginx/error.log, \
+                          /bin/tail -n * /var/log/nginx/error.log
+
+# Firewall page: manage the Splitter-owned SFW-IN-*/SFW-OUT-* chains and their
+# INPUT/OUTPUT jump rules (see backend/firewall.py). Scoped to chain
+# create/flush/delete and rule append/insert/delete/check — never a bare
+# `iptables` with no chain/rule args.
+Cmnd_Alias SPLITTER_IPTABLES = /usr/sbin/iptables -N *, /sbin/iptables -N *, \
+                               /usr/sbin/iptables -F *, /sbin/iptables -F *, \
+                               /usr/sbin/iptables -X *, /sbin/iptables -X *, \
+                               /usr/sbin/iptables -A *, /sbin/iptables -A *, \
+                               /usr/sbin/iptables -I *, /sbin/iptables -I *, \
+                               /usr/sbin/iptables -D *, /sbin/iptables -D *, \
+                               /usr/sbin/iptables -C *, /sbin/iptables -C *
+
+splitter ALL=(root) NOPASSWD: SPLITTER_IP, SPLITTER_NGINX, \
+                              SPLITTER_SYSCTL, SPLITTER_DHCP, SPLITTER_LOG, \
+                              SPLITTER_IPTABLES
