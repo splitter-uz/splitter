@@ -1,273 +1,214 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/logo-white.png">
-    <img src="docs/logo-white.png" alt="Splitter" width="360">
+    <img src="docs/logo.png" alt="Splitter" width="360">
   </picture>
 </p>
 
-<p align="center">Layer-4 Stream Proxy Manager</p>
+<p align="center"><strong>Layer‑4 Stream Proxy Manager</strong></p>
+
+<p align="center">
+  Turn a Linux box into a multi‑IP TCP/UDP reverse proxy you drive from your browser.
+</p>
+
+<p align="center">
+  <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg">
+  <img alt="Python 3" src="https://img.shields.io/badge/Python-3.x-blue.svg?logo=python&logoColor=white">
+  <img alt="nginx stream" src="https://img.shields.io/badge/nginx-stream-009639.svg?logo=nginx&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ED.svg?logo=docker&logoColor=white">
+  <img alt="Platform: Linux" src="https://img.shields.io/badge/Platform-Linux-FCC624.svg?logo=linux&logoColor=black">
+</p>
+
+<p align="center">
+  <a href="#-quick-start">Quick start</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="#-architecture">Architecture</a> ·
+  <a href="#-docker">Docker</a> ·
+  <a href="#-configuration">Configuration</a> ·
+  <a href="#-rest-api">API</a>
+</p>
 
 ---
 
-**Splitter turns a Linux box into a multi-IP Layer-4 (TCP/UDP) reverse proxy you
-drive from a browser.** Type a domain, pick an interface (or a dedicated
-sub-interface you provisioned), point an Nginx `stream` upstream pool at your
-backends, and it reloads — all in a few seconds, no manual `ip` or config editing.
+## What is Splitter?
+
+**Splitter** turns a Linux host into a multi‑IP **Layer‑4 (TCP/UDP) reverse proxy**
+you manage entirely from a web dashboard. Type a domain, pick an interface (or a
+dedicated sub‑interface you provisioned), point an Nginx `stream` upstream pool
+at your backends — and it reloads in a few seconds. **No manual `ip` commands,
+no hand‑edited config.**
+
+Because it runs **directly on the host** (no container namespaces hiding the
+network), the interfaces and IPs it creates are **real and reachable on the LAN**,
+and Nginx binds them directly.
 
 <p align="center">
   <img src="docs/dashboard.png" alt="Splitter dashboard" width="900">
 </p>
 
-By default a mapping **binds Nginx directly to the chosen interface's existing
-IP** (no device created). For a **dedicated IP per mapping**, enable
-sub-interfaces on the Interfaces page and provision a real **`macvlan`**
-device — its own MAC (optionally inside an 802.1Q **VLAN**), a static address,
-visible in `ip link show` — then bind a mapping to it. On every **Save / Apply**
-the host then:
+On every **Save / Apply**, the host:
 
-1. **Resolves the bind IP** — the interface's address, or the selected
-   sub-interface's.
+1. **Resolves the bind IP** — the chosen interface's address, or a selected sub‑interface's.
 2. **Generates** `/etc/nginx/stream.d/<domain>.conf` with an `upstream {}` pool.
-3. **Validates** (`nginx -t`) and **reloads nginx** (`nginx -s reload`; a full
-   `nginx -s stop` + start if a reload doesn't bind the new IP).
+3. **Validates** (`nginx -t`) and **reloads** (falling back to a full restart if a reload won't bind a fresh IP).
 
-Because it runs **directly on the host** (no container namespaces), the
-interfaces and IPs are **real and reachable** and nginx — on the same host —
-binds them directly. Built with **Python + Flask** and a **Tailwind** single-page
-UI; no database (mappings and users persist to JSON). The dashboard streams back a
-step-by-step log of exactly which commands ran.
-
-### Features
-- **Login & roles** — first run prompts you to create an **admin**; after that
-  the whole UI requires login. Admins can add **admin** or **creator** users.
-  Creators add/edit mappings and export; admins also delete, import, re-apply,
-  and manage users.
-- **Dynamic interface detection** — discovers physical & VLAN interfaces
-  (`ip -j addr`) and offers them in a dropdown.
-- **Interfaces page** — a global **sub-interface toggle** (default **off**: a
-  mapping binds straight to the chosen interface's existing IP, no device is
-  created). With it **on**, you **create/edit/delete static macvlan
-  sub-interfaces** here as managed resources, and a mapping just **selects an
-  existing sub-interface** to bind (several mappings can share one on different
-  ports; an in-use sub-interface can't be edited/deleted). The page also lets you
-  view/edit host **DNS** and **`/etc/hosts`** and shows a **live per-interface
-  upload/download** tree (physical at the top, sub-interfaces nested).
-- **Network tools** — a built-in **Tools** page for ping, port test, DNS lookup,
-  traceroute, packet capture (tcpdump) and WHOIS, run from the host.
-- **Live routing map** — the Monitoring page renders an n8n-style canvas of every
-  mapping (inbound IP → splitter → backend pool), with draggable nodes, pan/zoom,
-  click-to-expand backend pools, and **red/✗ flagging when a backend is down**.
-- **Real macvlan sub-interfaces with unique MACs** (`mv-<domain>-<n>`), random
-  locally-administered or custom MAC.
-- **802.1Q VLAN tagging** — give a VLAN ID and it creates `eth0.<id>` and builds
-  the macvlan on top.
-- **Static IP** sub-interfaces (each macvlan gets a fixed address).
-- **Backend load-balancing pool** — one or many `IP:PORT` rendered as `upstream {}`,
-  with a selectable method: round-robin, `least_conn`, `hash $remote_addr`
-  (+ `consistent`), `random`, or `random two least_conn`. The method options
-  **auto-reveal once a mapping has 2+ backends** (a single backend just uses
-  round-robin).
-- **Rate limiting (Layer 4)** — an optional per-mapping toggle that caps
-  **simultaneous connections per client IP** (`limit_conn` + an auto-generated
-  `limit_conn_zone`) and **per-connection bandwidth** (`proxy_download_rate` /
-  `proxy_upload_rate`, e.g. `1m` / `512k`).
-- **Automated SSL** — upload your own cert/key, generate a SAN self-signed cert
-  with `openssl`, or **reuse an existing** managed cert across multiple mappings
-  (shared certs are kept until the last user is removed).
-- **Access lists (allow/deny)** — restrict who may connect to a mapping at
-  Layer 4. Create named IP/CIDR allow lists on the **Access Lists** page, then a
-  mapping selects one (or the **global default**) — only those networks connect,
-  everything else is denied. A built-in **tas-ix (Uzbekistan)** list ships by
-  default and **auto-refreshes in the background** from the MRLG looking glass
-  (any list can set its own source URL), replacing the manual
-  `iplist.sh`/`allow.sh` cron. See [Access lists](#access-lists) below.
-- **Firewall (per-interface iptables)** — security-group style rules: every host
-  interface gets its **own** ordered rule set (protocol, port/range, source CIDR,
-  accept/drop/reject, priority) plus a configurable default (fallback) policy for
-  inbound and outbound. A global master switch and a per-interface enforce toggle
-  are both **off by default**, so installing it changes nothing until an admin
-  opts in. Every managed chain always allows established connections and this
-  dashboard's own port first, and a one-click **Panic** button tears every
-  managed chain down instantly. See [Firewall](#firewall) below.
-- **Backup / restore** — **Export** all mappings to a JSON file, **Import** them
-  back, and **Re-apply all** to re-provision every mapping onto the host (handy
-  after a redeploy or a reboot).
-- **Full-system backup page** — one-click **snapshot** of *everything* (mappings,
-  users, certificates, sub-interfaces, settings, audit log **and** SSL keys) as a
-  timestamped zip you can download, restore, or roll back to. **Scheduled
-  automatic backups** (interval + retention) run in-process — no system cron — so
-  you can recover the whole tool to any saved point in time. (Backups contain
-  secrets; admin-only and stored under the data dir.)
+Built with **Python + Flask** and a **Tailwind** single‑page UI. **No database** —
+mappings and users persist to human‑readable JSON. The dashboard streams back a
+step‑by‑step log of exactly which commands ran.
 
 ---
 
-## Architecture
+## 🚀 Quick start
 
-Each domain gets its **own sub-interface (unique MAC/IP)** on the host; nginx
-`stream` listens on that IP and load-balances across the domain's backend pool.
+### Option A — Docker (fastest)
 
-<p align="center">
-  <img src="docs/architecture.png" alt="Splitter architecture" width="960">
-</p>
+Splitter ships as a single self‑contained image (Nginx + stream module + WAF +
+the app). It runs in the **host network namespace** so the IPs it creates are
+real, and **auto‑detects your uplink NIC** — you just bring it up:
 
----
+```bash
+git clone <repo> splitter && cd splitter
+docker compose up -d --build
+```
 
-## Requirements
+Then open **`http://<server-ip>:8088`** and create the admin account on first load.
+See [🐳 Docker](#-docker) for details, volumes, and hardening.
 
-- A **Linux host** (Debian/Ubuntu, RHEL/Fedora, Arch, openSUSE).
-- **root** (the tool runs `ip`, writes `/etc/nginx`, drives nginx, and — if you
-  turn it on — manages `iptables` chains for the Firewall page).
-- nginx with the **stream module**, python3, iproute2, a DHCP client, openssl,
-  **iptables** — all installed for you by `setup.sh`.
-
----
-
-## Quick start (Linux)
+### Option B — Native (systemd)
 
 ```bash
 git clone <repo> splitter && cd splitter
 sudo ./setup.sh --service        # installs deps, configures nginx + kernel, starts the service
 ```
 
-Then open **`http://<server-ip>:8088`** and create the admin account on first load.
+`setup.sh` is idempotent and safe to re‑run. It installs dependencies (nginx +
+stream module, python3/venv, iproute2, dhcp client, openssl, iptables), wires the
+top‑level `stream {}` include, enables `net.ipv4.ip_nonlocal_bind`, creates the
+persistent store at `/var/lib/splitter`, builds the venv, and (with `--service`)
+installs a **systemd** unit running as root.
 
-`setup.sh` is idempotent and safe to re-run. It:
-- installs dependencies (nginx + stream module, python3/venv, iproute2, dhcp
-  client, openssl) for your distro,
-- creates `/etc/nginx/stream.d` and `/etc/nginx/ssl`,
-- adds the top-level `stream { include /etc/nginx/stream.d/*.conf; }` to
-  `nginx.conf` (if absent), then `nginx -t` + reload,
-- creates the persistent data dir **`/var/lib/splitter`** (outside the repo, so a
-  redeploy never wipes mappings/users) and migrates any old in-repo store,
-- enables **`net.ipv4.ip_nonlocal_bind`** (`/etc/sysctl.d/99-splitter.conf`) so
-  nginx can bind a freshly-added IP that hasn't fully settled yet, and orders
-  nginx after `network-online` + `systemd-sysctl`,
-- builds the Python venv,
-- detects your default interface,
-- with `--service`, installs and starts a **systemd** unit (running as root).
+<details>
+<summary><code>setup.sh</code> options &amp; service management</summary>
 
-### Run without installing a service
-```bash
-sudo ./setup.sh                  # configure only
-sudo ./run.sh                    # foreground (creates venv, runs the app)
-```
-
-### setup.sh options
 | Flag | Meaning |
 |---|---|
 | `--service` | Install + enable the systemd service. |
-| `--nic NAME` | Force the parent interface (else auto-detected). |
-| `--host ADDR` | UI bind address (default `0.0.0.0` = all interfaces). |
+| `--nic NAME` | Force the parent interface (else auto‑detected). |
+| `--host ADDR` | UI bind address (default `0.0.0.0`). |
 | `--port N` | UI port (default `8088`). |
 | `--no-deps` | Skip package installation. |
+| `--waf` / `--waf-only` / `--waf-enforce` | Install / repair / enforce the WAF. |
 
-### Service management
 ```bash
 systemctl status splitter
 journalctl -u splitter -f        # apply failures are logged here with the failing step
-systemctl restart splitter       # do this after every `git pull` so new code is loaded
+systemctl restart splitter       # after every git pull, to load new code
 ```
 
-> The UI binds `0.0.0.0:8088` by default and is **protected by login**. It still
-> performs privileged host actions, so restrict it to a trusted network (or put
-> it behind an authenticated reverse proxy / SSH tunnel and set
-> `--host 127.0.0.1`). Use a strong admin password.
+Run without a service: `sudo ./setup.sh` (configure only) then `sudo ./run.sh`.
+</details>
 
-### WAF (ModSecurity + OWASP CRS) — install from the dashboard
-
-Splitter can front the UI with a self-hosted WAF: nginx terminates TLS on port
-**8443**, filters every request through ModSecurity/CRS (SQLi, XSS, RCE, …) with
-per-IP rate limits on the login endpoint, and proxies to the app.
-
-`setup.sh` does **not** install it — you enable it when you want it, from the
-**WAF page in the dashboard** (admin only): click **Install / Repair**, then
-switch Off / Detection / Enforce, change the listen port and rate limits, and
-review recent ModSecurity events. The Install button runs `setup.sh --waf-only`
-on the server, so you never need the CLI.
-
-```bash
-# Optional CLI equivalents:
-sudo ./setup.sh --waf          # install the WAF as part of setup
-sudo ./setup.sh --waf-only     # install/repair just the WAF (what the UI runs)
-sudo ./setup.sh --waf-enforce  # switch from Detection to blocking mode
-```
-
-It starts in **DetectionOnly** (logs, never blocks) so it can't lock you out.
-On stock Debian/Ubuntu the modsecurity-nginx connector isn't packaged, so the
-installer compiles it as a dynamic module matching your nginx (build tools
-installed automatically; ~2–4 min, one time). The engine mode lives in
-`/etc/nginx/modsec/modsecurity.conf`; the server block is
-`/etc/nginx/conf.d/splitter-waf.conf`.
-
-#### Protecting your mapped apps with the WAF
-
-The WAF page also lists your mappings under **Protected apps**, where you can
-**Bind** / **Unbind** the WAF per app. Binding switches that mapping from its L4
-`stream` proxy to an L7 **HTTP reverse proxy** that terminates TLS and runs the
-request through ModSecurity/CRS before forwarding to your backend.
-
-Only **HTTPS mappings are eligible** — a WAF has to read HTTP, so:
-- TLS-terminating TCP mappings → **eligible** (Bind available).
-- UDP or TLS-passthrough mappings → **not eligible** (nothing to inspect).
-
-A bound app renders to `/etc/nginx/conf.d/splitter-app-<domain>.conf` (an
-`http{}` server block); unbinding restores its `stream.d` block. Your access
-lists and the mapping's cert carry over. Expect to tune CRS false positives per
-app (in Detection) before enforcing.
+> [!IMPORTANT]
+> The UI binds `0.0.0.0:8088` and is **protected by login**, but it performs
+> privileged host actions — restrict it to a trusted network (or put it behind
+> an authenticated reverse proxy / SSH tunnel with `--host 127.0.0.1`), and use a
+> strong admin password.
 
 ---
 
-## Redeploy / upgrade
+## ✨ Features
 
-```bash
-cd ~/splitter
-git pull
-sudo ./setup.sh                  # picks up any new system/kernel config (idempotent)
-sudo systemctl restart splitter  # IMPORTANT: load the new code
-```
+<table>
+<tr>
+<td width="50%" valign="top">
 
-Mappings and users live in **`/var/lib/splitter`**, so they survive a redeploy.
-The `/etc/nginx/stream.d/*.conf` files also persist. If you ever need to rebuild
-the host's interfaces/configs from the stored mappings, use **Re-apply all** in
-the UI (or `POST /api/reapply`).
+**🔐 Auth & roles**
+First run creates an **admin**; after that the whole UI requires login. Admins
+add **admin**/**creator** users, delete, import, re‑apply, and manage everything.
+
+**🧭 Dynamic interface detection**
+Discovers physical & VLAN interfaces (`ip -j addr`) and offers them in a dropdown.
+
+**🧩 Managed sub‑interfaces**
+Global toggle (off by default = bind the interface's existing IP). On = create
+**static macvlan/ipvlan sub‑interfaces** with their own MAC + IP, optionally inside
+an **802.1Q VLAN**, as managed resources a mapping simply selects.
+
+**⚖️ Load‑balancing pool**
+One or many `IP:PORT` rendered as `upstream {}`, with a selectable method:
+round‑robin, `least_conn`, `hash $remote_addr` (+`consistent`), `random`, or
+`random two least_conn` — auto‑revealed once a mapping has 2+ backends.
+
+**🔁 Active‑passive failover**
+N‑level **priority tiers** with active TCP health probing: traffic stays on the
+lowest‑priority tier that has a healthy backend, and fails back (with flap
+protection) when a better tier recovers.
+
+</td>
+<td width="50%" valign="top">
+
+**🔒 Automated SSL**
+Upload your own cert/key, generate a SAN self‑signed cert with `openssl`, or
+**reuse** an existing managed cert across mappings.
+
+**🚦 Rate limiting (L4)**
+Per‑mapping caps on **simultaneous connections per client IP** (`limit_conn`) and
+**per‑connection bandwidth** (`proxy_download_rate` / `proxy_upload_rate`).
+
+**🛑 Access lists (allow/deny)**
+Named IP/CIDR allow lists rendered to Nginx snippets; a built‑in **tas‑ix
+(Uzbekistan)** list auto‑refreshes from the MRLG looking glass.
+
+**🧱 Per‑interface firewall**
+Security‑group‑style `iptables` rules per interface (protocol, port range, source,
+action, priority) + default policies. Off by default, with **lockout protection**
+and a one‑click **Panic** teardown.
+
+**🛡️ WAF (ModSecurity + OWASP CRS)**
+Front the UI — or any HTTPS mapping — with ModSecurity/CRS. Install from the
+dashboard; Off / Detection / Enforce modes.
+
+**💾 Backup / restore**
+Export/import mappings, plus **full‑system snapshots** (everything incl. SSL keys)
+as timestamped zips with scheduled auto‑backups and one‑click rollback.
+
+</td>
+</tr>
+</table>
+
+Plus a **network Tools page** (ping, port test, DNS lookup, traceroute, tcpdump,
+WHOIS) and a **live routing map** (n8n‑style canvas of every mapping with
+red/✗ flagging when a backend is down).
 
 ---
 
-## Using it
+## 🏗️ Architecture
 
-1. **Log in** (create the admin on first run).
-2. **Domain** — `site4.example.com`
-3. **Bind target** —
-   - with the sub-interface toggle **off** (default): pick a **physical
-     interface** and the mapping binds its existing IP;
-   - with it **on**: pick a **sub-interface** you created on the Interfaces page.
-4. **Backend Pool** — one or more `host:port` (host and port in separate fields;
-   **+ Add Backend**). Adding a second backend auto-opens the **Load balancing**
-   method options. An optional **Rate limit** switch adds per-IP connection and
-   bandwidth caps.
-5. **SSL** — None / Upload / Auto Self-Signed / Use Existing
-6. **Access list** — *Use global default*, *None — allow all*, or a specific
-   list (manage them on the **Access Lists** page)
-7. **Preview** the generated config, or **Save / Apply**
+Each domain can get its **own sub‑interface (unique IP)** on the host; Nginx
+`stream` listens on that IP and load‑balances across the domain's backend pool.
 
-To provision a dedicated IP, first enable sub-interfaces on the **Interfaces**
-page and create a static macvlan sub-interface (parent interface, optional VLAN,
-optional MAC, bind IP) — then select it when adding a mapping.
+<p align="center">
+  <img src="docs/architecture.png" alt="Splitter architecture" width="960">
+</p>
 
-Each apply shows a step-by-step log; the table lists every mapping with an
-**Edit** button and (for admins) a **Delete** button (which tears the
-interface/VLAN/cert back down and reloads). The header has **Export**,
-**Import**, and **Re-apply all** (admins), plus logout and change-password.
+**Provisioning pipeline** (matches the manual commands you'd otherwise run):
+
+```bash
+ip link add link eth0 name eth0.50 type vlan id 50          # if a VLAN ID is given
+ip link add link eth0.50 name mv-site4-0 type macvlan mode bridge   # (ipvlan on VMware)
+ip addr add 192.168.50.15/24 dev mv-site4-0                 # or: dhclient mv-site4-0
+sysctl -w net.ipv4.ip_nonlocal_bind=1                       # bind not-yet-up IPs
+nginx -t && nginx -s reload                                 # stop+start if reload won't bind
+```
 
 Generated config:
 
 ```nginx
-# Automatically generated Stream Proxy Cluster
 upstream upstream_924cb235c2 {
+    least_conn;
     server 192.168.50.10:443;
     server 192.168.50.11:443;
 }
-
 server {
     listen 192.168.50.15:443;
     include /etc/nginx/acl.d/_default.conf;   # only when an access list is selected
@@ -277,195 +218,163 @@ server {
 }
 ```
 
-The provisioning pipeline (matches the manual commands you'd run):
+---
+
+## 🐳 Docker
+
+The container runs in the **host network namespace** with the kernel privileges
+Splitter needs to create real macvlan/VLAN interfaces, bind their IPs in Nginx,
+and manage `iptables`. This is the only mode in which the tool works as designed —
+Docker here is a **packaging convenience**, not an isolation boundary.
+
 ```bash
-ip link add link eth0 name eth0.50 type vlan id 50          # if VLAN ID given
-ip link add link eth0.50 name mv-site4-0 address 52:54:00:fa:bb:04 type macvlan mode bridge
-ip link set mv-site4-0 up
-ip addr add 192.168.50.15/24 dev mv-site4-0                 # or: dhclient mv-site4-0
-sysctl -w net.ipv4.ip_nonlocal_bind=1                       # bind not-yet-up IPs
-nginx -t && nginx -s reload                                 # stop+start if reload won't bind
+docker compose up -d --build      # build + start
+docker compose logs -f splitter   # watch startup / apply steps
+docker compose down               # stop (named volumes keep your data)
 ```
+
+**What the image bundles**
+
+- Nginx with the **stream** module, iproute2, iptables, dhcp client, openssl, and the diagnostic CLIs.
+- **ModSecurity + OWASP CRS** baked in, so the WAF page's **Install** works and survives redeploys (starts off).
+- An entrypoint that **auto‑detects the uplink NIC** from the default route, sets `ip_nonlocal_bind`, starts Nginx, and launches the app.
+
+**Compose highlights**
+
+```yaml
+services:
+  splitter:
+    build: .
+    network_mode: host          # real host IPs, reachable on the LAN
+    privileged: true            # ip / iptables / sysctl / tcpdump
+    environment:
+      SPLITTER_NIC: "auto"      # detected from the default route at startup
+    volumes:
+      - splitter-data:/var/lib/splitter        # mappings, users, keys (source of truth)
+      - splitter-streamd:/etc/nginx/stream.d    # generated stream configs
+      - splitter-ssl:/etc/nginx/ssl             # managed certificates
+      - splitter-acl:/etc/nginx/acl.d           # access-list snippets
+      - splitter-confd:/etc/nginx/conf.d        # WAF / L7 app blocks
+      - /etc/resolv.conf:/etc/resolv.conf       # edit the REAL host DNS
+      - /etc/hosts:/etc/hosts                   # edit the REAL host hosts file
+    restart: unless-stopped
+```
+
+> [!NOTE]
+> **Runs on a Linux host.** On Docker Desktop (macOS/Windows) there's no real LAN
+> NIC in the VM. Two host actions can't work from inside a container: the
+> **reboot‑host** button, and — because the macvlan caveats are physics, not
+> Docker — some networks (phone hotspots, certain switches) block extra MACs.
 
 ---
 
-## Access lists
+## 🧭 Using it
 
-The **Access Lists** page (admin) manages IP/CIDR allow lists. Each list is
-rendered to one nginx snippet — `/etc/nginx/acl.d/<name>.conf` — holding `allow`
-lines and a final `deny all;`. A mapping's stream `server {}` block then pulls in
-the one it selected with `include`, so only the listed networks may connect.
+1. **Log in** (create the admin on first run).
+2. **Domain** — `site4.example.com`
+3. **Bind target** — a **physical interface** (binds its existing IP), or a **sub‑interface** you created on the Interfaces page (dedicated IP).
+4. **Backend pool** — one or more `host:port`. A second backend auto‑opens the **load‑balancing** options; an optional **rate‑limit** switch adds per‑IP caps.
+5. **SSL** — None / Upload / Auto Self‑Signed / Use Existing.
+6. **Access list** — global default, none, or a specific list.
+7. **Preview** the generated config, or **Save / Apply**.
 
-- **Create your own** — give the list a name (becomes the `<name>.conf`
-  filename), paste CIDRs (one per line; `#` comments allowed), and optionally
-  keep **Allow loopback** on (appends `127.0.0.1/32` so the host can reach its
-  own mappings). RFC-1918 ranges are *not* added automatically — list them
-  explicitly if you need them.
-- **Auto-refresh** — set a **Source URL** and the list re-fetches its CIDRs in
-  the background on an interval (default 24 h). The built-in **`tasx`**
-  (tas-ix / Uzbekistan) list ships with this enabled, fetching from the MRLG
-  looking glass exactly like the original `iplist.sh` — no cron needed.
-- **Global default** — pick a default list; every mapping set to *Use global
-  default* follows it (via a managed `_default.conf` mirror), so changing the
-  default updates them all with **no re-apply**.
-- A mapping can instead choose a **specific** list, or **None — allow all**.
-- A list that's in use by a mapping can't be deleted; the built-in `tasx` can be
-  refreshed/edited but not deleted.
+Each apply shows a step‑by‑step log. The table lists every mapping with Edit /
+Delete; the header has Export, Import, and Re‑apply all.
 
-Generated snippet (`/etc/nginx/acl.d/tasx.conf`):
+<details>
+<summary>🛑 <strong>Access lists</strong> — allow/deny at Layer 4</summary>
+
+<br>
+
+The **Access Lists** page renders each list to `/etc/nginx/acl.d/<name>.conf`
+(`allow` lines + a final `deny all;`); a mapping's `server {}` pulls in the one it
+selected via `include`. Create your own (paste CIDRs), set a **Source URL** to
+auto‑refresh on an interval, or pick a **global default** that every "use default"
+mapping follows with no re‑apply. The built‑in **`tasx`** (tas‑ix / Uzbekistan)
+list ships with auto‑refresh enabled.
 
 ```nginx
-# Access list 'tasx' — tas-ix (Uzbekistan)
-# Managed by Splitter; do not edit by hand.
-# Source: http://mrlg.tas-ix.uz/index.php  (refreshed 2026-06-26T00:00:00Z)
+# /etc/nginx/acl.d/tasx.conf — managed by Splitter
 allow 82.148.0.0/21;
 allow 217.30.160.0/20;
-# … (hundreds more)
-
-# Loopback
+# … hundreds more
 allow 127.0.0.1/32;
-
 deny all;
 ```
+</details>
 
----
+<details>
+<summary>🧱 <strong>Firewall</strong> — per‑interface iptables (security‑group model)</summary>
 
-## Firewall
-
-The **Firewall** page (admin) manages **per-interface iptables rules** — every
-host interface (physical, VLAN, or a Splitter-managed sub-interface) gets its
-**own** ordered rule set, the same mental model as an AWS/Azure security group:
-rules are evaluated top to bottom, the first match wins, and whatever doesn't
-match falls through to that interface's configurable default policy.
+<br>
 
 <p align="center">
-  <img src="docs/firewall.png" alt="Splitter per-interface firewall model" width="960">
+  <img src="docs/firewall.png" alt="Splitter per-interface firewall model" width="820">
 </p>
 
-- **Two safety switches, both off by default** — a global master switch
-  (`firewall_enabled`) and each interface's own **enforce** toggle. Installing
-  or upgrading to this feature changes **no** host behaviour until an admin
-  turns both on for a given interface.
-- **Built-in lockout protection** — every managed chain always allows
-  `ESTABLISHED,RELATED` traffic and this dashboard's own port **first**, before
-  any rule is evaluated, so a bad rule can drop other services on that
-  interface but can't lock you out of Splitter itself.
-- **A rule** has a direction (inbound/outbound), protocol (`tcp`/`udp`/`icmp`/
-  `all`), an optional port or port range (blank = any), a source CIDR (blank =
-  anywhere), an action (`accept`/`drop`/`reject`), a priority (lower runs
-  first), and can be disabled without deleting it.
-- **Panic button** — instantly tears down every `SFW-IN-*`/`SFW-OUT-*` chain and
-  jump rule on every interface and flips the master switch off, in one call.
-  Saved rules aren't deleted, so re-enabling re-applies exactly what was
-  configured before.
-- Implemented entirely with **iptables** — no nftables/ufw/firewalld dependency.
-  Each interface gets two custom chains, `SFW-IN-<iface>` and
-  `SFW-OUT-<iface>`, hooked into `INPUT`/`OUTPUT` with a single jump rule. A
-  chain is fully **flushed and rebuilt** from the stored rule set on every
-  apply, so it's always safe to re-run and never drifts from what's configured.
-  On boot the app **re-applies every enabled interface** automatically (unless
-  the master switch is off), the same self-healing pattern used for access
-  lists.
+Every interface gets its own ordered rule set (`SFW-IN-<iface>` / `SFW-OUT-<iface>`
+chains): protocol, port/range, source CIDR, accept/drop/reject, priority, plus a
+default policy. **Two safety switches, both off by default** (a global master and a
+per‑interface enforce toggle) so installing changes nothing until you opt in. Every
+managed chain always allows established connections and this dashboard's port
+**first**, and a one‑click **Panic** button tears every managed chain down instantly.
+</details>
 
-Example: an interface with **inbound default = Drop** and two accept rules
-(SSH from an office CIDR, public HTTPS) renders to:
+<details>
+<summary>🛡️ <strong>WAF</strong> — ModSecurity + OWASP CRS</summary>
 
-```bash
-iptables -N SFW-IN-eth0
-iptables -F SFW-IN-eth0
-iptables -A SFW-IN-eth0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -A SFW-IN-eth0 -p tcp --dport 8088 -j ACCEPT      # this dashboard, always
-iptables -A SFW-IN-eth0 -p tcp --dport 22 -s 203.0.113.0/24 -j ACCEPT
-iptables -A SFW-IN-eth0 -p tcp --dport 443 -j ACCEPT
-iptables -A SFW-IN-eth0 -j DROP                            # fallback = inbound_policy
-iptables -I INPUT 1 -i eth0 -j SFW-IN-eth0
-```
+<br>
 
-Outbound (`SFW-OUT-eth0`) works the same way and defaults to **Accept** (allow
-all outbound), matching the usual security-group convention.
+Front the UI with a self‑hosted WAF: Nginx terminates TLS on **8443**, filters every
+request through ModSecurity/CRS (SQLi, XSS, RCE, …) with per‑IP login rate limits,
+and proxies to the app. Enable it from the **WAF page** (admin): **Install / Repair**,
+then switch **Off / Detection / Enforce**. It starts in **DetectionOnly** so it can't
+lock you out.
+
+The WAF page also lists your mappings under **Protected apps** — **Bind** an HTTPS
+mapping to switch it from an L4 `stream` proxy to an **L7 HTTP reverse proxy** that
+terminates TLS and runs the request through ModSecurity before forwarding. (Only
+HTTPS/TLS‑terminating mappings are eligible; UDP and TLS‑passthrough are not.)
+</details>
 
 ---
 
-## Project layout
+## ⚙️ Configuration
 
-```
-splitter/
-├── backend/                  # Python backend
-│   ├── app.py                #   Flask app + REST API + auth
-│   ├── auth.py               #   User accounts (JSON), roles, password hashing
-│   ├── config.py             #   Settings (env-overridable)
-│   ├── validators.py         #   Domain / IP / MAC / VLAN validation
-│   ├── storage.py            #   Atomic JSON persistence (mappings, sub-ifaces, settings…)
-│   ├── net_detect.py         #   Host interface / VLAN discovery
-│   ├── net_settings.py       #   Host DNS (/etc/resolv.conf) + /etc/hosts read/write
-│   ├── nginx_manager.py      #   The only module that touches the OS
-│   ├── metrics.py            #   Host + per-interface resource metrics
-│   ├── health.py             #   Backend reachability probes
-│   ├── activity.py           #   Audit / activity log
-│   ├── backup.py             #   Full-system backup/restore + scheduler
-│   ├── access.py             #   Access lists: tas-ix fetch/parse + refresh scheduler
-│   ├── failover.py           #   Active-passive backend priority failover orchestration
-│   ├── firewall.py           #   Per-interface iptables chains (Firewall page)
-│   └── requirements.txt
-├── frontend/                 # Single-page UI
-│   ├── templates/index.html  #   Tailwind dashboard
-│   ├── templates/auth.html   #   Login / first-run setup page
-│   └── static/app.js
-├── deploy/                   # Reference unit/sudoers/nginx snippet
-│   ├── splitter.service
-│   ├── splitter.sudoers      #   least-privilege sudo (non-root option)
-│   └── nginx-stream-include.conf
-├── setup.sh                  # one-shot installer (deps + nginx + kernel + venv + service)
-└── run.sh                    # venv bootstrap + foreground launch
-```
+Everything is env‑overridable, so the same code runs in simulation on a laptop and
+live on the host.
 
-State on the host:
+<details>
+<summary>Environment variables</summary>
 
-```
-/var/lib/splitter/mappings.json     # the mappings (survives redeploys)
-/var/lib/splitter/users.json        # accounts (hashed passwords)
-/var/lib/splitter/owned_vlans.json  # VLANs the tool created (for safe teardown)
-/var/lib/splitter/subinterfaces.json # managed macvlan sub-interfaces
-/var/lib/splitter/settings.json     # tool-wide settings (e.g. subinterface_enabled, firewall_enabled)
-/var/lib/splitter/firewall_rules.json      # per-interface iptables rules (Firewall page)
-/var/lib/splitter/firewall_interfaces.json # per-interface enforce toggle + default policies
-/var/lib/splitter/backups/*.zip     # full-system backup snapshots
-/etc/nginx/stream.d/<domain>.conf   # generated stream configs
-/etc/nginx/ssl/<domain>.{crt,key}   # managed certificates
-```
-
----
-
-## Configuration (environment variables)
+<br>
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SPLITTER_NIC` | auto / `eth0` | Default parent interface. |
-| `SPLITTER_BIND_PREFIX` | `24` | CIDR prefix for static IPs (e.g. `29` for a /29 block). |
-| `SPLITTER_DATA_DIR` | `/var/lib/splitter` (root) | Where `mappings.json` / `users.json` live. **Keep it outside the repo** so redeploys don't wipe data. |
+| `SPLITTER_NIC` | auto / `eth0` | Default parent interface (`auto` in Docker). |
+| `SPLITTER_BIND_PREFIX` | `24` | CIDR prefix for static IPs. |
+| `SPLITTER_DATA_DIR` | `/var/lib/splitter` | Where `mappings.json` / `users.json` live. |
 | `SPLITTER_STREAM_DIR` | `/etc/nginx/stream.d` | Where `.conf` files are written. |
 | `SPLITTER_SSL_DIR` | `/etc/nginx/ssl` | Where cert/key are saved. |
-| `SPLITTER_RESOLV_CONF` | `/etc/resolv.conf` | DNS file the Interfaces page reads/writes. |
-| `SPLITTER_HOSTS_FILE` | `/etc/hosts` | Hosts file the Interfaces page reads/writes. |
-| `SPLITTER_DEFAULT_BACKEND` | `192.168.10.10:443` | Pre-filled backend. |
-| `SPLITTER_DHCP_ACQUIRE_CMD` | `timeout 25 dhclient -1 {iface}` | DHCP client command (`{iface}` substituted). Use `dhcpcd -1 -t 20 {iface}` etc. |
-| `SPLITTER_DHCP_RELEASE_CMD` | `dhclient -r {iface}` | DHCP release on delete. |
+| `SPLITTER_RESOLV_CONF` | `/etc/resolv.conf` | DNS file the Interfaces page edits. |
+| `SPLITTER_HOSTS_FILE` | `/etc/hosts` | Hosts file the Interfaces page edits. |
+| `SPLITTER_DHCP_ACQUIRE_CMD` | `timeout 25 dhclient -1 {iface}` | DHCP client command. |
 | `SPLITTER_SUDO` | `""` if root else `sudo` | Prefix for privileged commands. |
-| `SPLITTER_RELOAD_CMD` | `""` → `nginx -s reload` | How nginx is reloaded. Set to `systemctl reload nginx` to use systemd instead. |
-| `SPLITTER_RESTART_CMD` | `""` → `nginx -s stop` + start | Restart used when a reload doesn't bind a new IP. Set to `systemctl restart nginx` to use systemd. |
-| `SPLITTER_IP_NONLOCAL_BIND` | `1` (on) | Set `net.ipv4.ip_nonlocal_bind` at apply time so nginx can bind an address that isn't fully up yet. |
+| `SPLITTER_RELOAD_CMD` / `SPLITTER_RESTART_CMD` | nginx binary | How Nginx is reloaded/restarted. |
+| `SPLITTER_IP_NONLOCAL_BIND` | `1` | Bind an address that isn't fully up yet. |
 | `SPLITTER_HOST` / `SPLITTER_PORT` | `0.0.0.0` / `8088` | UI bind. |
-| `SPLITTER_SIMULATE` | auto | `1` = dry-run (no system commands); auto-on when not on a Linux nginx host. |
+| `SPLITTER_SIMULATE` | auto | `1` = dry‑run; auto‑on when not on a Linux nginx host. |
 
----
+</details>
 
-## Running as a non-root user (optional)
+<details>
+<summary>Running as a non‑root user</summary>
 
-The default (and the systemd unit) runs as **root**, where no sudo is needed.
-To run unprivileged instead, install `deploy/splitter.sudoers` (it grants only
-the exact commands the tool needs — `ip addr`/`ip link`, `nginx -t`/`-s reload`/
-`-s stop`/start, `sysctl ip_nonlocal_bind`, `dhclient`, and the scoped
-`iptables -N`/`-F`/`-X`/`-A`/`-I`/`-D`/`-C` used by the Firewall page):
+<br>
+
+The default runs as **root** (no sudo needed). To run unprivileged, install the
+least‑privilege sudoers snippet (it grants only the exact `ip`, `nginx`, `sysctl`,
+`dhclient`, and scoped `iptables` commands the tool needs):
 
 ```bash
 sudo cp deploy/splitter.sudoers /etc/sudoers.d/splitter
@@ -474,100 +383,106 @@ sudo visudo -cf /etc/sudoers.d/splitter        # validate
 ```
 
 then set `User=splitter` in the unit and `SPLITTER_SUDO=sudo`.
+</details>
 
 ---
 
-## REST API
+## 🔌 REST API
 
 All `/api/*` routes require an authenticated session except the auth/setup ones.
+Each provisioning response includes a `steps[]` array so the UI shows exactly what
+happened.
+
+<details>
+<summary>Full endpoint reference</summary>
+
+<br>
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| `GET` | `/login` | — | Login / first-run setup page. |
-| `GET` | `/api/auth/status` | — | Whether setup is needed / who is logged in. |
 | `POST` | `/api/setup` | — | Create the initial admin (first run only). |
-| `POST` | `/api/login` / `/api/logout` | — | Start / end a session. |
+| `POST` | `/api/login` · `/api/logout` | — | Start / end a session. |
 | `GET` | `/api/config` | any | Effective config + mode. |
-| `GET` | `/api/interfaces` | any | Detected host interfaces (physical + VLAN). |
-| `GET` | `/api/interfaces/traffic` | admin, creator | Live upload/download per interface (sub-interfaces nested). |
-| `GET` | `/api/subinterfaces` | admin, creator | List managed sub-interfaces (with `in_use`). |
-| `POST` | `/api/subinterfaces` | admin | Create + provision a static sub-interface. |
-| `POST` | `/api/subinterfaces/<name>` | admin | Edit/re-provision (blocked while in use). |
-| `DELETE` | `/api/subinterfaces/<name>` | admin | Tear down + remove (blocked while in use). |
-| `GET` / `POST` | `/api/settings` | any / admin | Read / change tool-wide settings (`subinterface_enabled`, `default_access_list`). |
-| `GET` / `POST` | `/api/network/dns` | admin | View / edit `/etc/resolv.conf` nameservers. |
-| `GET` / `POST` | `/api/network/hosts` | admin | View / edit `/etc/hosts`. |
-| `POST` | `/api/tools/ping` / `port` / `dns` / `traceroute` / `whois` | admin, creator | Network diagnostics run on the host. |
-| `POST` | `/api/tools/tcpdump` | admin | Short packet capture on an interface. |
-| `GET` | `/api/random-mac` | any | A random locally-administered MAC. |
-| `GET` | `/api/mappings` | any | List mappings. |
-| `POST` | `/api/mappings` | admin, creator | Create/update + provision (multipart form). |
-| `DELETE` | `/api/mappings/<domain>` | admin | Deprovision + remove. |
+| `GET` | `/api/interfaces` · `/interfaces/traffic` | any | Detected interfaces + live per‑iface traffic. |
+| `GET`·`POST`·`DELETE` | `/api/subinterfaces[/<name>]` | admin | List / create / edit / delete sub‑interfaces. |
+| `GET`·`POST` | `/api/settings` | any / admin | Read / change tool‑wide settings. |
+| `GET`·`POST` | `/api/network/dns` · `/network/hosts` | admin | View / edit host DNS + `/etc/hosts`. |
+| `POST` | `/api/tools/{ping,port,dns,traceroute,whois,tcpdump,routes}` | admin/creator | Network diagnostics. |
+| `GET`·`POST`·`DELETE` | `/api/mappings[/<domain>]` | varies | List / create+provision / deprovision. |
 | `POST` | `/api/preview` | any | Render the conf without applying. |
-| `GET` | `/api/access-lists` | any | List access lists + the global default (for the page and the mapping dropdown). |
-| `GET` | `/api/access-lists/<name>` | admin | Full record incl. CIDR entries (edit form). |
-| `POST` | `/api/access-lists` | admin | Create / edit a list; writes its `<name>.conf` + reloads. |
-| `POST` | `/api/access-lists/<name>/refresh` | admin | Re-fetch an auto-refreshing list now. |
-| `DELETE` | `/api/access-lists/<name>` | admin | Remove a list (blocked if in use / built-in). |
-| `GET` | `/api/firewall/overview` | admin, creator | Every interface + its firewall settings/rule count, plus the master switch. |
-| `POST` | `/api/firewall/settings` | admin | Flip the global master switch (applies/tears down every enabled interface). |
-| `POST` | `/api/firewall/interfaces/<name>` | admin | Set an interface's enforce toggle + inbound/outbound default policy. |
-| `GET` | `/api/firewall/rules` | admin, creator | List rules (optionally `?interface=`). |
-| `POST` | `/api/firewall/rules` | admin | Create a rule (direction, protocol, port range, source, action, priority). |
-| `POST` | `/api/firewall/rules/<id>` | admin | Edit a rule. |
-| `DELETE` | `/api/firewall/rules/<id>` | admin | Delete a rule. |
-| `POST` | `/api/firewall/panic` | admin | Tear down every managed chain and disable the master switch. |
-| `GET` | `/api/backup` | any | Download all mappings as JSON (legacy, mappings-only). |
-| `POST` | `/api/import` | admin | Restore mappings from a JSON backup. |
-| `GET` / `POST` | `/api/backups` | admin | List / take a full-system snapshot (zip of all data + SSL). |
-| `GET` | `/api/backups/download` | admin | Download a stored backup (`?name=`) or a fresh one (`?now=1`). |
-| `POST` | `/api/backups/restore` | admin | Restore from a stored backup (`name`) or an uploaded `file`. |
-| `DELETE` | `/api/backups/<name>` | admin | Delete a stored backup. |
-| `POST` | `/api/backups/schedule` | admin | Configure automatic backups (enable / interval / retention). |
-| `POST` | `/api/reapply` | admin | Re-provision every stored mapping onto the host. |
-| `GET` / `POST` | `/api/users` | admin | List / create users. |
-| `DELETE` | `/api/users/<username>` | admin | Remove a user. |
+| `GET`·`POST`·`DELETE` | `/api/access-lists[/<name>]` | any / admin | Manage access lists (+ `/refresh`). |
+| `GET`·`POST`·`DELETE` | `/api/firewall/*` | admin | Overview, settings, per‑iface, rules, panic. |
+| `GET`·`POST`·`DELETE` | `/api/backups[/*]` | admin | Snapshots, download, restore, schedule. |
+| `POST` | `/api/reapply` | admin | Re‑provision every stored mapping. |
+| `GET`·`POST`·`DELETE` | `/api/users[/<username>]` | admin | List / create / remove users. |
 | `POST` | `/api/account/password` | any | Change your own password. |
+| `GET`·`POST` | `/api/waf/{status,install,mode,settings,bind,unbind,apps}` | admin | Manage the WAF. |
 
-Each provisioning response includes a `steps[]` array (`name, ok, detail`) so
-the UI shows exactly what happened; failures are also logged to `journalctl`.
+</details>
 
 ---
 
-## Notes & safety
+## 🗂️ Project layout
 
-- **Login required** — passwords are stored only as salted PBKDF2 hashes; the
-  last admin can't be deleted; sessions are cookie-only (expire on browser close).
+<details>
+<summary>Repository structure &amp; on‑host state</summary>
+
+<br>
+
+```
+splitter/
+├── backend/                  # Python backend (Flask + REST API)
+│   ├── app.py                #   routes + auth
+│   ├── nginx_manager.py      #   the only module that touches the OS
+│   ├── failover.py           #   active-passive priority failover
+│   ├── firewall.py           #   per-interface iptables chains
+│   ├── access.py             #   access lists + tas-ix refresh
+│   ├── waf.py                #   ModSecurity/CRS management
+│   ├── storage.py            #   atomic JSON persistence
+│   └── … (auth, config, validators, metrics, health, backup, net_*)
+├── frontend/                 # Tailwind single-page UI
+├── deploy/                   # systemd unit · least-privilege sudoers · nginx snippet
+├── Dockerfile · docker-compose.yml · docker/entrypoint.sh
+├── setup.sh                  # one-shot native installer
+└── run.sh
+```
+
+On‑host state (survives redeploys):
+
+```
+/var/lib/splitter/*.json           # mappings, users, sub-interfaces, settings, firewall…
+/var/lib/splitter/backups/*.zip     # full-system snapshots
+/etc/nginx/stream.d/<domain>.conf   # generated stream configs
+/etc/nginx/ssl/<domain>.{crt,key}   # managed certificates
+```
+</details>
+
+---
+
+## 🔒 Notes &amp; safety
+
+- **Login required** — passwords stored only as salted PBKDF2 hashes; the last admin can't be deleted; sessions are cookie‑only.
 - **No shell injection** — every command runs as an argv list, never a shell string.
-- **Validated input** — domains (RFC-1123), IPs (`ipaddress`), `host:port`
-  backends, MACs (unicast) and VLAN IDs (1–4094); domains are path-sanitised.
-- **Fail-safe reloads** — `nginx -t` runs before every reload; a bad block is
-  rolled back so the live proxy is never reloaded against a broken config.
+- **Validated input** — domains (RFC‑1123), IPs, `host:port` backends, MACs, VLAN IDs; domains are path‑sanitised.
+- **Fail‑safe reloads** — `nginx -t` before every reload; a bad block is rolled back so the live proxy is never reloaded against a broken config.
 - **Atomic writes** for the store; **0600** for private keys.
-- **Firewall lockout protection** — the per-interface iptables rules are off by
-  default (both a master switch and a per-interface toggle), every managed
-  chain always allows established connections and the dashboard's own port
-  first, and the **Panic** button instantly tears every managed chain down.
-- For externally-reachable IPs, the IP block must be routed to the host and
-  `SPLITTER_BIND_PREFIX` must match it. macvlan answers ARP with its own MAC, so
-  other hosts on the segment reach it — note some networks (e.g. phone hotspots)
-  block extra MAC addresses.
 
 ---
 
-## Troubleshooting
+## 🩹 Troubleshooting
 
-- **`bind() ... (99: Cannot assign requested address)`** — the bind IP wasn't
-  fully up when nginx (re)started. Ensure `ip_nonlocal_bind` is on:
-  `sysctl net.ipv4.ip_nonlocal_bind` should print `1` (re-run `setup.sh`, or
-  `sudo sysctl -p /etc/sysctl.d/99-splitter.conf`).
-- **A change "didn't take"** — after `git pull`, run `sudo systemctl restart
-  splitter` so the service loads the new code.
-- **An apply returns 500** — `journalctl -u splitter -f` logs the failing step
-  and its error; the UI's *Provisioning Steps* panel shows the same.
+<details>
+<summary>Common issues</summary>
+
+<br>
+
+- **`bind() … (99: Cannot assign requested address)`** — the bind IP wasn't fully up. Ensure `sysctl net.ipv4.ip_nonlocal_bind` prints `1`.
+- **A change "didn't take"** — after `git pull`, run `sudo systemctl restart splitter` (native) or `docker compose up -d --build` (Docker) to load new code.
+- **An apply returns 500** — `journalctl -u splitter -f` (or `docker compose logs -f`) logs the failing step; the UI's *Provisioning Steps* panel shows the same.
+</details>
 
 ---
 
-## License
+## 📄 License
 
 Released under the [MIT License](LICENSE) — © 2026 Splitter Contributors.
