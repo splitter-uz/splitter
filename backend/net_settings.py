@@ -57,8 +57,20 @@ def _write_text(label, path, text):
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(text)
-            os.replace(tmp, target)
-            os.chmod(target, 0o644)
+            try:
+                os.replace(tmp, target)
+            except OSError:
+                # `target` may be a bind-mounted file — e.g. /etc/resolv.conf or
+                # /etc/hosts inside a container, which Docker mounts over. You
+                # can't rename onto a mount point (fails with EBUSY), so fall
+                # back to an in-place rewrite, which writes through the mount to
+                # the underlying (host) file.
+                with open(target, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            try:
+                os.chmod(target, 0o644)
+            except OSError:
+                pass   # bind-mounted file may reject chmod; the content is written
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)

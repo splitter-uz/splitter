@@ -48,6 +48,12 @@ services:
       - splitter-ssl:/etc/nginx/ssl
       - splitter-acl:/etc/nginx/acl.d
       - splitter-confd:/etc/nginx/conf.d
+      # Host DNS + hosts files so the Interfaces page edits the REAL host files,
+      # not the container's throwaway copies. (These are bind mounts, so an
+      # atomic rename over them fails — net_settings falls back to in-place
+      # write.) Remove these two lines if you'd rather keep host DNS untouched.
+      - /etc/resolv.conf:/etc/resolv.conf
+      - /etc/hosts:/etc/hosts
 
     restart: unless-stopped
 
