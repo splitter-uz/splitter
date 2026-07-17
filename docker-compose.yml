@@ -1,0 +1,65 @@
+# Splitter — production compose.
+#
+# Runs in the HOST network namespace with the kernel privileges the tool needs
+# to create real macvlan/VLAN interfaces, bind their IPs in nginx, and manage
+# iptables. This is the ONLY mode in which Splitter works as designed: the
+# README is explicit that it must run on the host, not in an isolated container
+# namespace, so the interfaces and IPs are real and reachable.
+services:
+  splitter:
+    build: .
+    image: splitter:latest
+    container_name: splitter
+
+    # Share the host's network namespace: `ip link add … type macvlan`, the IPs
+    # it binds, and the iptables chains all land on the real host and LAN.
+    network_mode: host
+
+    # Full root-on-host privileges. This tool manipulates host interfaces,
+    # sysctls and iptables — it genuinely needs them, and mounting it into a
+    # container does NOT sandbox that. Honest default.
+    #
+    # Least-privilege alternative: comment `privileged: true` and use the
+    # cap_add block below instead — but then you MUST set the sysctl on the
+    # HOST yourself (`sudo sysctl -w net.ipv4.ip_nonlocal_bind=1`), because a
+    # non-privileged container can't write /proc/sys.
+    privileged: true
+    # cap_add:
+    #   - NET_ADMIN   # ip / iptables / interface management
+    #   - NET_RAW     # ping / tcpdump
+
+    environment:
+      SPLITTER_SIMULATE: "0"
+      # "auto" → the entrypoint detects the host uplink from the default route
+      # at startup. Pin a specific name (e.g. ens33) only if you have multiple
+      # uplinks and want a particular one.
+      SPLITTER_NIC: "auto"
+      SPLITTER_BIND_PREFIX: "24"
+      SPLITTER_PORT: "8088"
+      # Host reboot from the UI can't reboot the host from inside a container;
+      # point it at something harmless so the button fails cleanly.
+      SPLITTER_REBOOT_CMD: "true"
+
+    volumes:
+      # Source of truth — mappings, users, hashed passwords, secret key, backups.
+      - splitter-data:/var/lib/splitter
+      # Generated nginx artifacts (persist so a restart doesn't need Re-apply).
+      - splitter-streamd:/etc/nginx/stream.d
+      - splitter-ssl:/etc/nginx/ssl
+      - splitter-acl:/etc/nginx/acl.d
+      - splitter-confd:/etc/nginx/conf.d
+      # Host DNS + hosts files so the Interfaces page edits the REAL host files,
+      # not the container's throwaway copies. (These are bind mounts, so an
+      # atomic rename over them fails — net_settings falls back to in-place
+      # write.) Remove these two lines if you'd rather keep host DNS untouched.
+      - /etc/resolv.conf:/etc/resolv.conf
+      - /etc/hosts:/etc/hosts
+
+    restart: unless-stopped
+
+volumes:
+  splitter-data:
+  splitter-streamd:
+  splitter-ssl:
+  splitter-acl:
+  splitter-confd:

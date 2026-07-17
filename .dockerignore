@@ -1,0 +1,12 @@
+# Keep the build context small and reproducible.
+.git
+.gitignore
+.venv
+venv
+**/__pycache__
+**/*.pyc
+**/data
+*.log
+.claude
+.DS_Store
+docs
