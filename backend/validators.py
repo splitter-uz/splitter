@@ -214,6 +214,16 @@ def clean_backend_pool(items):
             entry["backup"] = True
         if it.get("down"):
             entry["down"] = True
+        # Docker-discovered backend: remember which container/port this server
+        # was resolved from so the reconciler can keep its IP current. The
+        # `server` field has already been resolved to a concrete IP:PORT by the
+        # caller (app._parse_lb); these are just provenance.
+        dc = (it.get("docker_container") or "").strip()
+        if dc:
+            entry["docker_container"] = dc
+            dp = clean_uint(it.get("docker_port"), "docker port", lo=1, hi=65535)
+            if dp is not None:
+                entry["docker_port"] = dp
         out.append(entry)
     if not out:
         raise ValidationError("At least one backend server is required.")

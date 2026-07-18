@@ -23,6 +23,8 @@ import activity
 import auth
 import backup
 import config
+import docker_detect
+import docker_reconcile
 import failover
 import firewall
 import health
@@ -73,6 +75,19 @@ def _parse_lb(form):
             raise ValidationError("Malformed backend pool data.")
     else:
         items = form.getlist("backends") or [form.get("backend")]
+    # Docker-discovered backends: an item may reference a container by name
+    # ({"docker_container": "web", "docker_port": 80, ...}) instead of a static
+    # address. Resolve it to the container's live IP:PORT now; the reconciler
+    # (docker_reconcile) keeps it current as containers restart.
+    for it in items:
+        if isinstance(it, dict) and it.get("docker_container") and not it.get("server"):
+            name = str(it["docker_container"]).strip()
+            resolved = docker_detect.resolve(name, it.get("docker_port"))
+            if not resolved:
+                raise ValidationError(
+                    f"Docker container {name!r} is not running or has no reachable "
+                    f"IP/port — start it, or pick another container.")
+            it["server"] = resolved
     backends = clean_backend_pool(items)
 
     method = (form.get("lb_method") or nm.DEFAULT_LB_METHOD).strip().lower()
@@ -415,6 +430,29 @@ def update_settings():
         steps.append(nm.reload_nginx())
     _audit("settings.update", detail=", ".join(f"{k}={v}" for k, v in patch.items()))
     return jsonify({"ok": True, "settings": settings, "steps": steps})
+
+
+# --------------------------------------------------------------------------
+# Docker container discovery — power the "Docker" page and container backends.
+# --------------------------------------------------------------------------
+@app.get("/api/docker/status")
+def docker_status():
+    """Whether the Docker socket is reachable + a running-container count."""
+    return jsonify({"ok": True, **docker_detect.status()})
+
+
+@app.get("/api/docker/containers")
+@require_role("admin", "creator")
+def docker_containers():
+    """Running containers (name, image, IPs, ports) for the Docker page picker."""
+    if not docker_detect.available():
+        return _err("Docker socket not available — mount /var/run/docker.sock "
+                    "into the Splitter container to enable container discovery.",
+                    code=503)
+    try:
+        return jsonify({"ok": True, "containers": docker_detect.list_containers()})
+    except Exception as exc:                        # noqa: BLE001
+        return _err(f"Could not query Docker: {exc}", code=502)
 
 
 # --------------------------------------------------------------------------
@@ -2151,6 +2189,7 @@ if __name__ == "__main__":
     access.sync_all()          # materialise acl.d snippets (self-healing on boot)
     access.start_scheduler()   # background re-fetch of auto-refreshing lists
     failover.start_scheduler() # active-passive priority failover orchestration
+    docker_reconcile.start_scheduler()  # keep docker-backed backends' IPs current
     firewall.sync_all()        # re-apply per-interface iptables rules (self-healing on boot)
     mode = "SIMULATION (no system commands executed)" if config.SIMULATE else "LIVE"
     print(f" * Splitter starting in {mode} mode")

@@ -30,7 +30,7 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["mappings", "form", "users", "activity", "monitoring", "livemap", "interfaces", "access", "tools", "ssl", "backup", "waf", "firewall"];
+const PAGES = ["mappings", "form", "users", "activity", "monitoring", "livemap", "interfaces", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
 function showPage(name) {
   if (!PAGES.includes(name)) name = "mappings";
   history.replaceState(null, "", "#" + name);
@@ -44,6 +44,7 @@ function showPage(name) {
   if (name === "ssl") loadSslCerts();
   if (name === "access") loadAccessLists();
   if (name === "firewall") loadFirewall();
+  if (name === "docker") loadDocker();
   // Poll host metrics + per-interface throughput only while Monitoring is open.
   if (name === "monitoring") startMonitoring();
   else stopMonitoring();
@@ -278,6 +279,146 @@ function splitHostPort(server) {
   const i = s.lastIndexOf(":");
   if (i === -1) return { host: s, port: "" };
   return { host: s.slice(0, i), port: s.slice(i + 1) };
+}
+
+// ==========================================================================
+// Docker page — discover containers and build a mapping (auto-reconciling
+// container backends). See docker_detect.py / docker_reconcile.py.
+// ==========================================================================
+let DOCKER_CONTAINERS = [];
+const DOCKER_SEL = new Set();     // selected container names -> load-balanced pool
+
+// Reveal the Docker nav item only when the daemon socket is reachable.
+async function refreshDockerNav() {
+  const nav = $("#nav-docker");
+  if (!nav) return;
+  try {
+    const j = await (await fetch("/api/docker/status")).json();
+    nav.classList.toggle("hidden", !j.available);
+    const c = $("#nav-docker-count");
+    if (c) c.textContent = j.count || 0;
+  } catch (_e) {
+    nav.classList.add("hidden");
+  }
+}
+
+async function loadDocker() {
+  const wrap = $("#docker-containers");
+  const unavail = $("#docker-unavailable");
+  const empty = $("#docker-empty");
+  DOCKER_SEL.clear();
+  syncDockerPoolBar();
+  // Populate the bind-target dropdown to match the current mode.
+  await populateDockerBind();
+  try {
+    const j = await (await fetch("/api/docker/containers")).json();
+    if (!j.ok) throw new Error(j.error || "Docker unavailable");
+    unavail.classList.add("hidden");
+    DOCKER_CONTAINERS = j.containers || [];
+    const c = $("#nav-docker-count"); if (c) c.textContent = DOCKER_CONTAINERS.length;
+    empty.classList.toggle("hidden", DOCKER_CONTAINERS.length > 0);
+    renderDockerCards();
+  } catch (e) {
+    DOCKER_CONTAINERS = [];
+    wrap.innerHTML = "";
+    empty.classList.add("hidden");
+    unavail.classList.remove("hidden");
+  }
+}
+
+async function populateDockerBind() {
+  const sel = $("#docker-bind");
+  if (!sel) return;
+  let opts = "";
+  try {
+    if (SETTINGS.subinterface_enabled) {
+      const j = await (await fetch("/api/subinterfaces")).json();
+      (j.subinterfaces || []).forEach((s) => {
+        opts += `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} · ${escapeHtml(s.bind_ip || "")}</option>`;
+      });
+    } else {
+      const j = await (await fetch("/api/interfaces")).json();
+      (j.interfaces || []).forEach((i) => {
+        const ip = (i.addresses && i.addresses[0] && i.addresses[0].ip) || "";
+        if (ip) opts += `<option value="${escapeHtml(i.name)}">${escapeHtml(i.name)} · ${escapeHtml(ip)}</option>`;
+      });
+    }
+  } catch (_e) { /* leave empty */ }
+  sel.innerHTML = opts || `<option value="">(no bind target found)</option>`;
+}
+
+function renderDockerCards() {
+  const wrap = $("#docker-containers");
+  wrap.innerHTML = DOCKER_CONTAINERS.map((c) => {
+    const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
+    const net = (c.ips && c.ips[0] && c.ips[0].network) || "";
+    const ports = (c.ports || []).map((p) =>
+      `<button type="button" data-port="${p}" class="docker-port text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-slate-600">${p}</button>`).join(" ") || '<span class="text-xs text-slate-400">none exposed</span>';
+    const running = c.state === "running";
+    const sel = DOCKER_SEL.has(c.name);
+    return `
+      <div class="card bg-white/80 rounded-2xl border ${sel ? "border-emerald-400 ring-1 ring-emerald-300" : "border-slate-200/70"} shadow-sm p-4">
+        <div class="flex items-start justify-between gap-2">
+          <label class="flex items-center gap-2 min-w-0">
+            <input type="checkbox" class="docker-check accent-emerald-600" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""} ${running ? "" : "disabled"}>
+            <span class="font-semibold text-slate-800 truncate">${escapeHtml(c.name)}</span>
+          </label>
+          <span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${running ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}">${escapeHtml(c.state || "?")}</span>
+        </div>
+        <div class="mt-2 text-xs text-slate-500 truncate" title="${escapeHtml(c.image || "")}">${escapeHtml(c.image || "")}</div>
+        <div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">IP</span> <span class="font-mono">${escapeHtml(ip)}</span> ${net ? `<span class="text-slate-400">· ${escapeHtml(net)}</span>` : ""}</div>
+        <div class="mt-1 text-xs text-slate-600 flex items-center gap-1 flex-wrap"><span class="text-slate-400">ports</span> ${ports}</div>
+      </div>`;
+  }).join("");
+  // Wire checkboxes + port chips.
+  $$("#docker-containers .docker-check").forEach((cb) => cb.addEventListener("change", () => {
+    if (cb.checked) DOCKER_SEL.add(cb.dataset.name); else DOCKER_SEL.delete(cb.dataset.name);
+    renderDockerCards();
+    syncDockerPoolBar();
+  }));
+  $$("#docker-containers .docker-port").forEach((b) => b.addEventListener("click", () => {
+    const f = $("#docker-create-form"); if (f) f.container_port.value = b.dataset.port;
+  }));
+}
+
+function syncDockerPoolBar() {
+  const bar = $("#docker-pool-bar");
+  if (bar) bar.classList.toggle("hidden", DOCKER_SEL.size === 0);
+  const n = $("#docker-pool-count"); if (n) n.textContent = DOCKER_SEL.size;
+}
+
+async function dockerCreateMapping(e) {
+  e.preventDefault();
+  if (DOCKER_SEL.size === 0) { toast("Select at least one container first.", false); return; }
+  const f = e.target;
+  const domain = f.domain.value.trim();
+  const bind = f.bind.value;
+  if (!domain) { toast("Enter a domain.", false); return; }
+  if (!bind) { toast("No bind target available.", false); return; }
+  const cport = (f.container_port.value || "").trim();
+  const backends = [...DOCKER_SEL].map((name) => {
+    const b = { docker_container: name };
+    if (cport) b.docker_port = Number(cport);
+    return b;
+  });
+  const fd = new FormData();
+  fd.append("domain", domain);
+  fd.append("listen_port", f.listen_port.value || "443");
+  fd.append("ssl_mode", "none");
+  fd.append("lb_method", "round_robin");
+  fd.append(SETTINGS.subinterface_enabled ? "subiface" : "interface", bind);
+  fd.append("backends_json", JSON.stringify(backends));
+  try {
+    const r = await fetch("/api/mappings", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { toast(j.error || "Create failed.", false); return; }
+    toast(`Mapping ${domain} created from ${backends.length} container(s).`);
+    DOCKER_SEL.clear();
+    await loadMappings();
+    showPage("mappings");
+  } catch (err) {
+    toast(String(err.message || err), false);
+  }
 }
 
 function addBackendRow(b) {
@@ -3790,6 +3931,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.target.value = "";   // allow re-importing the same file
   });
   $("#add-backend").addEventListener("click", () => addBackendRow());
+  // Docker page
+  const dcf = $("#docker-create-form"); if (dcf) dcf.addEventListener("submit", dockerCreateMapping);
+  const dr = $("#docker-refresh"); if (dr) dr.addEventListener("click", loadDocker);
+  refreshDockerNav();
   $("#protocol").addEventListener("change", onProtocolChange);
   $("#listen_port").addEventListener("input", onListenPortChange);
   $$('input[name="transport"]').forEach((r) => r.addEventListener("change", onTransportChange));
