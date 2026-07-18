@@ -133,6 +133,35 @@ def _parse_rate(form):
 def _truthy(v):
     return str(v or "").strip().lower() in ("1", "true", "yes", "on")
 
+
+def _unresolvable_backend_hosts(backends):
+    """Backend hostnames that DNS can't resolve. nginx resolves `server`
+    hostnames once at config load, so an unresolvable name makes `nginx -t`
+    fail with "host not found in upstream" and the whole mapping rolls back —
+    a confusing error for the user (typically a typo or a Docker service name
+    that only Docker's DNS knows). We catch it up front and explain. IP
+    literals never need DNS and always pass."""
+    import ipaddress
+    import socket
+    bad = []
+    for b in backends or []:
+        server = (b.get("server") if isinstance(b, dict) else b) or ""
+        host = server.rsplit(":", 1)[0].strip() if ":" in server else server
+        host = host.strip("[]")            # IPv6 literal brackets
+        if not host:
+            continue
+        try:
+            ipaddress.ip_address(host)     # IP literal — no resolution needed
+            continue
+        except ValueError:
+            pass
+        try:
+            socket.getaddrinfo(host, None)
+        except OSError:
+            if host not in bad:
+                bad.append(host)
+    return bad
+
 app = Flask(
     __name__,
     template_folder="../frontend/templates",
@@ -1536,6 +1565,17 @@ def create_mapping():
     }
     mapping.update(lb)   # backends, lb_method, hash_*, random_two, proxy_* timeouts
     mapping.update(rate)  # rate_limit, limit_conn, proxy_download_rate, proxy_upload_rate
+
+    # nginx resolves backend hostnames at config load; an unresolvable one makes
+    # `nginx -t` fail ("host not found in upstream") and rolls the mapping back.
+    # Catch it here with an actionable message instead of that cryptic failure.
+    bad_hosts = _unresolvable_backend_hosts(mapping.get("backends"))
+    if bad_hosts:
+        return _err(
+            "Backend host(s) can't be resolved: " + ", ".join(bad_hosts) + ". "
+            "Use an IP:port or a DNS name that resolves. If these are Docker "
+            "containers, add them from the Docker page — Splitter resolves the "
+            "container name to its live IP for you.")
 
     try:
         steps = nm.apply_mapping(mapping, cert_bytes, key_bytes)
