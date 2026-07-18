@@ -1541,7 +1541,7 @@ def create_mapping():
         "subiface": subiface,
         "subiface_index": idx,
         "subiface_kind": subiface_kind,
-        "upstream_name": nm.upstream_name(domain),
+        "upstream_name": nm.upstream_name(domain, listen_port),
         "has_cert": has_cert,
         "ssl_mode": ssl_mode,
         "cert_domain": cert_domain,
@@ -2012,7 +2012,7 @@ def preview_conf():
         "cert_domain": cert_domain, "proxy_ssl": _truthy(form.get("proxy_ssl")),
         "sni_guard": _truthy(form.get("sni_guard")),
         "access_list": (form.get("access_list") or "").strip(),
-        "upstream_name": nm.upstream_name(domain),
+        "upstream_name": nm.upstream_name(domain, listen_port),
     }
     mapping.update(lb)
     mapping.update(rate)

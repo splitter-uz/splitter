@@ -536,8 +536,14 @@ def remove_certificate(domain):
 # --------------------------------------------------------------------------
 # STEP B — Nginx stream config generation (upstream load balancing)
 # --------------------------------------------------------------------------
-def upstream_name(domain):
-    h = hashlib.sha1(domain.encode("utf-8")).hexdigest()[:10]
+def upstream_name(domain, port=None):
+    """Unique upstream identifier for a mapping. A domain may be mapped on
+    several ports (each its own conf file), so the name MUST include the port —
+    otherwise two same-domain mappings declare the same `upstream {}` and nginx
+    fails with "duplicate upstream". `port=None` keeps the legacy domain-only
+    name for any caller that doesn't have a port."""
+    key = f"{domain}:{port}" if port not in (None, "") else domain
+    h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return f"upstream_{h}"
 
 
@@ -622,7 +628,7 @@ def _apply_failover(mapping, backends):
 
 def render_conf(mapping):
     backends = _apply_failover(mapping, _normalize_backends(mapping))
-    name = mapping.get("upstream_name") or upstream_name(mapping["domain"])
+    name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT)
     port = mapping.get("listen_port") or config.LISTEN_PORT
     bind_ip = mapping.get("bind_ip") or "<provisioned-ip>"
     proxy_timeout = mapping.get("proxy_timeout") or config.PROXY_TIMEOUT
@@ -820,7 +826,7 @@ def _legacy_http_conf_path(domain):
 def render_http_conf(mapping):
     """Render the L7 HTTP reverse-proxy + ModSecurity server block."""
     backends = _apply_failover(mapping, _normalize_backends(mapping))
-    name = (mapping.get("upstream_name") or upstream_name(mapping["domain"])) + "_http"
+    name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT) + "_http"
     port = mapping.get("listen_port") or config.LISTEN_PORT
     bind_ip = mapping.get("bind_ip") or "<provisioned-ip>"
     cert_domain = mapping.get("cert_domain") or mapping["domain"]
