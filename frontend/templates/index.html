@@ -992,25 +992,27 @@
 
           <!-- Pool builder: appears once containers are selected -->
           <div id="docker-pool-bar" class="hidden sticky top-2 z-10 card bg-white/90 backdrop-blur rounded-2xl border border-emerald-200 shadow-sm p-4 mb-5">
-            <form id="docker-create-form" class="grid grid-cols-1 sm:grid-cols-5 gap-3 items-end">
-              <div class="sm:col-span-2">
-                <label class="text-[11px] font-medium text-slate-500">Domain</label>
-                <input name="domain" required placeholder="app.example.com" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+            <form id="docker-create-form" class="space-y-3">
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label class="text-[11px] font-medium text-slate-500">Domain</label>
+                  <input name="domain" required placeholder="app.example.com" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                </div>
+                <div>
+                  <label class="text-[11px] font-medium text-slate-500">Bind target</label>
+                  <select name="bind" id="docker-bind" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"></select>
+                </div>
+                <div>
+                  <label class="text-[11px] font-medium text-slate-500">Listen port</label>
+                  <input name="listen_port" type="number" min="1" max="65535" value="443" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                </div>
               </div>
               <div>
-                <label class="text-[11px] font-medium text-slate-500">Bind target</label>
-                <select name="bind" id="docker-bind" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"></select>
+                <div class="text-[11px] font-medium text-slate-500 mb-1">Backend pool — one line per selected container, set each port. Splitter stores the <b>container name</b> and keeps its IP current on restart.</div>
+                <div id="docker-pool-list" class="space-y-2"></div>
               </div>
-              <div>
-                <label class="text-[11px] font-medium text-slate-500">Listen port</label>
-                <input name="listen_port" type="number" min="1" max="65535" value="443" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
-              </div>
-              <div>
-                <label class="text-[11px] font-medium text-slate-500">Container port</label>
-                <input name="container_port" type="number" min="1" max="65535" placeholder="80" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
-              </div>
-              <div class="sm:col-span-5 flex items-center justify-between">
-                <p class="text-xs text-slate-500"><span id="docker-pool-count">0</span> container(s) selected — they'll form a load‑balanced pool.</p>
+              <div class="flex items-center justify-between">
+                <p class="text-xs text-slate-500"><span id="docker-pool-count">0</span> container(s) selected — load‑balanced pool.</p>
                 <button type="submit" class="btn-primary inline-flex items-center gap-2 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Create mapping</button>
               </div>
             </form>

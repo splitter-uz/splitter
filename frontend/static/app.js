@@ -287,6 +287,12 @@ function splitHostPort(server) {
 // ==========================================================================
 let DOCKER_CONTAINERS = [];
 const DOCKER_SEL = new Set();     // selected container names -> load-balanced pool
+const DOCKER_PORTS = {};          // container name -> chosen backend port (editable)
+
+function dockerFirstPort(name) {
+  const c = DOCKER_CONTAINERS.find((x) => x.name === name);
+  return (c && c.ports && c.ports[0]) || "";
+}
 
 // Reveal the Docker nav item only when the daemon socket is reachable.
 async function refreshDockerNav() {
@@ -307,6 +313,7 @@ async function loadDocker() {
   const unavail = $("#docker-unavailable");
   const empty = $("#docker-empty");
   DOCKER_SEL.clear();
+  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
   syncDockerPoolBar();
   // Populate the bind-target dropdown to match the current mode.
   await populateDockerBind();
@@ -357,7 +364,7 @@ function renderDockerCards() {
     const running = c.state === "running";
     const sel = DOCKER_SEL.has(c.name);
     return `
-      <div class="card bg-white/80 rounded-2xl border ${sel ? "border-emerald-400 ring-1 ring-emerald-300" : "border-slate-200/70"} shadow-sm p-4">
+      <div class="card bg-white/80 rounded-2xl border ${sel ? "border-emerald-400 ring-1 ring-emerald-300" : "border-slate-200/70"} shadow-sm p-4" data-cname="${escapeHtml(c.name)}">
         <div class="flex items-start justify-between gap-2">
           <label class="flex items-center gap-2 min-w-0">
             <input type="checkbox" class="docker-check accent-emerald-600" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""} ${running ? "" : "disabled"}>
@@ -370,14 +377,49 @@ function renderDockerCards() {
         <div class="mt-1 text-xs text-slate-600 flex items-center gap-1 flex-wrap"><span class="text-slate-400">ports</span> ${ports}</div>
       </div>`;
   }).join("");
-  // Wire checkboxes + port chips.
+  // Wire checkboxes: selecting seeds a default port from the container's first
+  // exposed port; a port chip sets that container's backend port.
   $$("#docker-containers .docker-check").forEach((cb) => cb.addEventListener("change", () => {
-    if (cb.checked) DOCKER_SEL.add(cb.dataset.name); else DOCKER_SEL.delete(cb.dataset.name);
+    const name = cb.dataset.name;
+    if (cb.checked) { DOCKER_SEL.add(name); if (!DOCKER_PORTS[name]) DOCKER_PORTS[name] = dockerFirstPort(name); }
+    else { DOCKER_SEL.delete(name); delete DOCKER_PORTS[name]; }
     renderDockerCards();
     syncDockerPoolBar();
   }));
   $$("#docker-containers .docker-port").forEach((b) => b.addEventListener("click", () => {
-    const f = $("#docker-create-form"); if (f) f.container_port.value = b.dataset.port;
+    const name = b.closest("[data-cname]").dataset.cname;
+    DOCKER_SEL.add(name);
+    DOCKER_PORTS[name] = b.dataset.port;
+    renderDockerCards();
+    syncDockerPoolBar();
+  }));
+}
+
+// One editable backend row per selected container (name + IP + its own port).
+function renderDockerPoolList() {
+  const list = $("#docker-pool-list");
+  if (!list) return;
+  const names = [...DOCKER_SEL];
+  if (names.length === 0) { list.innerHTML = '<div class="text-xs text-slate-400">Select containers below to add them as backends.</div>'; return; }
+  list.innerHTML = names.map((name) => {
+    const c = DOCKER_CONTAINERS.find((x) => x.name === name) || {};
+    const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
+    return `
+      <div class="be-docker-row flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2" data-name="${escapeHtml(name)}">
+        <span class="font-semibold text-sm text-slate-800 truncate flex-1">${escapeHtml(name)}</span>
+        <span class="text-xs text-slate-400 font-mono hidden sm:inline">${escapeHtml(ip)}</span>
+        <span class="text-slate-300">:</span>
+        <input type="number" min="1" max="65535" value="${escapeHtml(String(DOCKER_PORTS[name] || ""))}" placeholder="port"
+               class="be-docker-port w-24 rounded-lg border border-slate-200 px-2 py-1 text-sm" data-name="${escapeHtml(name)}">
+        <button type="button" class="be-docker-del text-slate-400 hover:text-red-500 text-lg leading-none px-1" data-name="${escapeHtml(name)}" title="Remove">&times;</button>
+      </div>`;
+  }).join("");
+  $$("#docker-pool-list .be-docker-port").forEach((inp) => inp.addEventListener("input", () => {
+    DOCKER_PORTS[inp.dataset.name] = inp.value.trim();
+  }));
+  $$("#docker-pool-list .be-docker-del").forEach((btn) => btn.addEventListener("click", () => {
+    DOCKER_SEL.delete(btn.dataset.name); delete DOCKER_PORTS[btn.dataset.name];
+    renderDockerCards(); syncDockerPoolBar();
   }));
 }
 
@@ -385,6 +427,7 @@ function syncDockerPoolBar() {
   const bar = $("#docker-pool-bar");
   if (bar) bar.classList.toggle("hidden", DOCKER_SEL.size === 0);
   const n = $("#docker-pool-count"); if (n) n.textContent = DOCKER_SEL.size;
+  renderDockerPoolList();
 }
 
 async function dockerCreateMapping(e) {
@@ -395,12 +438,12 @@ async function dockerCreateMapping(e) {
   const bind = f.bind.value;
   if (!domain) { toast("Enter a domain.", false); return; }
   if (!bind) { toast("No bind target available.", false); return; }
-  const cport = (f.container_port.value || "").trim();
-  const backends = [...DOCKER_SEL].map((name) => {
-    const b = { docker_container: name };
-    if (cport) b.docker_port = Number(cport);
-    return b;
-  });
+  const missing = [...DOCKER_SEL].filter((n) => !String(DOCKER_PORTS[n] || "").trim());
+  if (missing.length) { toast(`Set a port for: ${missing.join(", ")}`, false); return; }
+  const backends = [...DOCKER_SEL].map((name) => ({
+    docker_container: name,
+    docker_port: Number(DOCKER_PORTS[name]),
+  }));
   const fd = new FormData();
   fd.append("domain", domain);
   fd.append("listen_port", f.listen_port.value || "443");
