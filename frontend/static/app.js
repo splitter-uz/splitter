@@ -285,13 +285,17 @@ function splitHostPort(server) {
 // Docker page — discover containers and build a mapping (auto-reconciling
 // container backends). See docker_detect.py / docker_reconcile.py.
 // ==========================================================================
-let DOCKER_CONTAINERS = [];
-const DOCKER_SEL = new Set();     // selected container names -> load-balanced pool
-const DOCKER_PORTS = {};          // container name -> chosen backend port (editable)
+let DOCKER_CONTAINERS = [];       // containers (standalone) OR services (swarm)
+let DOCKER_SWARM = false;         // swarm-manager mode?
+const DOCKER_SEL = new Set();     // selected container/service names -> pool
+const DOCKER_PORTS = {};          // name -> chosen backend port (editable)
 
+// First usable port for a container (exposed port) or service (published port).
 function dockerFirstPort(name) {
   const c = DOCKER_CONTAINERS.find((x) => x.name === name);
-  return (c && c.ports && c.ports[0]) || "";
+  if (!c || !c.ports || !c.ports.length) return "";
+  const p = c.ports[0];
+  return (p && typeof p === "object") ? (p.published || "") : p;
 }
 
 // Reveal the Docker nav item only when the daemon socket is reachable.
@@ -318,10 +322,20 @@ async function loadDocker() {
   // Populate the bind-target dropdown to match the current mode.
   await populateDockerBind();
   try {
-    const j = await (await fetch("/api/docker/containers")).json();
-    if (!j.ok) throw new Error(j.error || "Docker unavailable");
+    const st = await (await fetch("/api/docker/status")).json();
+    if (!st.available) throw new Error("Docker unavailable");
+    DOCKER_SWARM = !!st.swarm;
+    // Swarm managers list SERVICES (by name, routing-mesh published port);
+    // standalone hosts list CONTAINERS.
+    const url = DOCKER_SWARM ? "/api/docker/services" : "/api/docker/containers";
+    const j = await (await fetch(url)).json();
+    if (!j.ok) throw new Error(j.error || "Docker query failed");
     unavail.classList.add("hidden");
-    DOCKER_CONTAINERS = j.containers || [];
+    DOCKER_CONTAINERS = DOCKER_SWARM ? (j.services || []) : (j.containers || []);
+    const hdr = $("#docker-mode-note");
+    if (hdr) hdr.textContent = DOCKER_SWARM
+      ? "Swarm manager — showing services (routing-mesh published port; the swarm load-balances replicas)."
+      : "Standalone Docker — showing running containers.";
     const c = $("#nav-docker-count"); if (c) c.textContent = DOCKER_CONTAINERS.length;
     empty.classList.toggle("hidden", DOCKER_CONTAINERS.length > 0);
     renderDockerCards();
@@ -357,24 +371,39 @@ async function populateDockerBind() {
 function renderDockerCards() {
   const wrap = $("#docker-containers");
   wrap.innerHTML = DOCKER_CONTAINERS.map((c) => {
-    const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
-    const net = (c.ips && c.ips[0] && c.ips[0].network) || "";
-    const ports = (c.ports || []).map((p) =>
-      `<button type="button" data-port="${p}" class="docker-port text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-slate-600">${p}</button>`).join(" ") || '<span class="text-xs text-slate-400">none exposed</span>';
-    const running = c.state === "running";
     const sel = DOCKER_SEL.has(c.name);
+    // Port chips: container exposed ports, or service published ports.
+    const portVals = DOCKER_SWARM
+      ? (c.ports || []).map((p) => p.published)
+      : (c.ports || []);
+    const chips = portVals.map((p) =>
+      `<button type="button" data-port="${p}" class="docker-port text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-slate-600">${p}</button>`).join(" ")
+      || `<span class="text-xs text-slate-400">${DOCKER_SWARM ? "no published port" : "none exposed"}</span>`;
+    // Selectable when: container running, or service has a reachable published port.
+    const ok = DOCKER_SWARM ? !!c.reachable : (c.state === "running");
+    let meta, badge;
+    if (DOCKER_SWARM) {
+      const rep = c.replicas === "global" ? "global" : (c.replicas != null ? c.replicas + " replica(s)" : "");
+      meta = `<div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">swarm service</span> ${escapeHtml(rep)}${c.reachable ? "" : ' · <span class="text-amber-600">unreachable (no published port)</span>'}</div>`;
+      badge = `<span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">service</span>`;
+    } else {
+      const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
+      const net = (c.ips && c.ips[0] && c.ips[0].network) || "";
+      meta = `<div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">IP</span> <span class="font-mono">${escapeHtml(ip)}</span> ${net ? `<span class="text-slate-400">· ${escapeHtml(net)}</span>` : ""}</div>`;
+      badge = `<span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${ok ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}">${escapeHtml(c.state || "?")}</span>`;
+    }
     return `
       <div class="card bg-white/80 rounded-2xl border ${sel ? "border-emerald-400 ring-1 ring-emerald-300" : "border-slate-200/70"} shadow-sm p-4" data-cname="${escapeHtml(c.name)}">
         <div class="flex items-start justify-between gap-2">
           <label class="flex items-center gap-2 min-w-0">
-            <input type="checkbox" class="docker-check accent-emerald-600" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""} ${running ? "" : "disabled"}>
+            <input type="checkbox" class="docker-check accent-emerald-600" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""} ${ok ? "" : "disabled"}>
             <span class="font-semibold text-slate-800 truncate">${escapeHtml(c.name)}</span>
           </label>
-          <span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${running ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}">${escapeHtml(c.state || "?")}</span>
+          ${badge}
         </div>
         <div class="mt-2 text-xs text-slate-500 truncate" title="${escapeHtml(c.image || "")}">${escapeHtml(c.image || "")}</div>
-        <div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">IP</span> <span class="font-mono">${escapeHtml(ip)}</span> ${net ? `<span class="text-slate-400">· ${escapeHtml(net)}</span>` : ""}</div>
-        <div class="mt-1 text-xs text-slate-600 flex items-center gap-1 flex-wrap"><span class="text-slate-400">ports</span> ${ports}</div>
+        ${meta}
+        <div class="mt-1 text-xs text-slate-600 flex items-center gap-1 flex-wrap"><span class="text-slate-400">ports</span> ${chips}</div>
       </div>`;
   }).join("");
   // Wire checkboxes: selecting seeds a default port from the container's first

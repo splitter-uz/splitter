@@ -484,6 +484,21 @@ def docker_containers():
         return _err(f"Could not query Docker: {exc}", code=502)
 
 
+@app.get("/api/docker/services")
+@require_role("admin", "creator")
+def docker_services():
+    """Swarm services (name, replicas, published ports) for the Docker page when
+    this node is a swarm manager."""
+    if not docker_detect.available():
+        return _err("Docker socket not available.", code=503)
+    if not docker_detect.swarm_active():
+        return _err("Not a Swarm manager node.", code=409)
+    try:
+        return jsonify({"ok": True, "services": docker_detect.list_services()})
+    except Exception as exc:                        # noqa: BLE001
+        return _err(f"Could not query Swarm services: {exc}", code=502)
+
+
 # --------------------------------------------------------------------------
 # WAF (ModSecurity + OWASP CRS) — status + control (admin only)
 # --------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import http.client
 import json
 import os
 import socket
+import time
 
 import config
 
@@ -69,6 +70,74 @@ def available():
         return False
 
 
+# --------------------------------------------------------------------------
+# Swarm detection + services
+# --------------------------------------------------------------------------
+_swarm_cache = {"t": 0.0, "val": None}
+
+
+def swarm_active():
+    """True if this node is a Swarm MANAGER (can list services). Cached 30s —
+    swarm state changes rarely and the reconciler calls resolve() often."""
+    now = time.time()
+    if _swarm_cache["val"] is not None and now - _swarm_cache["t"] < 30:
+        return _swarm_cache["val"]
+    val = False
+    try:
+        info = _api_get("/info")
+        sw = info.get("Swarm") or {}
+        val = sw.get("LocalNodeState") == "active" and bool(sw.get("ControlAvailable"))
+    except Exception:
+        val = False
+    _swarm_cache.update(t=now, val=val)
+    return val
+
+
+def list_services():
+    """Swarm services as UI-friendly dicts:
+        {id, name, image, mode, replicas, ports:[{published,target,type}]}
+    Only services with a PUBLISHED port are reachable from a host-networked
+    Splitter (routing mesh on 127.0.0.1); the rest are marked unreachable."""
+    raw = _api_get("/services")
+    out = []
+    for s in raw:
+        spec = s.get("Spec") or {}
+        name = spec.get("Name") or (s.get("ID") or "")[:12]
+        image = (((spec.get("TaskTemplate") or {}).get("ContainerSpec") or {})
+                 .get("Image") or "").split("@")[0]
+        mode = spec.get("Mode") or {}
+        if "Replicated" in mode:
+            replicas = (mode.get("Replicated") or {}).get("Replicas")
+        elif "Global" in mode:
+            replicas = "global"
+        else:
+            replicas = None
+        ports = []
+        for p in ((s.get("Endpoint") or {}).get("Ports") or []):
+            if p.get("PublishedPort"):
+                ports.append({"published": p["PublishedPort"],
+                              "target": p.get("TargetPort"),
+                              "type": p.get("Protocol", "tcp")})
+        out.append({
+            "id": (s.get("ID") or "")[:12],
+            "name": name,
+            "image": image,
+            "mode": "global" if replicas == "global" else "replicated",
+            "replicas": replicas,
+            "ports": ports,
+            "reachable": bool(ports),   # needs a published port (routing mesh)
+        })
+    out.sort(key=lambda x: x["name"])
+    return out
+
+
+def _find_service(name):
+    for s in list_services():
+        if s["name"] == name or s["id"] == name or s["id"].startswith(name):
+            return s
+    return None
+
+
 def _container_ips(net_settings):
     """[(network, ip)] for a container's attached networks, skipping host/none."""
     out = []
@@ -119,30 +188,41 @@ def _pick_ip(container):
 
 
 def resolve(name, port=None):
-    """Translate a container name/id (+ optional container-side port) into a
-    concrete `IP:PORT` backend, or None if it can't be resolved right now
-    (container gone, no IP, or no port to infer)."""
+    """Translate a container OR swarm-service name (+ optional port) into a
+    concrete `IP:PORT` backend, or None if it can't be resolved right now.
+
+    - Standalone container -> its bridge IP : container port.
+    - Swarm service        -> 127.0.0.1 : published port (the routing mesh
+      exposes the service on every node's loopback and load-balances replicas).
+    """
     if not name:
         return None
     target = name.lstrip("/")
+    # 1) standalone container by name/id
     for c in list_containers():
         if c["name"] == target or c["id"] == target or c["id"].startswith(target):
             ip = _pick_ip(c)
             if not ip:
                 return None
             p = port or (c["ports"][0] if c["ports"] else None)
-            if not p:
-                return None
-            return f"{ip}:{int(p)}"
+            return f"{ip}:{int(p)}" if p else None
+    # 2) swarm service by name -> routing-mesh published port on loopback
+    if swarm_active():
+        s = _find_service(target)
+        if s:
+            pport = port or (s["ports"][0]["published"] if s["ports"] else None)
+            return f"127.0.0.1:{int(pport)}" if pport else None
     return None
 
 
 def status():
-    """Summary for /api/docker/status and the Docker page header."""
+    """Summary for /api/docker/status and the Docker page header. Reports the
+    mode so the UI lists containers (standalone) or services (swarm)."""
     if not available():
-        return {"available": False, "count": 0}
+        return {"available": False, "swarm": False, "count": 0}
     try:
-        cs = list_containers()
-        return {"available": True, "count": len(cs)}
+        if swarm_active():
+            return {"available": True, "swarm": True, "count": len(list_services())}
+        return {"available": True, "swarm": False, "count": len(list_containers())}
     except Exception as exc:                       # noqa: BLE001
-        return {"available": False, "count": 0, "error": str(exc)}
+        return {"available": False, "swarm": False, "count": 0, "error": str(exc)}
