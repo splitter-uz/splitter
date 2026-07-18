@@ -467,14 +467,21 @@ async function dockerCreateMapping(e) {
 function addBackendRow(b) {
   b = b || {};
   const inp = "rounded-md border border-slate-300 px-2 py-1 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500";
-  const { host, port } = splitHostPort(b.server);
+  const isDocker = !!b.docker_container;
+  let { host, port } = splitHostPort(b.server);
+  if (isDocker) {                       // show the container NAME, not the cached IP
+    host = b.docker_container;
+    if (b.docker_port != null && b.docker_port !== "") port = String(b.docker_port);
+  }
   const wrap = document.createElement("div");
   wrap.className = "be-row rounded-lg border border-slate-200 p-2";
+  if (isDocker) wrap.dataset.dockerContainer = b.docker_container;
   wrap.innerHTML = `
     <div class="flex gap-2 items-center">
+      ${isDocker ? '<span class="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-100 text-sky-700" title="Docker container backend — Splitter stores the name and keeps its IP current on restart">🐳 docker</span>' : ''}
       <div class="be-hostport flex flex-1 items-stretch rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-emerald-500">
-        <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent"
-          placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" />
+        <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent ${isDocker ? "text-sky-700" : ""}"
+          placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" ${isDocker ? "readonly title='Docker container name (managed on the Docker page)'" : ""} />
         <span class="w-px bg-slate-300 shrink-0"></span>
         <input class="be-port w-20 shrink-0 px-3 py-2 text-sm font-mono outline-none bg-transparent text-center"
           placeholder="443" inputmode="numeric" value="${escapeHtml(port)}" />
@@ -588,9 +595,6 @@ function serializeBackends() {
     const host = g(".be-host").value.trim();
     const port = g(".be-port").value.trim();
     const e = {
-      // Recombine into the "host:port" the backend expects; keep host-only so
-      // the server-side validator reports a clear "must be host:port" error.
-      server: host && port ? `${host}:${port}` : host,
       weight: g(".be-weight").value.trim(),
       priority: failoverOn ? g(".be-prio").value.trim() : "",
       max_fails: g(".be-maxfails").value.trim(),
@@ -599,8 +603,18 @@ function serializeBackends() {
       backup: g(".be-backup").checked,
       down: g(".be-down").checked,
     };
+    if (row.dataset.dockerContainer) {
+      // Docker backend: keep it managed by NAME (server is re-resolved server-
+      // side and refreshed by the reconciler) — never save the cached IP.
+      e.docker_container = row.dataset.dockerContainer;
+      e.docker_port = port;
+    } else {
+      // Recombine into the "host:port" the backend expects; keep host-only so
+      // the server-side validator reports a clear "must be host:port" error.
+      e.server = host && port ? `${host}:${port}` : host;
+    }
     return e;
-  }).filter((e) => e.server);
+  }).filter((e) => e.server || e.docker_container);
 }
 
 // --- load-balancing method panels -----------------------------------------
