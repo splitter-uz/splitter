@@ -31,6 +31,8 @@ function escapeHtml(s) {
 
 // --- page navigation -------------------------------------------------------
 const PAGES = ["mappings", "form", "users", "activity", "monitoring", "livemap", "interfaces", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
+// Pages whose data is loaded lazily on first visit (see showPage).
+const PAGE_LOADED = new Set();
 function showPage(name) {
   if (!PAGES.includes(name)) name = "mappings";
   history.replaceState(null, "", "#" + name);
@@ -45,6 +47,17 @@ function showPage(name) {
   if (name === "access") loadAccessLists();
   if (name === "firewall") loadFirewall();
   if (name === "docker") loadDocker();
+  // Heavy list pages: load their data on first access (not eagerly on refresh),
+  // then keep it fresh via the pollers / the page's Refresh button.
+  if (name === "mappings" && !PAGE_LOADED.has("mappings")) {
+    PAGE_LOADED.add("mappings");
+    loadMappings();
+    startHealthPolling();
+  }
+  if (name === "users" && !PAGE_LOADED.has("users")) {
+    PAGE_LOADED.add("users");
+    loadUsers();
+  }
   // Poll host metrics + per-interface throughput only while Monitoring is open.
   if (name === "monitoring") startMonitoring();
   else stopMonitoring();
@@ -962,12 +975,52 @@ async function loadSslCount() {
   } catch (_) { /* leave the last value on a transient error */ }
 }
 
+// Reusable numeric pager. Renders "Showing a–b of N" + page buttons into the
+// given elements; calls onGo(page) when a page is clicked. Hidden when it fits.
+function renderPager(containerId, infoId, navId, total, page, size, onGo) {
+  const cont = $("#" + containerId);
+  if (!cont) return;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const many = total > size;
+  cont.classList.toggle("hidden", !many);
+  cont.classList.toggle("flex", many);
+  if (!many) return;
+  const from = (page - 1) * size + 1, to = Math.min(total, page * size);
+  const info = $("#" + infoId); if (info) info.textContent = `Showing ${from}–${to} of ${total}`;
+  const nav = $("#" + navId); if (!nav) return;
+  const btn = (label, target, o = {}) =>
+    `<button data-p="${target}" class="pager-btn min-w-[2rem] px-2 py-1 rounded-md border border-slate-200 text-xs font-medium ${o.active ? "bg-emerald-600 text-white border-emerald-600" : "text-slate-600 hover:bg-slate-100"} ${o.disabled ? "opacity-40 cursor-default" : "cursor-pointer"}" ${o.disabled ? "disabled" : ""}>${label}</button>`;
+  const span = 2;
+  let lo = Math.max(1, page - span), hi = Math.min(pages, page + span);
+  if (page <= span) hi = Math.min(pages, 1 + span * 2);
+  if (page > pages - span) lo = Math.max(1, pages - span * 2);
+  let html = btn("‹", page - 1, { disabled: page === 1 });
+  if (lo > 1) { html += btn("1", 1); if (lo > 2) html += '<span class="px-1 text-slate-400">…</span>'; }
+  for (let p = lo; p <= hi; p++) html += btn(String(p), p, { active: p === page });
+  if (hi < pages) { if (hi < pages - 1) html += '<span class="px-1 text-slate-400">…</span>'; html += btn(String(pages), pages); }
+  html += btn("›", page + 1, { disabled: page === pages });
+  nav.innerHTML = html;
+  nav.querySelectorAll(".pager-btn").forEach((b) => {
+    if (!b.disabled) b.addEventListener("click", () => onGo(Number(b.dataset.p)));
+  });
+}
+
+const MAP_PAGE_SIZE = 10;
+let MAP_PAGE = 1;
+
 function renderMappings() {
   const q = ($("#search")?.value || "").trim().toLowerCase();
-  const list = q ? MAPPINGS.filter((m) => (m.domain || "").toLowerCase().includes(q)) : MAPPINGS;
+  const full = q ? MAPPINGS.filter((m) => (m.domain || "").toLowerCase().includes(q)) : MAPPINGS;
+  // Clamp the current page to the available range (e.g. after deletes/filtering).
+  const pages = Math.max(1, Math.ceil(full.length / MAP_PAGE_SIZE));
+  if (MAP_PAGE > pages) MAP_PAGE = pages;
+  const start = (MAP_PAGE - 1) * MAP_PAGE_SIZE;
+  const list = full.slice(start, start + MAP_PAGE_SIZE);
+  renderPager("map-pagination", "map-page-info", "map-page-nav", full.length, MAP_PAGE, MAP_PAGE_SIZE,
+    (p) => { MAP_PAGE = p; renderMappings(); });
   const rows = $("#rows");
   rows.innerHTML = "";
-  $("#empty").classList.toggle("hidden", list.length > 0);
+  $("#empty").classList.toggle("hidden", full.length > 0);
   list.forEach((m, idx) => {
     const backends = (m.backends || (m.backend ? [m.backend] : [])).map(backendLabel).join(", ");
     const lb = lbLabel(m);
@@ -4000,7 +4053,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
   // "New Mapping" / empty-state jumps start a fresh add
   $$(".nav-jump").forEach((b) => b.addEventListener("click", () => { resetForm(); showPage("form"); }));
-  $("#search").addEventListener("input", renderMappings);
+  $("#search").addEventListener("input", () => { MAP_PAGE = 1; renderMappings(); });
 
   $("#map-form").addEventListener("submit", apply);
   $("#preview-btn").addEventListener("click", preview);
@@ -4145,13 +4198,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Escape" && DIAG_DOMAIN) closeDiagnose();
   });
 
-  await loadMappings();
-  await loadUsers();
-  await loadAccessLists();   // also populates the mapping form's access-list dropdown
-  startHealthPolling();
+  await loadAccessLists();   // small — also populates the mapping form's access-list dropdown
 
-  // Restore the page the user was on before the refresh.
-  // Done last so all data (mappings, users, settings) is ready before rendering.
+  // Lazy: each page's list data loads on first access (showPage), not all up
+  // front — so the shell + sidebar paint immediately and only the page you open
+  // fetches its rows (mappings/health, users, …).
   const hash = location.hash.slice(1);
   showPage(PAGES.includes(hash) ? hash : "mappings");
 });
