@@ -30,7 +30,9 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["mappings", "form", "users", "activity", "monitoring", "livemap", "interfaces", "access", "tools", "ssl", "backup", "waf", "firewall"];
+const PAGES = ["mappings", "form", "users", "activity", "monitoring", "livemap", "interfaces", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
+// Pages whose data is loaded lazily on first visit (see showPage).
+const PAGE_LOADED = new Set();
 function showPage(name) {
   if (!PAGES.includes(name)) name = "mappings";
   history.replaceState(null, "", "#" + name);
@@ -44,6 +46,18 @@ function showPage(name) {
   if (name === "ssl") loadSslCerts();
   if (name === "access") loadAccessLists();
   if (name === "firewall") loadFirewall();
+  if (name === "docker") loadDocker();
+  // Heavy list pages: load their data on first access (not eagerly on refresh),
+  // then keep it fresh via the pollers / the page's Refresh button.
+  if (name === "mappings" && !PAGE_LOADED.has("mappings")) {
+    PAGE_LOADED.add("mappings");
+    loadMappings();
+    startHealthPolling();
+  }
+  if (name === "users" && !PAGE_LOADED.has("users")) {
+    PAGE_LOADED.add("users");
+    loadUsers();
+  }
   // Poll host metrics + per-interface throughput only while Monitoring is open.
   if (name === "monitoring") startMonitoring();
   else stopMonitoring();
@@ -280,17 +294,237 @@ function splitHostPort(server) {
   return { host: s.slice(0, i), port: s.slice(i + 1) };
 }
 
+// ==========================================================================
+// Docker page — discover containers and build a mapping (auto-reconciling
+// container backends). See docker_detect.py / docker_reconcile.py.
+// ==========================================================================
+let DOCKER_CONTAINERS = [];       // containers (standalone) OR services (swarm)
+let DOCKER_SWARM = false;         // swarm-manager mode?
+const DOCKER_SEL = new Set();     // selected container/service names -> pool
+const DOCKER_PORTS = {};          // name -> chosen backend port (editable)
+
+// First usable port for a container (exposed port) or service (published port).
+function dockerFirstPort(name) {
+  const c = DOCKER_CONTAINERS.find((x) => x.name === name);
+  if (!c || !c.ports || !c.ports.length) return "";
+  const p = c.ports[0];
+  return (p && typeof p === "object") ? (p.published || "") : p;
+}
+
+// Reveal the Docker nav item only when the daemon socket is reachable.
+async function refreshDockerNav() {
+  const nav = $("#nav-docker");
+  if (!nav) return;
+  try {
+    const j = await (await fetch("/api/docker/status")).json();
+    nav.classList.toggle("hidden", !j.available);
+    const c = $("#nav-docker-count");
+    if (c) c.textContent = j.count || 0;
+  } catch (_e) {
+    nav.classList.add("hidden");
+  }
+}
+
+async function loadDocker() {
+  const wrap = $("#docker-containers");
+  const unavail = $("#docker-unavailable");
+  const empty = $("#docker-empty");
+  DOCKER_SEL.clear();
+  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
+  syncDockerPoolBar();
+  // Populate the bind-target dropdown to match the current mode.
+  await populateDockerBind();
+  try {
+    const st = await (await fetch("/api/docker/status")).json();
+    if (!st.available) throw new Error("Docker unavailable");
+    DOCKER_SWARM = !!st.swarm;
+    // Swarm managers list SERVICES (by name, routing-mesh published port);
+    // standalone hosts list CONTAINERS.
+    const url = DOCKER_SWARM ? "/api/docker/services" : "/api/docker/containers";
+    const j = await (await fetch(url)).json();
+    if (!j.ok) throw new Error(j.error || "Docker query failed");
+    unavail.classList.add("hidden");
+    DOCKER_CONTAINERS = DOCKER_SWARM ? (j.services || []) : (j.containers || []);
+    const hdr = $("#docker-mode-note");
+    if (hdr) hdr.textContent = DOCKER_SWARM
+      ? "Swarm manager — showing services (routing-mesh published port; the swarm load-balances replicas)."
+      : "Standalone Docker — showing running containers.";
+    const c = $("#nav-docker-count"); if (c) c.textContent = DOCKER_CONTAINERS.length;
+    empty.classList.toggle("hidden", DOCKER_CONTAINERS.length > 0);
+    renderDockerCards();
+  } catch (e) {
+    DOCKER_CONTAINERS = [];
+    wrap.innerHTML = "";
+    empty.classList.add("hidden");
+    unavail.classList.remove("hidden");
+  }
+}
+
+async function populateDockerBind() {
+  const sel = $("#docker-bind");
+  if (!sel) return;
+  let opts = "";
+  try {
+    if (SETTINGS.subinterface_enabled) {
+      const j = await (await fetch("/api/subinterfaces")).json();
+      (j.subinterfaces || []).forEach((s) => {
+        opts += `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} · ${escapeHtml(s.bind_ip || "")}</option>`;
+      });
+    } else {
+      const j = await (await fetch("/api/interfaces")).json();
+      (j.interfaces || []).forEach((i) => {
+        const ip = (i.addresses && i.addresses[0] && i.addresses[0].ip) || "";
+        if (ip) opts += `<option value="${escapeHtml(i.name)}">${escapeHtml(i.name)} · ${escapeHtml(ip)}</option>`;
+      });
+    }
+  } catch (_e) { /* leave empty */ }
+  sel.innerHTML = opts || `<option value="">(no bind target found)</option>`;
+}
+
+function renderDockerCards() {
+  const wrap = $("#docker-containers");
+  wrap.innerHTML = DOCKER_CONTAINERS.map((c) => {
+    const sel = DOCKER_SEL.has(c.name);
+    // Port chips: container exposed ports, or service published ports.
+    const portVals = DOCKER_SWARM
+      ? (c.ports || []).map((p) => p.published)
+      : (c.ports || []);
+    const chips = portVals.map((p) =>
+      `<button type="button" data-port="${p}" class="docker-port text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-slate-600">${p}</button>`).join(" ")
+      || `<span class="text-xs text-slate-400">${DOCKER_SWARM ? "no published port" : "none exposed"}</span>`;
+    // Selectable when: container running, or service has a reachable published port.
+    const ok = DOCKER_SWARM ? !!c.reachable : (c.state === "running");
+    let meta, badge;
+    if (DOCKER_SWARM) {
+      const rep = c.replicas === "global" ? "global" : (c.replicas != null ? c.replicas + " replica(s)" : "");
+      meta = `<div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">swarm service</span> ${escapeHtml(rep)}${c.reachable ? "" : ' · <span class="text-amber-600">unreachable (no published port)</span>'}</div>`;
+      badge = `<span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">service</span>`;
+    } else {
+      const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
+      const net = (c.ips && c.ips[0] && c.ips[0].network) || "";
+      meta = `<div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">IP</span> <span class="font-mono">${escapeHtml(ip)}</span> ${net ? `<span class="text-slate-400">· ${escapeHtml(net)}</span>` : ""}</div>`;
+      badge = `<span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${ok ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}">${escapeHtml(c.state || "?")}</span>`;
+    }
+    return `
+      <div class="card bg-white/80 rounded-2xl border ${sel ? "border-emerald-400 ring-1 ring-emerald-300" : "border-slate-200/70"} shadow-sm p-4" data-cname="${escapeHtml(c.name)}">
+        <div class="flex items-start justify-between gap-2">
+          <label class="flex items-center gap-2 min-w-0">
+            <input type="checkbox" class="docker-check accent-emerald-600" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""} ${ok ? "" : "disabled"}>
+            <span class="font-semibold text-slate-800 truncate">${escapeHtml(c.name)}</span>
+          </label>
+          ${badge}
+        </div>
+        <div class="mt-2 text-xs text-slate-500 truncate" title="${escapeHtml(c.image || "")}">${escapeHtml(c.image || "")}</div>
+        ${meta}
+        <div class="mt-1 text-xs text-slate-600 flex items-center gap-1 flex-wrap"><span class="text-slate-400">ports</span> ${chips}</div>
+      </div>`;
+  }).join("");
+  // Wire checkboxes: selecting seeds a default port from the container's first
+  // exposed port; a port chip sets that container's backend port.
+  $$("#docker-containers .docker-check").forEach((cb) => cb.addEventListener("change", () => {
+    const name = cb.dataset.name;
+    if (cb.checked) { DOCKER_SEL.add(name); if (!DOCKER_PORTS[name]) DOCKER_PORTS[name] = dockerFirstPort(name); }
+    else { DOCKER_SEL.delete(name); delete DOCKER_PORTS[name]; }
+    renderDockerCards();
+    syncDockerPoolBar();
+  }));
+  $$("#docker-containers .docker-port").forEach((b) => b.addEventListener("click", () => {
+    const name = b.closest("[data-cname]").dataset.cname;
+    DOCKER_SEL.add(name);
+    DOCKER_PORTS[name] = b.dataset.port;
+    renderDockerCards();
+    syncDockerPoolBar();
+  }));
+}
+
+// One editable backend row per selected container (name + IP + its own port).
+function renderDockerPoolList() {
+  const list = $("#docker-pool-list");
+  if (!list) return;
+  const names = [...DOCKER_SEL];
+  if (names.length === 0) { list.innerHTML = '<div class="text-xs text-slate-400">Select containers below to add them as backends.</div>'; return; }
+  list.innerHTML = names.map((name) => {
+    const c = DOCKER_CONTAINERS.find((x) => x.name === name) || {};
+    const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
+    return `
+      <div class="be-docker-row flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2" data-name="${escapeHtml(name)}">
+        <span class="font-semibold text-sm text-slate-800 truncate flex-1">${escapeHtml(name)}</span>
+        <span class="text-xs text-slate-400 font-mono hidden sm:inline">${escapeHtml(ip)}</span>
+        <span class="text-slate-300">:</span>
+        <input type="number" min="1" max="65535" value="${escapeHtml(String(DOCKER_PORTS[name] || ""))}" placeholder="port"
+               class="be-docker-port w-24 rounded-lg border border-slate-200 px-2 py-1 text-sm" data-name="${escapeHtml(name)}">
+        <button type="button" class="be-docker-del text-slate-400 hover:text-red-500 text-lg leading-none px-1" data-name="${escapeHtml(name)}" title="Remove">&times;</button>
+      </div>`;
+  }).join("");
+  $$("#docker-pool-list .be-docker-port").forEach((inp) => inp.addEventListener("input", () => {
+    DOCKER_PORTS[inp.dataset.name] = inp.value.trim();
+  }));
+  $$("#docker-pool-list .be-docker-del").forEach((btn) => btn.addEventListener("click", () => {
+    DOCKER_SEL.delete(btn.dataset.name); delete DOCKER_PORTS[btn.dataset.name];
+    renderDockerCards(); syncDockerPoolBar();
+  }));
+}
+
+function syncDockerPoolBar() {
+  const bar = $("#docker-pool-bar");
+  if (bar) bar.classList.toggle("hidden", DOCKER_SEL.size === 0);
+  const n = $("#docker-pool-count"); if (n) n.textContent = DOCKER_SEL.size;
+  renderDockerPoolList();
+}
+
+async function dockerCreateMapping(e) {
+  e.preventDefault();
+  if (DOCKER_SEL.size === 0) { toast("Select at least one container first.", false); return; }
+  const f = e.target;
+  const domain = f.domain.value.trim();
+  const bind = f.bind.value;
+  if (!domain) { toast("Enter a domain.", false); return; }
+  if (!bind) { toast("No bind target available.", false); return; }
+  const missing = [...DOCKER_SEL].filter((n) => !String(DOCKER_PORTS[n] || "").trim());
+  if (missing.length) { toast(`Set a port for: ${missing.join(", ")}`, false); return; }
+  const backends = [...DOCKER_SEL].map((name) => ({
+    docker_container: name,
+    docker_port: Number(DOCKER_PORTS[name]),
+  }));
+  const fd = new FormData();
+  fd.append("domain", domain);
+  fd.append("listen_port", f.listen_port.value || "443");
+  fd.append("transport", (f.transport && f.transport.value) || "tcp");
+  fd.append("ssl_mode", "none");
+  fd.append("lb_method", "round_robin");
+  fd.append(SETTINGS.subinterface_enabled ? "subiface" : "interface", bind);
+  fd.append("backends_json", JSON.stringify(backends));
+  try {
+    const r = await fetch("/api/mappings", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { toast(j.error || "Create failed.", false); return; }
+    toast(`Mapping ${domain} created from ${backends.length} container(s).`);
+    DOCKER_SEL.clear();
+    await loadMappings();
+    showPage("mappings");
+  } catch (err) {
+    toast(String(err.message || err), false);
+  }
+}
+
 function addBackendRow(b) {
   b = b || {};
   const inp = "rounded-md border border-slate-300 px-2 py-1 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500";
-  const { host, port } = splitHostPort(b.server);
+  const isDocker = !!b.docker_container;
+  let { host, port } = splitHostPort(b.server);
+  if (isDocker) {                       // show the container NAME, not the cached IP
+    host = b.docker_container;
+    if (b.docker_port != null && b.docker_port !== "") port = String(b.docker_port);
+  }
   const wrap = document.createElement("div");
   wrap.className = "be-row rounded-lg border border-slate-200 p-2";
+  if (isDocker) wrap.dataset.dockerContainer = b.docker_container;
   wrap.innerHTML = `
     <div class="flex gap-2 items-center">
+      ${isDocker ? '<span class="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-100 text-sky-700" title="Docker container backend — Splitter stores the name and keeps its IP current on restart">🐳 docker</span>' : ''}
       <div class="be-hostport flex flex-1 items-stretch rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-emerald-500">
-        <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent"
-          placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" />
+        <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent ${isDocker ? "text-sky-700" : ""}"
+          placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" ${isDocker ? "readonly title='Docker container name (managed on the Docker page)'" : ""} />
         <span class="w-px bg-slate-300 shrink-0"></span>
         <input class="be-port w-20 shrink-0 px-3 py-2 text-sm font-mono outline-none bg-transparent text-center"
           placeholder="443" inputmode="numeric" value="${escapeHtml(port)}" />
@@ -395,6 +629,13 @@ function syncFailoverUI() {
   if (on) renderFailoverPreview();
 }
 
+// Reveal the HTTP health-check fields with its toggle.
+function syncHealthUI() {
+  const on = $("#health_check") && $("#health_check").checked;
+  const sec = $("#health-section");
+  if (sec) sec.classList.toggle("hidden", !on);
+}
+
 function serializeBackends() {
   // Priority tiers only mean something under failover; skip them otherwise so a
   // plain load-balanced pool doesn't accumulate stray priority=1 on every server.
@@ -404,9 +645,6 @@ function serializeBackends() {
     const host = g(".be-host").value.trim();
     const port = g(".be-port").value.trim();
     const e = {
-      // Recombine into the "host:port" the backend expects; keep host-only so
-      // the server-side validator reports a clear "must be host:port" error.
-      server: host && port ? `${host}:${port}` : host,
       weight: g(".be-weight").value.trim(),
       priority: failoverOn ? g(".be-prio").value.trim() : "",
       max_fails: g(".be-maxfails").value.trim(),
@@ -415,8 +653,18 @@ function serializeBackends() {
       backup: g(".be-backup").checked,
       down: g(".be-down").checked,
     };
+    if (row.dataset.dockerContainer) {
+      // Docker backend: keep it managed by NAME (server is re-resolved server-
+      // side and refreshed by the reconciler) — never save the cached IP.
+      e.docker_container = row.dataset.dockerContainer;
+      e.docker_port = port;
+    } else {
+      // Recombine into the "host:port" the backend expects; keep host-only so
+      // the server-side validator reports a clear "must be host:port" error.
+      e.server = host && port ? `${host}:${port}` : host;
+    }
     return e;
-  }).filter((e) => e.server);
+  }).filter((e) => e.server || e.docker_container);
 }
 
 // --- load-balancing method panels -----------------------------------------
@@ -519,9 +767,30 @@ function lbLabel(m) {
   }
 }
 
+// Display identity for a backend: the Docker container/service NAME (not the
+// resolved IP) when it's a docker-managed backend, else the host:port.
+function backendName(b) {
+  if (typeof b === "string") return b;
+  if (b && b.docker_container) return "🐳 " + b.docker_container + (b.docker_port ? ":" + b.docker_port : "");
+  return (b && b.server) || "";
+}
+
+// server "ip:port" -> docker display name, so views that only carry the probed
+// server address (health rollup, diagnose) can still show the name.
+const DOCKER_BE_NAME = {};
+function rebuildBackendNames() {
+  for (const k in DOCKER_BE_NAME) delete DOCKER_BE_NAME[k];
+  MAPPINGS.forEach((m) => (m.backends || []).forEach((b) => {
+    if (b && b.docker_container && b.server) {
+      DOCKER_BE_NAME[b.server] = "🐳 " + b.docker_container + (b.docker_port ? ":" + b.docker_port : "");
+    }
+  }));
+}
+function beDisplay(server) { return DOCKER_BE_NAME[server] || server; }
+
 function backendLabel(b) {
   if (typeof b === "string") return b;
-  let s = b.server;
+  let s = backendName(b);
   if (b.weight) s += " w" + b.weight;
   if (b.backup) s += " backup";
   if (b.down) s += " down";
@@ -585,7 +854,7 @@ function healthHtml(h) {
     const tag = !b.enabled ? "disabled"
       : b.up ? `up${b.latency_ms != null ? " " + b.latency_ms + "ms" : ""}`
              : `down${b.error ? " (" + b.error + ")" : ""}`;
-    return `${b.server}${role} — ${tag}`;
+    return `${beDisplay(b.server)}${role} — ${tag}`;
   }).join("\n");
   return `<span class="inline-flex items-center gap-2 text-xs text-slate-600" title="${escapeHtml(lines)}">`
     + `<span class="h-2.5 w-2.5 rounded-full ${dot}"></span>${escapeHtml(label)}${foBadge}</span>`;
@@ -692,6 +961,7 @@ function stopTrafficPolling() { clearInterval(TRAFFIC_TIMER); TRAFFIC_TIMER = nu
 let MAPPINGS = [];
 async function loadMappings() {
   MAPPINGS = (await (await fetch("/api/mappings")).json()).mappings || [];
+  rebuildBackendNames();   // server IP -> docker name, for health/diagnose views
   updateStats(MAPPINGS);
   loadSslCount();   // TLS Certs stat comes from the cert registry, not mappings
   renderMappings();
@@ -735,12 +1005,52 @@ async function loadSslCount() {
   } catch (_) { /* leave the last value on a transient error */ }
 }
 
+// Reusable numeric pager. Renders "Showing a–b of N" + page buttons into the
+// given elements; calls onGo(page) when a page is clicked. Hidden when it fits.
+function renderPager(containerId, infoId, navId, total, page, size, onGo) {
+  const cont = $("#" + containerId);
+  if (!cont) return;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const many = total > size;
+  cont.classList.toggle("hidden", !many);
+  cont.classList.toggle("flex", many);
+  if (!many) return;
+  const from = (page - 1) * size + 1, to = Math.min(total, page * size);
+  const info = $("#" + infoId); if (info) info.textContent = `Showing ${from}–${to} of ${total}`;
+  const nav = $("#" + navId); if (!nav) return;
+  const btn = (label, target, o = {}) =>
+    `<button data-p="${target}" class="pager-btn min-w-[2rem] px-2 py-1 rounded-md border border-slate-200 text-xs font-medium ${o.active ? "bg-emerald-600 text-white border-emerald-600" : "text-slate-600 hover:bg-slate-100"} ${o.disabled ? "opacity-40 cursor-default" : "cursor-pointer"}" ${o.disabled ? "disabled" : ""}>${label}</button>`;
+  const span = 2;
+  let lo = Math.max(1, page - span), hi = Math.min(pages, page + span);
+  if (page <= span) hi = Math.min(pages, 1 + span * 2);
+  if (page > pages - span) lo = Math.max(1, pages - span * 2);
+  let html = btn("‹", page - 1, { disabled: page === 1 });
+  if (lo > 1) { html += btn("1", 1); if (lo > 2) html += '<span class="px-1 text-slate-400">…</span>'; }
+  for (let p = lo; p <= hi; p++) html += btn(String(p), p, { active: p === page });
+  if (hi < pages) { if (hi < pages - 1) html += '<span class="px-1 text-slate-400">…</span>'; html += btn(String(pages), pages); }
+  html += btn("›", page + 1, { disabled: page === pages });
+  nav.innerHTML = html;
+  nav.querySelectorAll(".pager-btn").forEach((b) => {
+    if (!b.disabled) b.addEventListener("click", () => onGo(Number(b.dataset.p)));
+  });
+}
+
+const MAP_PAGE_SIZE = 10;
+let MAP_PAGE = 1;
+
 function renderMappings() {
   const q = ($("#search")?.value || "").trim().toLowerCase();
-  const list = q ? MAPPINGS.filter((m) => (m.domain || "").toLowerCase().includes(q)) : MAPPINGS;
+  const full = q ? MAPPINGS.filter((m) => (m.domain || "").toLowerCase().includes(q)) : MAPPINGS;
+  // Clamp the current page to the available range (e.g. after deletes/filtering).
+  const pages = Math.max(1, Math.ceil(full.length / MAP_PAGE_SIZE));
+  if (MAP_PAGE > pages) MAP_PAGE = pages;
+  const start = (MAP_PAGE - 1) * MAP_PAGE_SIZE;
+  const list = full.slice(start, start + MAP_PAGE_SIZE);
+  renderPager("map-pagination", "map-page-info", "map-page-nav", full.length, MAP_PAGE, MAP_PAGE_SIZE,
+    (p) => { MAP_PAGE = p; renderMappings(); });
   const rows = $("#rows");
   rows.innerHTML = "";
-  $("#empty").classList.toggle("hidden", list.length > 0);
+  $("#empty").classList.toggle("hidden", full.length > 0);
   list.forEach((m, idx) => {
     const backends = (m.backends || (m.backend ? [m.backend] : [])).map(backendLabel).join(", ");
     const lb = lbLabel(m);
@@ -1112,6 +1422,7 @@ function resetForm() {
   onMethodChange();
   onLbChange();
   toggleRateSection();   // collapse rate-limit panel (reset() unchecked the toggle)
+  syncHealthUI();        // collapse health-check panel
   $("#bind_prefix").value = CFG.bind_prefix || "24";
   setTransport("tcp");
   filterProtocols();
@@ -1195,6 +1506,13 @@ function editMapping(domain, port) {
   // failover
   $("#failover").checked = !!m.failover;
   syncFailoverUI();
+
+  // HTTP health check
+  $("#health_check").checked = !!m.health_check;
+  setVal("health_path", m.health_path || "");
+  if ($("#health_scheme")) $("#health_scheme").value = m.health_scheme || "http";
+  setVal("health_expect", m.health_expect || "");
+  syncHealthUI();
 
   // rate limit
   $("#rate_limit_enabled").checked = !!m.rate_limit;
@@ -1432,7 +1750,7 @@ function renderRouteMap(force, keepView) {
       band.beList.forEach((be, j) => {
         const id = "be" + i + "_" + j;
         RNODES[id] = { id, kind: "be", x: outX, y: band.top + j * (BE_H + BE_GAP),
-                       w: outW, h: BE_H, data: m, idx: i, be, server: be.server };
+                       w: outW, h: BE_H, data: m, idx: i, be, server: be.server, label: backendName(be) };
         RLINKS.push({ id: "l" + id, s: "splitter", t: id, dir: "be", i, be, server: be.server });
       });
     } else {
@@ -1566,7 +1884,7 @@ function routeNodeMarkup(node) {
     return `<g id="rn-${node.id}" class="rnode route-be" data-id="${node.id}" data-i="${node.idx}" transform="translate(${node.x},${node.y})" style="cursor:pointer" font-family="ui-monospace, monospace">
       <rect id="rr-${node.id}" width="${w}" height="${h}" rx="9" fill="#F8FAFC" stroke="${v.color}" stroke-opacity="${v.bad ? "0.9" : "0.5"}" stroke-width="${v.bad ? "2" : "1.5"}"/>
       <circle id="rd-${node.id}" cx="16" cy="${my}" r="4.5" fill="${v.color}"/>
-      <text x="30" y="${my - 3}" fill="#1E293B" font-size="12">${esc(node.server)}</text>
+      <text x="30" y="${my - 3}" fill="#1E293B" font-size="12">${esc(node.label || node.server)}</text>
       <text id="rt-${node.id}" x="30" y="${my + 12}" fill="${v.color}" font-size="9.5">${esc(v.status)}</text>
       <text id="rx-${node.id}" x="${w - 14}" y="${my + 5}" text-anchor="middle" fill="#ef4444" font-size="15" font-weight="700" style="display:${v.bad ? "" : "none"}">✗</text>
       ${routePort(0, my, "#94A3B8")}</g>`;
@@ -3520,7 +3838,7 @@ function renderDiagnose(j) {
     const ok = b.up, off = !b.enabled;
     const meta = off ? "disabled" : ok ? (b.latency_ms != null ? b.latency_ms + " ms" : "up") : (b.error || "unreachable");
     return `<div class="flex items-center justify-between text-xs rounded-md border border-slate-100 px-2.5 py-1.5">`
-      + `<span class="font-mono ${off ? "text-slate-400 line-through" : "text-slate-700"}">${dot(ok && !off)}${escapeHtml(b.server)}</span>`
+      + `<span class="font-mono ${off ? "text-slate-400 line-through" : "text-slate-700"}">${dot(ok && !off)}${escapeHtml(beDisplay(b.server))}</span>`
       + `<span class="${ok && !off ? "text-slate-500" : "text-red-600"}">${escapeHtml(meta)}</span></div>`;
   }).join("");
 
@@ -3773,7 +4091,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
   // "New Mapping" / empty-state jumps start a fresh add
   $$(".nav-jump").forEach((b) => b.addEventListener("click", () => { resetForm(); showPage("form"); }));
-  $("#search").addEventListener("input", renderMappings);
+  $("#search").addEventListener("input", () => { MAP_PAGE = 1; renderMappings(); });
 
   $("#map-form").addEventListener("submit", apply);
   $("#preview-btn").addEventListener("click", preview);
@@ -3790,6 +4108,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.target.value = "";   // allow re-importing the same file
   });
   $("#add-backend").addEventListener("click", () => addBackendRow());
+  // Docker page
+  const dcf = $("#docker-create-form"); if (dcf) dcf.addEventListener("submit", dockerCreateMapping);
+  const dr = $("#docker-refresh"); if (dr) dr.addEventListener("click", loadDocker);
+  refreshDockerNav();
   $("#protocol").addEventListener("change", onProtocolChange);
   $("#listen_port").addEventListener("input", onListenPortChange);
   $$('input[name="transport"]').forEach((r) => r.addEventListener("change", onTransportChange));
@@ -3803,6 +4125,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("#rate_limit_enabled").addEventListener("change", toggleRateSection);
   $("#failover").addEventListener("change", syncFailoverUI);
+  $("#health_check").addEventListener("change", syncHealthUI);
   $$('input[name="alloc_method"]').forEach((r) => r.addEventListener("change", onMethodChange));
   $$(".ssl-tab").forEach((b) => b.addEventListener("click", () => selectSsl(b.dataset.ssl)));
   $("#logout-btn").addEventListener("click", logout);
@@ -3914,13 +4237,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Escape" && DIAG_DOMAIN) closeDiagnose();
   });
 
-  await loadMappings();
-  await loadUsers();
-  await loadAccessLists();   // also populates the mapping form's access-list dropdown
-  startHealthPolling();
+  await loadAccessLists();   // small — also populates the mapping form's access-list dropdown
 
-  // Restore the page the user was on before the refresh.
-  // Done last so all data (mappings, users, settings) is ready before rendering.
+  // Lazy: each page's list data loads on first access (showPage), not all up
+  // front — so the shell + sidebar paint immediately and only the page you open
+  // fetches its rows (mappings/health, users, …).
   const hash = location.hash.slice(1);
   showPage(PAGES.includes(hash) ? hash : "mappings");
 });

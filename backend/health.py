@@ -17,15 +17,19 @@ Per-backend state also remembers *since when* the current up/down state has
 held, which the UI shows as an uptime/downtime duration.
 """
 import datetime
+import http.client
 import socket
+import ssl
 import threading
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 import config
 import storage
 
 CONNECT_TIMEOUT = 2.0      # seconds to wait for a TCP connect
+HTTP_TIMEOUT = 3.0         # seconds for an HTTP health-check request
 CACHE_TTL = 8.0            # seconds a probe result is reused before re-probing
 _MAX_WORKERS = 16
 
@@ -59,17 +63,83 @@ def _probe(server):
         return False, None, (exc.strerror or str(exc) or "unreachable")
 
 
-def _check(server, force=False):
-    """Probe `server` honoring the cache; update and return its state dict."""
+def hc_spec(mapping):
+    """The HTTP health-check spec for a mapping, or None to use a TCP connect.
+    {path, scheme, expect}. UDP mappings never HTTP-probe."""
+    if not mapping.get("health_check"):
+        return None
+    if (mapping.get("transport") or "tcp").lower() == "udp":
+        return None
+    return {
+        "path": mapping.get("health_path") or "/",
+        "scheme": (mapping.get("health_scheme") or "http").lower(),
+        "expect": mapping.get("health_expect"),   # exact status int, or None => any 2xx/3xx
+    }
+
+
+def _cache_key(server, hc):
+    if not hc:
+        return server
+    return f"{server}|{hc['scheme']}|{hc['path']}|{hc.get('expect') or ''}"
+
+
+def _probe_http(server, hc):
+    """One HTTP(S) GET to the backend's health target. Returns (up, latency_ms, error).
+
+    hc["path"] is either a full custom URL (http://host:port/path — probed exactly)
+    or a path (/healthz — probed against this backend's host:port using hc["scheme"]).
+    """
+    target = hc.get("path") or "/"
+    start = time.monotonic()
+    conn = None
+    try:
+        if target.lower().startswith(("http://", "https://")):
+            u = urllib.parse.urlparse(target)
+            scheme = u.scheme
+            host = u.hostname
+            port = u.port or (443 if scheme == "https" else 80)
+            path = u.path or "/"
+            if u.query:
+                path += "?" + u.query
+        else:
+            scheme = hc.get("scheme") or "http"
+            host, port = _split(server)
+            path = target
+        if scheme == "https":
+            conn = http.client.HTTPSConnection(
+                host, port, timeout=HTTP_TIMEOUT, context=ssl._create_unverified_context())
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=HTTP_TIMEOUT)
+        conn.request("GET", path, headers={"User-Agent": "splitter-healthcheck"})
+        resp = conn.getresponse()
+        code = resp.status
+        resp.read()
+        expect = hc.get("expect")
+        ok = (code == int(expect)) if expect else (200 <= code < 400)
+        return ok, round((time.monotonic() - start) * 1000, 1), "" if ok else f"HTTP {code}"
+    except Exception as exc:                       # noqa: BLE001
+        return False, None, (getattr(exc, "strerror", None) or str(exc) or "unreachable")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _check(server, force=False, hc=None):
+    """Probe `server` honoring the cache; update and return its state dict. With
+    `hc` set, probe via HTTP GET to the health path instead of a TCP connect."""
+    key = _cache_key(server, hc)
     now = time.monotonic()
     with _lock:
-        prev = _state.get(server)
+        prev = _state.get(key)
         if prev and not force and (now - prev["_mono"]) < CACHE_TTL:
             return {k: v for k, v in prev.items() if not k.startswith("_")}
 
-    up, latency, error = _probe(server)
+    up, latency, error = _probe_http(server, hc) if hc else _probe(server)
     with _lock:
-        prev = _state.get(server)
+        prev = _state.get(key)
         # `since` only resets when the up/down state actually flips.
         since = prev["since"] if (prev and prev["up"] == up) else _now_iso()
         rec = {
@@ -81,7 +151,7 @@ def _check(server, force=False):
             "error": error,
             "_mono": now,
         }
-        _state[server] = rec
+        _state[key] = rec
         return {k: v for k, v in rec.items() if not k.startswith("_")}
 
 
@@ -125,13 +195,19 @@ def check_all(force=False):
     """
     mappings = storage.list_mappings()
 
-    # Dedupe servers so a host shared by several mappings is probed once.
-    servers = {s for m in mappings for s, _ in _mapping_servers(m)}
+    # Build probe jobs keyed by (server + health-check spec) so a host shared by
+    # several mappings is probed once — unless they use different health checks.
+    jobs = {}   # cache_key -> (server, hc)
+    for m in mappings:
+        hc = hc_spec(m)
+        for s, _ in _mapping_servers(m):
+            jobs.setdefault(_cache_key(s, hc), (s, hc))
     probed = {}
-    if servers:
-        with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(servers))) as pool:
-            for srv, state in zip(servers, pool.map(lambda s: _check(s, force), servers)):
-                probed[srv] = state
+    if jobs:
+        keys = list(jobs)
+        with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(keys))) as pool:
+            for k, state in zip(keys, pool.map(lambda k: _check(jobs[k][0], force, jobs[k][1]), keys)):
+                probed[k] = state
 
     out_mappings = {}
     summary = {"green": 0, "yellow": 0, "red": 0, "gray": 0, "total": 0}
@@ -139,6 +215,7 @@ def check_all(force=False):
         # A TCP connect probe says nothing about a UDP service (UDP has no
         # handshake), so report UDP backends as "not probed" rather than down.
         is_udp = (m.get("transport") or "tcp").lower() == "udp"
+        hc = hc_spec(m)
         # Failover: per-backend priority tier + which tier is currently active.
         is_failover = bool(m.get("failover")) and not is_udp
         prio_of, active_p = {}, None
@@ -155,7 +232,7 @@ def check_all(force=False):
                 rows.append({"server": srv, "up": None, "since": None,
                              "error": "udp (not probed)", "enabled": enabled})
                 continue
-            st = probed.get(srv, {"server": srv, "up": False, "error": "unknown"})
+            st = probed.get(_cache_key(srv, hc), {"server": srv, "up": False, "error": "unknown"})
             row = {**st, "enabled": enabled}
             if is_failover:
                 row["priority"] = prio_of.get(srv, 1)

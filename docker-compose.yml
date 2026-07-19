@@ -54,6 +54,10 @@ services:
       # write.) Remove these two lines if you'd rather keep host DNS untouched.
       - /etc/resolv.conf:/etc/resolv.conf
       - /etc/hosts:/etc/hosts
+      # Docker socket (read-only) powers the "Docker" page: discover running
+      # containers and use them as auto-reconciling backends by name. Remove if
+      # you don't want Splitter to read the Docker API.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
     restart: unless-stopped
 

@@ -214,10 +214,49 @@ def clean_backend_pool(items):
             entry["backup"] = True
         if it.get("down"):
             entry["down"] = True
+        # Docker-discovered backend: remember which container/port this server
+        # was resolved from so the reconciler can keep its IP current. The
+        # `server` field has already been resolved to a concrete IP:PORT by the
+        # caller (app._parse_lb); these are just provenance.
+        dc = (it.get("docker_container") or "").strip()
+        if dc:
+            entry["docker_container"] = dc
+            dp = clean_uint(it.get("docker_port"), "docker port", lo=1, hi=65535)
+            if dp is not None:
+                entry["docker_port"] = dp
         out.append(entry)
     if not out:
         raise ValidationError("At least one backend server is required.")
     return out
+
+
+def clean_health_url(value):
+    """HTTP health-check target. Either:
+      - a full custom URL  — http://host:8080/health  (probed exactly as given), or
+      - a path             — /healthz  (probed against each backend host:port).
+    No whitespace; defaults to /."""
+    v = (value or "").strip() or "/"
+    low = v.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        if any(c.isspace() for c in v) or len(v) > 1024:
+            raise ValidationError("Invalid health check URL.")
+        # must have a host after the scheme
+        rest = v.split("://", 1)[1]
+        if not rest or rest.startswith("/"):
+            raise ValidationError("Health check URL must include a host, e.g. http://host:8080/health.")
+        return v
+    if not v.startswith("/"):
+        v = "/" + v
+    if len(v) > 512 or any(c.isspace() for c in v):
+        raise ValidationError("Health check path must start with / (or be a full http(s):// URL) and contain no spaces.")
+    return v
+
+
+def clean_scheme(value, default="http"):
+    v = (value or "").strip().lower() or default
+    if v not in ("http", "https"):
+        raise ValidationError("Health check scheme must be http or https.")
+    return v
 
 
 def clean_interface(value, allowed=None):

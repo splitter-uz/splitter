@@ -107,7 +107,8 @@ def run_once():
         if (m.get("transport") or "tcp").lower() == "udp":
             continue
         servers = [b["server"] for b in nm._normalize_backends(m) if not b.get("down")]
-        up_map = {s: bool(health._check(s, force=True).get("up")) for s in servers}
+        hc = health.hc_spec(m)   # HTTP health-check if configured, else TCP connect
+        up_map = {s: bool(health._check(s, force=True, hc=hc).get("up")) for s in servers}
         new_p = evaluate(m, up_map)
         if new_p is not None:
             try:

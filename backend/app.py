@@ -23,6 +23,9 @@ import activity
 import auth
 import backup
 import config
+import docker_detect
+import docker_events
+import docker_reconcile
 import failover
 import firewall
 import health
@@ -44,8 +47,10 @@ from validators import (
     clean_fw_protocol,
     clean_fw_source,
     clean_hash_key,
+    clean_health_url,
     clean_interface,
     clean_ip,
+    clean_scheme,
     clean_mac,
     clean_port,
     clean_port_range,
@@ -73,6 +78,19 @@ def _parse_lb(form):
             raise ValidationError("Malformed backend pool data.")
     else:
         items = form.getlist("backends") or [form.get("backend")]
+    # Docker-discovered backends: an item may reference a container by name
+    # ({"docker_container": "web", "docker_port": 80, ...}) instead of a static
+    # address. Resolve it to the container's live IP:PORT now; the reconciler
+    # (docker_reconcile) keeps it current as containers restart.
+    for it in items:
+        if isinstance(it, dict) and it.get("docker_container") and not it.get("server"):
+            name = str(it["docker_container"]).strip()
+            resolved = docker_detect.resolve(name, it.get("docker_port"))
+            if not resolved:
+                raise ValidationError(
+                    f"Docker container {name!r} is not running or has no reachable "
+                    f"IP/port — start it, or pick another container.")
+            it["server"] = resolved
     backends = clean_backend_pool(items)
 
     method = (form.get("lb_method") or nm.DEFAULT_LB_METHOD).strip().lower()
@@ -115,8 +133,57 @@ def _parse_rate(form):
     }
 
 
+def _parse_health(form):
+    """Optional HTTP health check. When on, backends are probed with a GET to
+    `health_path` (scheme http/https) and considered up on the expected status
+    (blank => any 2xx/3xx) instead of a bare TCP connect. Drives both the health
+    column and failover promotion."""
+    enabled = _truthy(form.get("health_check"))
+    if not enabled:
+        return {"health_check": False, "health_path": None,
+                "health_scheme": None, "health_expect": None}
+    return {
+        # `health_path` may be a path (/healthz — probed per backend) or a full
+        # custom URL (http://host:8080/health — probed exactly).
+        "health_path": clean_health_url(form.get("health_path")),
+        "health_check": True,
+        "health_scheme": clean_scheme(form.get("health_scheme")),
+        "health_expect": clean_uint(form.get("health_expect"),
+                                    "expected status", lo=100, hi=599),
+    }
+
+
 def _truthy(v):
     return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _unresolvable_backend_hosts(backends):
+    """Backend hostnames that DNS can't resolve. nginx resolves `server`
+    hostnames once at config load, so an unresolvable name makes `nginx -t`
+    fail with "host not found in upstream" and the whole mapping rolls back —
+    a confusing error for the user (typically a typo or a Docker service name
+    that only Docker's DNS knows). We catch it up front and explain. IP
+    literals never need DNS and always pass."""
+    import ipaddress
+    import socket
+    bad = []
+    for b in backends or []:
+        server = (b.get("server") if isinstance(b, dict) else b) or ""
+        host = server.rsplit(":", 1)[0].strip() if ":" in server else server
+        host = host.strip("[]")            # IPv6 literal brackets
+        if not host:
+            continue
+        try:
+            ipaddress.ip_address(host)     # IP literal — no resolution needed
+            continue
+        except ValueError:
+            pass
+        try:
+            socket.getaddrinfo(host, None)
+        except OSError:
+            if host not in bad:
+                bad.append(host)
+    return bad
 
 app = Flask(
     __name__,
@@ -415,6 +482,44 @@ def update_settings():
         steps.append(nm.reload_nginx())
     _audit("settings.update", detail=", ".join(f"{k}={v}" for k, v in patch.items()))
     return jsonify({"ok": True, "settings": settings, "steps": steps})
+
+
+# --------------------------------------------------------------------------
+# Docker container discovery — power the "Docker" page and container backends.
+# --------------------------------------------------------------------------
+@app.get("/api/docker/status")
+def docker_status():
+    """Whether the Docker socket is reachable + a running-container count."""
+    return jsonify({"ok": True, **docker_detect.status()})
+
+
+@app.get("/api/docker/containers")
+@require_role("admin", "creator")
+def docker_containers():
+    """Running containers (name, image, IPs, ports) for the Docker page picker."""
+    if not docker_detect.available():
+        return _err("Docker socket not available — mount /var/run/docker.sock "
+                    "into the Splitter container to enable container discovery.",
+                    code=503)
+    try:
+        return jsonify({"ok": True, "containers": docker_detect.list_containers()})
+    except Exception as exc:                        # noqa: BLE001
+        return _err(f"Could not query Docker: {exc}", code=502)
+
+
+@app.get("/api/docker/services")
+@require_role("admin", "creator")
+def docker_services():
+    """Swarm services (name, replicas, published ports) for the Docker page when
+    this node is a swarm manager."""
+    if not docker_detect.available():
+        return _err("Docker socket not available.", code=503)
+    if not docker_detect.swarm_active():
+        return _err("Not a Swarm manager node.", code=409)
+    try:
+        return jsonify({"ok": True, "services": docker_detect.list_services()})
+    except Exception as exc:                        # noqa: BLE001
+        return _err(f"Could not query Swarm services: {exc}", code=502)
 
 
 # --------------------------------------------------------------------------
@@ -1279,6 +1384,7 @@ def create_mapping():
             allowed=allowed_ifaces or None)
         lb = _parse_lb(form)               # backend pool + LB method/options/timeouts
         rate = _parse_rate(form)           # optional rate limiting
+        healthcfg = _parse_health(form)    # optional HTTP health check
         alloc_method = (form.get("alloc_method") or "static").strip().lower()
         if alloc_method not in ("static", "dhcp"):
             raise ValidationError(f"Unknown allocation method: {alloc_method!r}")
@@ -1474,7 +1580,7 @@ def create_mapping():
         "subiface": subiface,
         "subiface_index": idx,
         "subiface_kind": subiface_kind,
-        "upstream_name": nm.upstream_name(domain),
+        "upstream_name": nm.upstream_name(domain, listen_port),
         "has_cert": has_cert,
         "ssl_mode": ssl_mode,
         "cert_domain": cert_domain,
@@ -1498,6 +1604,18 @@ def create_mapping():
     }
     mapping.update(lb)   # backends, lb_method, hash_*, random_two, proxy_* timeouts
     mapping.update(rate)  # rate_limit, limit_conn, proxy_download_rate, proxy_upload_rate
+    mapping.update(healthcfg)  # health_check, health_path, health_scheme, health_expect
+
+    # nginx resolves backend hostnames at config load; an unresolvable one makes
+    # `nginx -t` fail ("host not found in upstream") and rolls the mapping back.
+    # Catch it here with an actionable message instead of that cryptic failure.
+    bad_hosts = _unresolvable_backend_hosts(mapping.get("backends"))
+    if bad_hosts:
+        return _err(
+            "Backend host(s) can't be resolved: " + ", ".join(bad_hosts) + ". "
+            "Use an IP:port or a DNS name that resolves. If these are Docker "
+            "containers, add them from the Docker page — Splitter resolves the "
+            "container name to its live IP for you.")
 
     try:
         steps = nm.apply_mapping(mapping, cert_bytes, key_bytes)
@@ -1934,7 +2052,7 @@ def preview_conf():
         "cert_domain": cert_domain, "proxy_ssl": _truthy(form.get("proxy_ssl")),
         "sni_guard": _truthy(form.get("sni_guard")),
         "access_list": (form.get("access_list") or "").strip(),
-        "upstream_name": nm.upstream_name(domain),
+        "upstream_name": nm.upstream_name(domain, listen_port),
     }
     mapping.update(lb)
     mapping.update(rate)
@@ -2151,6 +2269,8 @@ if __name__ == "__main__":
     access.sync_all()          # materialise acl.d snippets (self-healing on boot)
     access.start_scheduler()   # background re-fetch of auto-refreshing lists
     failover.start_scheduler() # active-passive priority failover orchestration
+    docker_reconcile.start_scheduler()  # keep docker-backed backends' IPs current (poll)
+    docker_events.start_watcher()       # + react instantly to Docker events (Traefik-style)
     firewall.sync_all()        # re-apply per-interface iptables rules (self-healing on boot)
     mode = "SIMULATION (no system commands executed)" if config.SIMULATE else "LIVE"
     print(f" * Splitter starting in {mode} mode")
