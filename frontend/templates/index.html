@@ -998,7 +998,7 @@
           <!-- Pool builder: appears once containers are selected -->
           <div id="docker-pool-bar" class="hidden sticky top-2 z-10 card bg-white/90 backdrop-blur rounded-2xl border border-emerald-200 shadow-sm p-4 mb-5">
             <form id="docker-create-form" class="space-y-3">
-              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
                 <div>
                   <label class="text-[11px] font-medium text-slate-500">Domain</label>
                   <input name="domain" required placeholder="app.example.com" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
@@ -1006,6 +1006,13 @@
                 <div>
                   <label class="text-[11px] font-medium text-slate-500">Bind target</label>
                   <select name="bind" id="docker-bind" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white"></select>
+                </div>
+                <div>
+                  <label class="text-[11px] font-medium text-slate-500">Protocol</label>
+                  <select name="transport" id="docker-transport" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white">
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                  </select>
                 </div>
                 <div>
                   <label class="text-[11px] font-medium text-slate-500">Listen port</label>

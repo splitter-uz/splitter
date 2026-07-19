@@ -489,6 +489,7 @@ async function dockerCreateMapping(e) {
   const fd = new FormData();
   fd.append("domain", domain);
   fd.append("listen_port", f.listen_port.value || "443");
+  fd.append("transport", (f.transport && f.transport.value) || "tcp");
   fd.append("ssl_mode", "none");
   fd.append("lb_method", "round_robin");
   fd.append(SETTINGS.subinterface_enabled ? "subiface" : "interface", bind);
