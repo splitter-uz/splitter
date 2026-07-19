@@ -46,8 +46,10 @@ from validators import (
     clean_fw_protocol,
     clean_fw_source,
     clean_hash_key,
+    clean_health_path,
     clean_interface,
     clean_ip,
+    clean_scheme,
     clean_mac,
     clean_port,
     clean_port_range,
@@ -127,6 +129,24 @@ def _parse_rate(form):
                                           "download rate") if enabled else None,
         "proxy_upload_rate": clean_rate(form.get("proxy_upload_rate"),
                                         "upload rate") if enabled else None,
+    }
+
+
+def _parse_health(form):
+    """Optional HTTP health check. When on, backends are probed with a GET to
+    `health_path` (scheme http/https) and considered up on the expected status
+    (blank => any 2xx/3xx) instead of a bare TCP connect. Drives both the health
+    column and failover promotion."""
+    enabled = _truthy(form.get("health_check"))
+    if not enabled:
+        return {"health_check": False, "health_path": None,
+                "health_scheme": None, "health_expect": None}
+    return {
+        "health_check": True,
+        "health_path": clean_health_path(form.get("health_path")),
+        "health_scheme": clean_scheme(form.get("health_scheme")),
+        "health_expect": clean_uint(form.get("health_expect"),
+                                    "expected status", lo=100, hi=599),
     }
 
 
@@ -1361,6 +1381,7 @@ def create_mapping():
             allowed=allowed_ifaces or None)
         lb = _parse_lb(form)               # backend pool + LB method/options/timeouts
         rate = _parse_rate(form)           # optional rate limiting
+        healthcfg = _parse_health(form)    # optional HTTP health check
         alloc_method = (form.get("alloc_method") or "static").strip().lower()
         if alloc_method not in ("static", "dhcp"):
             raise ValidationError(f"Unknown allocation method: {alloc_method!r}")
@@ -1580,6 +1601,7 @@ def create_mapping():
     }
     mapping.update(lb)   # backends, lb_method, hash_*, random_two, proxy_* timeouts
     mapping.update(rate)  # rate_limit, limit_conn, proxy_download_rate, proxy_upload_rate
+    mapping.update(healthcfg)  # health_check, health_path, health_scheme, health_expect
 
     # nginx resolves backend hostnames at config load; an unresolvable one makes
     # `nginx -t` fail ("host not found in upstream") and rolls the mapping back.

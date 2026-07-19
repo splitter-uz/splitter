@@ -230,6 +230,24 @@ def clean_backend_pool(items):
     return out
 
 
+def clean_health_path(value):
+    """HTTP health-check request path (e.g. /healthz). Must start with / and
+    contain no whitespace. Defaults to /."""
+    v = (value or "").strip() or "/"
+    if not v.startswith("/"):
+        v = "/" + v
+    if len(v) > 512 or any(c.isspace() for c in v):
+        raise ValidationError("Health check path must start with / and contain no spaces.")
+    return v
+
+
+def clean_scheme(value, default="http"):
+    v = (value or "").strip().lower() or default
+    if v not in ("http", "https"):
+        raise ValidationError("Health check scheme must be http or https.")
+    return v
+
+
 def clean_interface(value, allowed=None):
     value = (value or "").strip()
     if not value or not _IFACE_RE.match(value):

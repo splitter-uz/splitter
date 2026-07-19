@@ -629,6 +629,13 @@ function syncFailoverUI() {
   if (on) renderFailoverPreview();
 }
 
+// Reveal the HTTP health-check fields with its toggle.
+function syncHealthUI() {
+  const on = $("#health_check") && $("#health_check").checked;
+  const sec = $("#health-section");
+  if (sec) sec.classList.toggle("hidden", !on);
+}
+
 function serializeBackends() {
   // Priority tiers only mean something under failover; skip them otherwise so a
   // plain load-balanced pool doesn't accumulate stray priority=1 on every server.
@@ -1415,6 +1422,7 @@ function resetForm() {
   onMethodChange();
   onLbChange();
   toggleRateSection();   // collapse rate-limit panel (reset() unchecked the toggle)
+  syncHealthUI();        // collapse health-check panel
   $("#bind_prefix").value = CFG.bind_prefix || "24";
   setTransport("tcp");
   filterProtocols();
@@ -1498,6 +1506,13 @@ function editMapping(domain, port) {
   // failover
   $("#failover").checked = !!m.failover;
   syncFailoverUI();
+
+  // HTTP health check
+  $("#health_check").checked = !!m.health_check;
+  setVal("health_path", m.health_path || "");
+  if ($("#health_scheme")) $("#health_scheme").value = m.health_scheme || "http";
+  setVal("health_expect", m.health_expect || "");
+  syncHealthUI();
 
   // rate limit
   $("#rate_limit_enabled").checked = !!m.rate_limit;
@@ -4110,6 +4125,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("#rate_limit_enabled").addEventListener("change", toggleRateSection);
   $("#failover").addEventListener("change", syncFailoverUI);
+  $("#health_check").addEventListener("change", syncHealthUI);
   $$('input[name="alloc_method"]').forEach((r) => r.addEventListener("change", onMethodChange));
   $$(".ssl-tab").forEach((b) => b.addEventListener("click", () => selectSsl(b.dataset.ssl)));
   $("#logout-btn").addEventListener("click", logout);
