@@ -759,9 +759,30 @@ function lbLabel(m) {
   }
 }
 
+// Display identity for a backend: the Docker container/service NAME (not the
+// resolved IP) when it's a docker-managed backend, else the host:port.
+function backendName(b) {
+  if (typeof b === "string") return b;
+  if (b && b.docker_container) return "🐳 " + b.docker_container + (b.docker_port ? ":" + b.docker_port : "");
+  return (b && b.server) || "";
+}
+
+// server "ip:port" -> docker display name, so views that only carry the probed
+// server address (health rollup, diagnose) can still show the name.
+const DOCKER_BE_NAME = {};
+function rebuildBackendNames() {
+  for (const k in DOCKER_BE_NAME) delete DOCKER_BE_NAME[k];
+  MAPPINGS.forEach((m) => (m.backends || []).forEach((b) => {
+    if (b && b.docker_container && b.server) {
+      DOCKER_BE_NAME[b.server] = "🐳 " + b.docker_container + (b.docker_port ? ":" + b.docker_port : "");
+    }
+  }));
+}
+function beDisplay(server) { return DOCKER_BE_NAME[server] || server; }
+
 function backendLabel(b) {
   if (typeof b === "string") return b;
-  let s = b.server;
+  let s = backendName(b);
   if (b.weight) s += " w" + b.weight;
   if (b.backup) s += " backup";
   if (b.down) s += " down";
@@ -825,7 +846,7 @@ function healthHtml(h) {
     const tag = !b.enabled ? "disabled"
       : b.up ? `up${b.latency_ms != null ? " " + b.latency_ms + "ms" : ""}`
              : `down${b.error ? " (" + b.error + ")" : ""}`;
-    return `${b.server}${role} — ${tag}`;
+    return `${beDisplay(b.server)}${role} — ${tag}`;
   }).join("\n");
   return `<span class="inline-flex items-center gap-2 text-xs text-slate-600" title="${escapeHtml(lines)}">`
     + `<span class="h-2.5 w-2.5 rounded-full ${dot}"></span>${escapeHtml(label)}${foBadge}</span>`;
@@ -932,6 +953,7 @@ function stopTrafficPolling() { clearInterval(TRAFFIC_TIMER); TRAFFIC_TIMER = nu
 let MAPPINGS = [];
 async function loadMappings() {
   MAPPINGS = (await (await fetch("/api/mappings")).json()).mappings || [];
+  rebuildBackendNames();   // server IP -> docker name, for health/diagnose views
   updateStats(MAPPINGS);
   loadSslCount();   // TLS Certs stat comes from the cert registry, not mappings
   renderMappings();
@@ -1712,7 +1734,7 @@ function renderRouteMap(force, keepView) {
       band.beList.forEach((be, j) => {
         const id = "be" + i + "_" + j;
         RNODES[id] = { id, kind: "be", x: outX, y: band.top + j * (BE_H + BE_GAP),
-                       w: outW, h: BE_H, data: m, idx: i, be, server: be.server };
+                       w: outW, h: BE_H, data: m, idx: i, be, server: be.server, label: backendName(be) };
         RLINKS.push({ id: "l" + id, s: "splitter", t: id, dir: "be", i, be, server: be.server });
       });
     } else {
@@ -1846,7 +1868,7 @@ function routeNodeMarkup(node) {
     return `<g id="rn-${node.id}" class="rnode route-be" data-id="${node.id}" data-i="${node.idx}" transform="translate(${node.x},${node.y})" style="cursor:pointer" font-family="ui-monospace, monospace">
       <rect id="rr-${node.id}" width="${w}" height="${h}" rx="9" fill="#F8FAFC" stroke="${v.color}" stroke-opacity="${v.bad ? "0.9" : "0.5"}" stroke-width="${v.bad ? "2" : "1.5"}"/>
       <circle id="rd-${node.id}" cx="16" cy="${my}" r="4.5" fill="${v.color}"/>
-      <text x="30" y="${my - 3}" fill="#1E293B" font-size="12">${esc(node.server)}</text>
+      <text x="30" y="${my - 3}" fill="#1E293B" font-size="12">${esc(node.label || node.server)}</text>
       <text id="rt-${node.id}" x="30" y="${my + 12}" fill="${v.color}" font-size="9.5">${esc(v.status)}</text>
       <text id="rx-${node.id}" x="${w - 14}" y="${my + 5}" text-anchor="middle" fill="#ef4444" font-size="15" font-weight="700" style="display:${v.bad ? "" : "none"}">✗</text>
       ${routePort(0, my, "#94A3B8")}</g>`;
@@ -3800,7 +3822,7 @@ function renderDiagnose(j) {
     const ok = b.up, off = !b.enabled;
     const meta = off ? "disabled" : ok ? (b.latency_ms != null ? b.latency_ms + " ms" : "up") : (b.error || "unreachable");
     return `<div class="flex items-center justify-between text-xs rounded-md border border-slate-100 px-2.5 py-1.5">`
-      + `<span class="font-mono ${off ? "text-slate-400 line-through" : "text-slate-700"}">${dot(ok && !off)}${escapeHtml(b.server)}</span>`
+      + `<span class="font-mono ${off ? "text-slate-400 line-through" : "text-slate-700"}">${dot(ok && !off)}${escapeHtml(beDisplay(b.server))}</span>`
       + `<span class="${ok && !off ? "text-slate-500" : "text-red-600"}">${escapeHtml(meta)}</span></div>`;
   }).join("");
 
