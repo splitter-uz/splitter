@@ -24,6 +24,7 @@ import auth
 import backup
 import config
 import docker_detect
+import docker_events
 import docker_reconcile
 import failover
 import firewall
@@ -46,7 +47,7 @@ from validators import (
     clean_fw_protocol,
     clean_fw_source,
     clean_hash_key,
-    clean_health_path,
+    clean_health_url,
     clean_interface,
     clean_ip,
     clean_scheme,
@@ -142,8 +143,10 @@ def _parse_health(form):
         return {"health_check": False, "health_path": None,
                 "health_scheme": None, "health_expect": None}
     return {
+        # `health_path` may be a path (/healthz — probed per backend) or a full
+        # custom URL (http://host:8080/health — probed exactly).
+        "health_path": clean_health_url(form.get("health_path")),
         "health_check": True,
-        "health_path": clean_health_path(form.get("health_path")),
         "health_scheme": clean_scheme(form.get("health_scheme")),
         "health_expect": clean_uint(form.get("health_expect"),
                                     "expected status", lo=100, hi=599),
@@ -2266,7 +2269,8 @@ if __name__ == "__main__":
     access.sync_all()          # materialise acl.d snippets (self-healing on boot)
     access.start_scheduler()   # background re-fetch of auto-refreshing lists
     failover.start_scheduler() # active-passive priority failover orchestration
-    docker_reconcile.start_scheduler()  # keep docker-backed backends' IPs current
+    docker_reconcile.start_scheduler()  # keep docker-backed backends' IPs current (poll)
+    docker_events.start_watcher()       # + react instantly to Docker events (Traefik-style)
     firewall.sync_all()        # re-apply per-interface iptables rules (self-healing on boot)
     mode = "SIMULATION (no system commands executed)" if config.SIMULATE else "LIVE"
     print(f" * Splitter starting in {mode} mode")
