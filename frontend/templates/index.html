@@ -506,22 +506,25 @@
                             <span class="text-xs font-normal text-slate-400">· probe a URL instead of a TCP connect</span></span>
                           <input type="checkbox" name="health_check" id="health_check" value="on" class="h-4 w-4 rounded" />
                         </label>
-                        <div id="health-section" class="hidden px-3 pb-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          <div>
-                            <label class="text-[11px] font-medium text-slate-500">Path</label>
-                            <input name="health_path" id="health_path" placeholder="/healthz" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono">
+                        <div id="health-section" class="hidden px-3 pb-3 space-y-2">
+                          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div class="sm:col-span-2">
+                              <label class="text-[11px] font-medium text-slate-500">Health check URL</label>
+                              <input name="health_path" id="health_path" placeholder="/healthz  or  http://host:8080/health" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono">
+                            </div>
+                            <div>
+                              <label class="text-[11px] font-medium text-slate-500">Expected status <span class="text-slate-400">(blank = 2xx/3xx)</span></label>
+                              <input name="health_expect" id="health_expect" type="number" min="100" max="599" placeholder="200" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                            </div>
                           </div>
-                          <div>
-                            <label class="text-[11px] font-medium text-slate-500">Scheme</label>
-                            <select name="health_scheme" id="health_scheme" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white">
+                          <div class="flex items-center gap-2">
+                            <label class="text-[11px] font-medium text-slate-500">Scheme <span class="text-slate-400">(for a path; ignored for a full URL)</span></label>
+                            <select name="health_scheme" id="health_scheme" class="rounded-lg border border-slate-200 px-2 py-1.5 text-sm bg-white">
                               <option value="http">HTTP</option>
                               <option value="https">HTTPS</option>
                             </select>
                           </div>
-                          <div>
-                            <label class="text-[11px] font-medium text-slate-500">Expected status <span class="text-slate-400">(blank = 2xx/3xx)</span></label>
-                            <input name="health_expect" id="health_expect" type="number" min="100" max="599" placeholder="200" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
-                          </div>
+                          <p class="text-[11px] text-slate-400">Enter a <b>path</b> (probed on each backend) or a full <b>custom URL</b> (probed exactly).</p>
                         </div>
                       </div>
                     </div>

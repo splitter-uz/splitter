@@ -230,14 +230,25 @@ def clean_backend_pool(items):
     return out
 
 
-def clean_health_path(value):
-    """HTTP health-check request path (e.g. /healthz). Must start with / and
-    contain no whitespace. Defaults to /."""
+def clean_health_url(value):
+    """HTTP health-check target. Either:
+      - a full custom URL  — http://host:8080/health  (probed exactly as given), or
+      - a path             — /healthz  (probed against each backend host:port).
+    No whitespace; defaults to /."""
     v = (value or "").strip() or "/"
+    low = v.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        if any(c.isspace() for c in v) or len(v) > 1024:
+            raise ValidationError("Invalid health check URL.")
+        # must have a host after the scheme
+        rest = v.split("://", 1)[1]
+        if not rest or rest.startswith("/"):
+            raise ValidationError("Health check URL must include a host, e.g. http://host:8080/health.")
+        return v
     if not v.startswith("/"):
         v = "/" + v
     if len(v) > 512 or any(c.isspace() for c in v):
-        raise ValidationError("Health check path must start with / and contain no spaces.")
+        raise ValidationError("Health check path must start with / (or be a full http(s):// URL) and contain no spaces.")
     return v
 
 

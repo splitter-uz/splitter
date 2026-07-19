@@ -22,6 +22,7 @@ import socket
 import ssl
 import threading
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 import config
@@ -83,20 +84,33 @@ def _cache_key(server, hc):
 
 
 def _probe_http(server, hc):
-    """One HTTP(S) GET to the backend's health path. Returns (up, latency_ms, error)."""
-    try:
-        host, port = _split(server)
-    except (ValueError, AttributeError):
-        return False, None, "bad address"
+    """One HTTP(S) GET to the backend's health target. Returns (up, latency_ms, error).
+
+    hc["path"] is either a full custom URL (http://host:port/path — probed exactly)
+    or a path (/healthz — probed against this backend's host:port using hc["scheme"]).
+    """
+    target = hc.get("path") or "/"
     start = time.monotonic()
     conn = None
     try:
-        if hc["scheme"] == "https":
+        if target.lower().startswith(("http://", "https://")):
+            u = urllib.parse.urlparse(target)
+            scheme = u.scheme
+            host = u.hostname
+            port = u.port or (443 if scheme == "https" else 80)
+            path = u.path or "/"
+            if u.query:
+                path += "?" + u.query
+        else:
+            scheme = hc.get("scheme") or "http"
+            host, port = _split(server)
+            path = target
+        if scheme == "https":
             conn = http.client.HTTPSConnection(
                 host, port, timeout=HTTP_TIMEOUT, context=ssl._create_unverified_context())
         else:
             conn = http.client.HTTPConnection(host, port, timeout=HTTP_TIMEOUT)
-        conn.request("GET", hc["path"] or "/", headers={"User-Agent": "splitter-healthcheck"})
+        conn.request("GET", path, headers={"User-Agent": "splitter-healthcheck"})
         resp = conn.getresponse()
         code = resp.status
         resp.read()
