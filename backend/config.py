@@ -37,6 +37,11 @@ NGINX_ERROR_LOG = os.environ.get("SPLITTER_NGINX_ERROR_LOG", "/var/log/nginx/err
 # Filesystem whose usage the Monitoring page reports (root by default).
 MONITOR_DISK_PATH = os.environ.get("SPLITTER_MONITOR_DISK_PATH", "/")
 
+# Per-mapping traffic logs. Each mapping gets its own directory
+# <LOG_DIR>/<domain>.<port>/ holding <domain>.<port>-access.log and
+# <domain>.<port>-error.log, written by nginx and browsed from the Logs page.
+LOG_DIR = os.environ.get("SPLITTER_LOG_DIR", "/var/log/splitter")
+
 # Host network-settings files editable from the Interfaces page.
 RESOLV_CONF = os.environ.get("SPLITTER_RESOLV_CONF", "/etc/resolv.conf")
 HOSTS_FILE = os.environ.get("SPLITTER_HOSTS_FILE", "/etc/hosts")
