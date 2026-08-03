@@ -628,6 +628,15 @@
                     Requires TLS passthrough (don't terminate a certificate on this mapping).</span>
                   </label>
 
+                  <!-- Real client IP (PROXY protocol) -->
+                  <label id="pp-section" class="flex items-start gap-2 text-xs text-slate-700 rounded-lg border border-slate-200 p-3">
+                    <input type="checkbox" name="proxy_protocol" id="proxy_protocol" value="1" class="mt-0.5 rounded" />
+                    <span><b>Send real client IP (PROXY protocol)</b> — prepend each client's real IP to the upstream
+                    connection (<span class="font-mono">proxy_protocol on</span>). The backend <b>must</b> be configured
+                    to accept the PROXY protocol (nginx <span class="font-mono">listen … proxy_protocol</span>,
+                    Traefik, HAProxy…), otherwise every connection will fail. TCP only.</span>
+                  </label>
+
                   <div class="flex gap-2 pt-1">
                     <button type="submit" id="apply-btn"
                       class="btn-primary flex-1 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25 disabled:opacity-50">

@@ -1541,6 +1541,9 @@ def create_mapping():
         if _truthy(form.get("sni_guard")):
             return _err("Hostname (SNI) restriction needs TCP — it can't be used "
                         "with a UDP listener.")
+        if _truthy(form.get("proxy_protocol")):
+            return _err("PROXY protocol needs TCP — it can't be used with a UDP "
+                        "listener.")
 
     # SNI guard: only serve this exact hostname, drop any other. Uses ssl_preread,
     # so it is incompatible with terminating TLS on this listener.
@@ -1586,6 +1589,10 @@ def create_mapping():
         "cert_domain": cert_domain,
         "proxy_ssl": proxy_ssl,   # re-encrypt to backend
         "sni_guard": sni_guard,   # only serve this hostname (passthrough)
+        # Send the client's real IP to the backend via the PROXY protocol.
+        # The backend must be configured to accept it (nginx `listen …
+        # proxy_protocol`, Traefik, HAProxy, …) or every connection fails.
+        "proxy_protocol": _truthy(form.get("proxy_protocol")),
         "access_list": access_list,   # "" | "__default__" | "<name>" allow/deny list
         # Whether this app is bound to the WAF (L7 HTTP reverse proxy + ModSecurity)
         # instead of the default L4 stream proxy. Preserved across edits; toggled
@@ -2051,6 +2058,7 @@ def preview_conf():
         "transport": (form.get("transport") or "tcp").strip().lower(),
         "cert_domain": cert_domain, "proxy_ssl": _truthy(form.get("proxy_ssl")),
         "sni_guard": _truthy(form.get("sni_guard")),
+        "proxy_protocol": _truthy(form.get("proxy_protocol")),
         "access_list": (form.get("access_list") or "").strip(),
         "upstream_name": nm.upstream_name(domain, listen_port),
     }
