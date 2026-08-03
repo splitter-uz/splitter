@@ -1541,9 +1541,6 @@ def create_mapping():
         if _truthy(form.get("sni_guard")):
             return _err("Hostname (SNI) restriction needs TCP — it can't be used "
                         "with a UDP listener.")
-        if _truthy(form.get("proxy_protocol")):
-            return _err("PROXY protocol needs TCP — it can't be used with a UDP "
-                        "listener.")
 
     # SNI guard: only serve this exact hostname, drop any other. Uses ssl_preread,
     # so it is incompatible with terminating TLS on this listener.
@@ -1589,10 +1586,6 @@ def create_mapping():
         "cert_domain": cert_domain,
         "proxy_ssl": proxy_ssl,   # re-encrypt to backend
         "sni_guard": sni_guard,   # only serve this hostname (passthrough)
-        # Send the client's real IP to the backend via the PROXY protocol.
-        # The backend must be configured to accept it (nginx `listen …
-        # proxy_protocol`, Traefik, HAProxy, …) or every connection fails.
-        "proxy_protocol": _truthy(form.get("proxy_protocol")),
         "access_list": access_list,   # "" | "__default__" | "<name>" allow/deny list
         # Whether this app is bound to the WAF (L7 HTTP reverse proxy + ModSecurity)
         # instead of the default L4 stream proxy. Preserved across edits; toggled
@@ -1696,7 +1689,8 @@ def delete_mapping(domain):
     remove_cert = bool(owns_cert) and config.REMOVE_CERTS_ON_DELETE and \
         not storage.cert_in_use(domain, exclude_domain=domain, exclude_port=port)
 
-    steps = nm.deprovision_mapping(mapping, delete_vlan=delete_vlan, remove_cert=remove_cert)
+    steps = nm.deprovision_mapping(mapping, delete_vlan=delete_vlan,
+                                   remove_cert=remove_cert, remove_logs=True)
     storage.delete(domain, port)
     if delete_vlan:
         storage.vlan_owned_remove(vlan_iface)
@@ -1795,6 +1789,63 @@ def diagnose_mapping(domain):
         "backends": backends,
         "logs": nm.tail_error_log(patterns),
     })
+
+
+# --------------------------------------------------------------------------
+# Per-mapping traffic logs (Logs page, admin only)
+# --------------------------------------------------------------------------
+@app.get("/api/logs")
+@require_role("admin")
+def logs_overview():
+    """Every mapping with the state of its per-mapping log files (existence,
+    size) so the Logs page can render the picker list."""
+    items = []
+    for m in storage.list_mappings():
+        port = m.get("listen_port") or config.LISTEN_PORT
+        entry = {
+            "domain": m["domain"],
+            "port": port,
+            "transport": (m.get("transport") or "tcp").lower(),
+            "waf_bound": bool(m.get("waf_bound")),
+            "enabled": m.get("enabled", True),
+            "logs": {},
+        }
+        for kind, path in nm.log_paths_for(m["domain"], port).items():
+            try:
+                size = os.path.getsize(path) if os.path.exists(path) else None
+            except OSError:
+                size = None
+            entry["logs"][kind] = {"path": path, "exists": size is not None,
+                                   "size": size}
+        items.append(entry)
+    items.sort(key=lambda e: (e["domain"], e["port"]))
+    return jsonify({"ok": True, "dir": config.LOG_DIR,
+                    "simulate": config.SIMULATE, "mappings": items})
+
+
+@app.get("/api/logs/<domain>/<int:port>/<kind>")
+@require_role("admin")
+def logs_tail(domain, port, kind):
+    """Tail one mapping's access or error log, with optional substring search
+    (?q=) and tail depth (?lines=, capped). Path is derived from the STORED
+    mapping, never from user input, so it can't escape the log directory."""
+    try:
+        domain = clean_domain(domain)
+    except ValidationError as exc:
+        return _err(str(exc))
+    if kind not in ("access", "error"):
+        return _err("kind must be 'access' or 'error'.")
+    if not storage.get(domain, port):
+        return _err("No such mapping.", code=404)
+    try:
+        lines = max(10, min(int(request.args.get("lines", 500)), 5000))
+    except (TypeError, ValueError):
+        lines = 500
+    q = (request.args.get("q") or "").strip() or None
+    path = nm.log_paths_for(domain, port)[kind]
+    res = nm.tail_mapping_log(path, lines=lines, query=q)
+    res.update({"domain": domain, "port": port, "kind": kind})
+    return jsonify(res)
 
 
 # --------------------------------------------------------------------------
@@ -2058,7 +2109,6 @@ def preview_conf():
         "transport": (form.get("transport") or "tcp").strip().lower(),
         "cert_domain": cert_domain, "proxy_ssl": _truthy(form.get("proxy_ssl")),
         "sni_guard": _truthy(form.get("sni_guard")),
-        "proxy_protocol": _truthy(form.get("proxy_protocol")),
         "access_list": (form.get("access_list") or "").strip(),
         "upstream_name": nm.upstream_name(domain, listen_port),
     }

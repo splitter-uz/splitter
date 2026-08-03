@@ -30,7 +30,7 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["mappings", "form", "users", "activity", "monitoring", "livemap", "interfaces", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
+const PAGES = ["mappings", "form", "users", "activity", "logs", "monitoring", "livemap", "interfaces", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
 // Pages whose data is loaded lazily on first visit (see showPage).
 const PAGE_LOADED = new Set();
 function showPage(name) {
@@ -41,6 +41,9 @@ function showPage(name) {
     if (sec) sec.classList.toggle("hidden", p !== name);
   });
   if (name === "activity") loadActivity();
+  // Logs page reloads its mapping list on entry; leaving stops auto-refresh.
+  if (name === "logs") loadLogsPage();
+  else stopLogsAuto();
   if (name === "backup") loadBackups();
   if (name === "waf") loadWaf();
   if (name === "ssl") loadSslCerts();
@@ -1406,10 +1409,6 @@ function applyTransportRules() {
   // TLS termination is impossible on UDP — hide the SSL picker entirely.
   const ssl = $("#ssl-section");
   if (ssl) ssl.classList.toggle("hidden", udp);
-  // PROXY protocol is TCP-only (works with both passthrough and termination).
-  const pp = $("#pp-section");
-  if (pp) pp.classList.toggle("hidden", udp);
-  if (udp) $("#proxy_protocol").checked = false;
   // SNI availability depends on both transport and SSL termination.
   updateSniAvailability();
 }
@@ -1533,7 +1532,6 @@ function editMapping(domain, port) {
   }
 
   $("#sni_guard").checked = !!m.sni_guard;
-  $("#proxy_protocol").checked = !!m.proxy_protocol;
 
   // Access list — fall back to the global default for pre-feature mappings.
   populateAccessDropdown();
@@ -3412,6 +3410,103 @@ async function loadActivity() {
   } catch (_) { /* non-fatal */ }
 }
 
+// --- per-mapping traffic logs (Logs page, admin) ----------------------------
+let LOGS_CURRENT = null;      // { domain, port } open in the viewer
+let LOGS_KIND = "access";     // which tab: access | error
+let LOGS_TIMER = null;        // auto-refresh interval
+
+async function loadLogsPage() {
+  if (!isAdmin()) return;
+  stopLogsAuto();
+  LOGS_CURRENT = null;
+  $("#logs-viewer").classList.add("hidden");
+  $("#logs-list-card").classList.remove("hidden");
+  try {
+    const j = await (await fetch("/api/logs")).json();
+    if (!j.ok) return;
+    $("#logs-dir").textContent = j.dir || "";
+    const rows = $("#logs-list-rows");
+    rows.innerHTML = "";
+    const maps = j.mappings || [];
+    $("#logs-list-empty").classList.toggle("hidden", maps.length > 0);
+    maps.forEach((m) => {
+      const tr = document.createElement("tr");
+      tr.className = "hover:bg-slate-50 cursor-pointer";
+      const cell = (l) => l && l.exists
+        ? `<span class="text-emerald-700 font-mono text-xs">${fmtBytes(l.size || 0)}</span>`
+        : '<span class="text-slate-300 text-xs">not written yet</span>';
+      tr.innerHTML = `
+        <td class="px-6 py-3 whitespace-nowrap">
+          <span class="font-mono font-semibold text-slate-800">${escapeHtml(m.domain)}</span>
+          <span class="text-slate-400 text-xs">:${m.port}</span>
+          ${m.enabled ? "" : '<span class="ml-2 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-200 text-slate-500">disabled</span>'}
+        </td>
+        <td class="px-6 py-3 whitespace-nowrap text-xs text-slate-500">${m.waf_bound ? "L7 / WAF" : "L4 " + (m.transport || "tcp").toUpperCase()}</td>
+        <td class="px-6 py-3 whitespace-nowrap">${cell(m.logs && m.logs.access)}</td>
+        <td class="px-6 py-3 whitespace-nowrap">${cell(m.logs && m.logs.error)}</td>
+        <td class="px-6 py-3 text-right text-emerald-700 text-sm font-semibold whitespace-nowrap">Open →</td>`;
+      tr.addEventListener("click", () => openLogsViewer(m.domain, m.port));
+      rows.appendChild(tr);
+    });
+  } catch (_) { /* non-fatal */ }
+}
+
+function openLogsViewer(domain, port) {
+  LOGS_CURRENT = { domain, port };
+  LOGS_KIND = "access";
+  syncLogsTabs();
+  $("#logs-viewer-title").textContent = `${domain}:${port}`;
+  $("#logs-search").value = "";
+  $("#logs-output").textContent = "";
+  $("#logs-meta").textContent = "";
+  $("#logs-list-card").classList.add("hidden");
+  $("#logs-viewer").classList.remove("hidden");
+  refreshLogs();
+}
+
+function syncLogsTabs() {
+  $$(".logs-tab").forEach((b) => {
+    const on = b.dataset.kind === LOGS_KIND;
+    b.className = "logs-tab px-4 py-2 " +
+      (on ? "bg-emerald-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50");
+  });
+}
+
+async function refreshLogs() {
+  if (!LOGS_CURRENT) return;
+  const { domain, port } = LOGS_CURRENT;
+  const q = $("#logs-search").value.trim();
+  const kind = LOGS_KIND;
+  const url = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}` +
+    `?lines=${$("#logs-lines").value}` + (q ? `&q=${encodeURIComponent(q)}` : "");
+  try {
+    const j = await (await fetch(url)).json();
+    // Ignore a slow response for a mapping/tab the user has already left.
+    if (!LOGS_CURRENT || LOGS_CURRENT.domain !== domain ||
+        LOGS_CURRENT.port !== port || LOGS_KIND !== kind) return;
+    const out = $("#logs-output");
+    if (!j.ok) {
+      $("#logs-meta").textContent = j.path || "";
+      out.textContent = j.error || "Failed to read log.";
+      return;
+    }
+    const n = (j.lines || []).length;
+    $("#logs-meta").textContent =
+      [j.path, j.exists ? fmtBytes(j.size || 0) : "not written yet",
+       `${n} line${n === 1 ? "" : "s"}${q ? " matched" : ""}`].join("  ·  ");
+    out.textContent = (j.lines || []).join("\n") ||
+      (j.exists ? (q ? "No lines match the search." : "Log is empty.")
+                : "Nothing logged yet — the file appears on first traffic after Save/Apply.");
+    out.scrollTop = out.scrollHeight;
+  } catch (_) { /* non-fatal */ }
+}
+
+function stopLogsAuto() {
+  if (LOGS_TIMER) { clearInterval(LOGS_TIMER); LOGS_TIMER = null; }
+  const cb = $("#logs-auto");
+  if (cb) cb.checked = false;
+}
+
 // --- backup & restore (admin) ----------------------------------------------
 let BACKUPS = [];
 const BK_SELECTED = new Set();
@@ -3577,6 +3672,7 @@ async function loadMe() {
   $("#nav-users").classList.toggle("hidden", !admin);
   $("#activity-card").classList.toggle("hidden", !admin);
   $("#nav-activity").classList.toggle("hidden", !admin);
+  $("#nav-logs").classList.toggle("hidden", !admin);
   $("#nav-backup").classList.toggle("hidden", !admin);
   $("#nav-waf").classList.toggle("hidden", !admin);
   $("#nav-access").classList.toggle("hidden", !admin);
@@ -4139,6 +4235,26 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#user-check-all").addEventListener("change", (e) => toggleUserSelectAll(e.target.checked));
   $("#user-bulk-delete").addEventListener("click", deleteSelectedUsers);
   $("#activity-refresh").addEventListener("click", loadActivity);
+
+  // Logs page
+  $("#logs-list-refresh").addEventListener("click", loadLogsPage);
+  $("#logs-back").addEventListener("click", loadLogsPage);
+  $("#logs-refresh").addEventListener("click", refreshLogs);
+  $$(".logs-tab").forEach((b) => b.addEventListener("click", () => {
+    LOGS_KIND = b.dataset.kind;
+    syncLogsTabs();
+    refreshLogs();
+  }));
+  let logsSearchTimer;
+  $("#logs-search").addEventListener("input", () => {
+    clearTimeout(logsSearchTimer);
+    logsSearchTimer = setTimeout(refreshLogs, 350);
+  });
+  $("#logs-lines").addEventListener("change", refreshLogs);
+  $("#logs-auto").addEventListener("change", (e) => {
+    if (LOGS_TIMER) { clearInterval(LOGS_TIMER); LOGS_TIMER = null; }
+    if (e.target.checked) LOGS_TIMER = setInterval(refreshLogs, 5000);
+  });
   $("#backup-refresh").addEventListener("click", loadBackups);
   $("#backup-now").addEventListener("click", createBackupNow);
   $("#backup-download").addEventListener("click", () => { window.location.href = "/api/backups/download?now=1"; });

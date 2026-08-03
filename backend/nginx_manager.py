@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -661,6 +662,17 @@ def render_conf(mapping):
         lines.append(_server_line(b))
     lines += ["}", ""]
 
+    # Per-mapping traffic log. log_format is a stream{}-level directive and its
+    # name is global, so scope it to this mapping (this file is included
+    # directly inside stream{}).
+    log_paths = log_paths_for(mapping["domain"], port)
+    lines += [
+        f"log_format {name}_fmt '$remote_addr [$time_local] $protocol $status '",
+        "                       'sent=$bytes_sent rcvd=$bytes_received "
+        "time=$session_time upstream=\"$upstream_addr\"';",
+        "",
+    ]
+
     # UDP is a datagram transport: nginx can't terminate TLS or read a TLS SNI
     # on it (those are TCP/stream-TLS concepts), so a UDP listener is always a
     # plain passthrough.
@@ -712,11 +724,9 @@ def render_conf(mapping):
             lines.append(f"    proxy_pass ${sni_var};")
         else:
             lines.append(f"    proxy_pass {name};")
-    # PROXY protocol: prepend the client's real IP/port to each upstream
-    # connection. TCP only; the backend must be configured to accept it.
-    if mapping.get("proxy_protocol") and not is_udp:
-        lines.append("    proxy_protocol on;")
     lines += [
+        f"    access_log {log_paths['access']} {name}_fmt;",
+        f"    error_log  {log_paths['error']} warn;",
         f"    proxy_timeout {proxy_timeout};",
         f"    proxy_connect_timeout {proxy_connect_timeout};",
     ]
@@ -730,6 +740,44 @@ def render_conf(mapping):
 
 def _mapping_port(mapping):
     return mapping.get("listen_port") or config.LISTEN_PORT
+
+
+# --------------------------------------------------------------------------
+# Per-mapping traffic logs
+# --------------------------------------------------------------------------
+# Each mapping logs into its own directory <LOG_DIR>/<domain>.<port>/ as
+# <domain>.<port>-access.log / -error.log. The dir name carries the port
+# because one domain may be mapped on several ports.
+def log_dir_for(domain, port):
+    return os.path.join(config.LOG_DIR, f"{domain}.{port}")
+
+
+def log_paths_for(domain, port):
+    base = os.path.join(log_dir_for(domain, port), f"{domain}.{port}")
+    return {"access": base + "-access.log", "error": base + "-error.log"}
+
+
+def ensure_log_dir(domain, port):
+    """Create the mapping's log directory before nginx -t runs — nginx refuses
+    a config whose access_log/error_log directory doesn't exist."""
+    if config.SIMULATE:
+        return
+    os.makedirs(log_dir_for(domain, port), exist_ok=True)
+
+
+def remove_log_dir(domain, port):
+    """Delete a mapping's log directory (mapping deletion only)."""
+    d = log_dir_for(domain, port)
+    if config.SIMULATE:
+        return StepResult("Remove traffic logs", True,
+                          f"[simulated] would remove {d}", simulated=True)
+    try:
+        if os.path.isdir(d):
+            shutil.rmtree(d)
+            return StepResult("Remove traffic logs", True, f"removed {d}")
+        return StepResult("Remove traffic logs", True, f"{d} not present")
+    except OSError as exc:
+        return StepResult("Remove traffic logs", False, str(exc))
 
 
 def conf_path_for(domain, port):
@@ -773,6 +821,7 @@ def write_conf(mapping):
             f"[simulated] would write {path}\n\n{content}", simulated=True)
     try:
         os.makedirs(config.STREAM_CONF_DIR, exist_ok=True)
+        ensure_log_dir(mapping["domain"], _mapping_port(mapping))
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(content)
         os.chmod(path, 0o644)
@@ -853,7 +902,20 @@ def render_http_conf(mapping):
         lines.append(_server_line(b))
     lines += ["}", ""]
 
+    # Per-mapping traffic log (full HTTP line — this is an L7 proxy). The
+    # format name is global to http{}, so scope it to this mapping.
+    log_paths = log_paths_for(mapping["domain"], port)
+    lines += [
+        f"log_format {name}_fmt '$remote_addr - $remote_user [$time_local] "
+        "\"$request\" $status $body_bytes_sent '",
+        "                       '\"$http_referer\" \"$http_user_agent\" "
+        "rt=$request_time upstream=$upstream_addr';",
+        "",
+    ]
+
     lines.append("server {")
+    lines.append(f"    access_log {log_paths['access']} {name}_fmt;")
+    lines.append(f"    error_log  {log_paths['error']} warn;")
     if terminate:
         lines.append(f"    listen {bind_ip}:{port} ssl;")
         lines.append(f"    server_name {mapping['domain']};")
@@ -892,6 +954,7 @@ def write_http_conf(mapping):
             f"[simulated] would write {path}\n\n{content}", simulated=True)
     try:
         os.makedirs(config.WAF_APP_CONF_DIR, exist_ok=True)
+        ensure_log_dir(mapping["domain"], _mapping_port(mapping))
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(content)
         os.chmod(path, 0o644)
@@ -1215,6 +1278,36 @@ def tail_error_log(patterns, lines=400, max_out=200):
     return {"ok": True, "path": path, "lines": kept[-max_out:]}
 
 
+def tail_mapping_log(path, lines=500, query=None, max_out=2000):
+    """Tail one per-mapping traffic log for the Logs page, optionally keeping
+    only lines containing `query` (case-insensitive). The files are written by
+    nginx (root-owned), so read via the privileged prefix like tail_error_log."""
+    if config.SIMULATE:
+        return {"ok": True, "path": path, "exists": True, "size": 0,
+                "lines": [f"[simulated] would tail {path}"]}
+    if not os.path.exists(path):
+        return {"ok": True, "path": path, "exists": False, "size": 0, "lines": []}
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = None
+    try:
+        proc = subprocess.run(_privileged(["tail", "-n", str(lines), path]),
+                              capture_output=True, text=True, timeout=15)
+    except Exception as exc:
+        return {"ok": False, "path": path, "exists": True, "size": size,
+                "lines": [], "error": str(exc)}
+    if proc.returncode != 0:
+        return {"ok": False, "path": path, "exists": True, "size": size, "lines": [],
+                "error": (proc.stderr or "").strip() or f"tail exited {proc.returncode}"}
+    out = proc.stdout.splitlines()
+    if query:
+        q = query.lower()
+        out = [ln for ln in out if q in ln.lower()]
+    return {"ok": True, "path": path, "exists": True, "size": size,
+            "lines": out[-max_out:]}
+
+
 def _wait_listening(ip, port, timeout, udp=False):
     """Poll `ss` until ip:port is bound or `timeout` seconds elapse."""
     if config.SIMULATE:
@@ -1331,11 +1424,16 @@ def apply_mapping(mapping, cert_bytes=None, key_bytes=None):
     return steps
 
 
-def deprovision_mapping(mapping, delete_vlan=False, remove_cert=False):
+def deprovision_mapping(mapping, delete_vlan=False, remove_cert=False,
+                        remove_logs=False):
     """Tear down everything created for a mapping. Best-effort, never raises."""
     # Remove both possible config forms (L4 stream and L7 HTTP+WAF).
     port = _mapping_port(mapping)
     steps = [remove_conf(mapping["domain"], port), remove_http_conf(mapping["domain"], port)]
+
+    # Only on real deletion (not disable): drop the per-mapping traffic logs.
+    if remove_logs:
+        steps.append(remove_log_dir(mapping["domain"], port))
 
     # Only remove the cert if the caller says this mapping OWNS it and nothing
     # else still references it (shared certs are kept).
