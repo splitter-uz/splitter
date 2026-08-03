@@ -712,6 +712,10 @@ def render_conf(mapping):
             lines.append(f"    proxy_pass ${sni_var};")
         else:
             lines.append(f"    proxy_pass {name};")
+    # PROXY protocol: prepend the client's real IP/port to each upstream
+    # connection. TCP only; the backend must be configured to accept it.
+    if mapping.get("proxy_protocol") and not is_udp:
+        lines.append("    proxy_protocol on;")
     lines += [
         f"    proxy_timeout {proxy_timeout};",
         f"    proxy_connect_timeout {proxy_connect_timeout};",

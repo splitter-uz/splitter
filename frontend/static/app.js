@@ -1406,6 +1406,10 @@ function applyTransportRules() {
   // TLS termination is impossible on UDP — hide the SSL picker entirely.
   const ssl = $("#ssl-section");
   if (ssl) ssl.classList.toggle("hidden", udp);
+  // PROXY protocol is TCP-only (works with both passthrough and termination).
+  const pp = $("#pp-section");
+  if (pp) pp.classList.toggle("hidden", udp);
+  if (udp) $("#proxy_protocol").checked = false;
   // SNI availability depends on both transport and SSL termination.
   updateSniAvailability();
 }
@@ -1529,6 +1533,7 @@ function editMapping(domain, port) {
   }
 
   $("#sni_guard").checked = !!m.sni_guard;
+  $("#proxy_protocol").checked = !!m.proxy_protocol;
 
   // Access list — fall back to the global default for pre-feature mappings.
   populateAccessDropdown();
