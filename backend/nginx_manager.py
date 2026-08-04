@@ -662,17 +662,6 @@ def render_conf(mapping):
         lines.append(_server_line(b))
     lines += ["}", ""]
 
-    # Per-mapping traffic log. log_format is a stream{}-level directive and its
-    # name is global, so scope it to this mapping (this file is included
-    # directly inside stream{}).
-    log_paths = log_paths_for(mapping["domain"], port)
-    lines += [
-        f"log_format {name}_fmt '$remote_addr [$time_local] $protocol $status '",
-        "                       'sent=$bytes_sent rcvd=$bytes_received "
-        "time=$session_time upstream=\"$upstream_addr\"';",
-        "",
-    ]
-
     # UDP is a datagram transport: nginx can't terminate TLS or read a TLS SNI
     # on it (those are TCP/stream-TLS concepts), so a UDP listener is always a
     # plain passthrough.
@@ -684,6 +673,31 @@ def render_conf(mapping):
     # termination on this listener) and TCP.
     sni_guard = bool(mapping.get("sni_guard")) and not terminate and not is_udp
     sni_var = "sni_" + name
+
+    # Pre-read the TLS ClientHello so the requested hostname (SNI) shows up in
+    # the access log — but only where it's safe: TLS-passthrough TCP traffic.
+    # A terminated listener can't preread (and already knows the SNI from its
+    # own handshake); a server-first protocol (SSH, SMTP, MySQL…) would stall
+    # in the preread phase waiting for client bytes, so only enable it when the
+    # traffic is clearly TLS: SNI guard, protocol=HTTPS, or port 443.
+    proto = (mapping.get("protocol") or "").lower()
+    ssl_preread = sni_guard or (
+        not terminate and not is_udp and (proto == "https" or port == 443))
+
+    # Per-mapping traffic log. log_format is a stream{}-level directive and its
+    # name is global, so scope it to this mapping (this file is included
+    # directly inside stream{}). host= is the hostname the client asked for:
+    # from the terminated handshake, or from the pre-read ClientHello (empty
+    # when neither applies — plain TCP/UDP has no hostname on the wire).
+    log_paths = log_paths_for(mapping["domain"], port)
+    sni_src = "$ssl_server_name" if terminate else (
+        "$ssl_preread_server_name" if ssl_preread else "")
+    lines += [
+        f"log_format {name}_fmt '$remote_addr [$time_local] $protocol $status '",
+        f"                       'host=\"{sni_src}\" sent=$bytes_sent "
+        "rcvd=$bytes_received time=$session_time upstream=\"$upstream_addr\"';",
+        "",
+    ]
 
     if sni_guard:
         lines += [
@@ -719,11 +733,10 @@ def render_conf(mapping):
         # Plain Layer-4 passthrough: forward the raw TCP/TLS stream (or UDP
         # datagrams) untouched; the backend terminates TLS.
         lines.append(f"    listen {bind_ip}:{port}{' udp' if is_udp else ''};")
-        if sni_guard:
+        if ssl_preread:
             lines.append("    ssl_preread on;")
-            lines.append(f"    proxy_pass ${sni_var};")
-        else:
-            lines.append(f"    proxy_pass {name};")
+        lines.append(f"    proxy_pass ${sni_var};" if sni_guard
+                     else f"    proxy_pass {name};")
     lines += [
         f"    access_log {log_paths['access']} {name}_fmt;",
         f"    error_log  {log_paths['error']} warn;",
