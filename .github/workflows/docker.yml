@@ -1,0 +1,59 @@
+# Build the Splitter image and push it to Docker Hub (qobil7681/splitter).
+#
+# Triggers:
+#   - push to main        -> qobil7681/splitter:latest
+#   - push of any git tag -> qobil7681/splitter:<tag> and :latest
+#
+# Requires two repository secrets (Settings -> Secrets and variables -> Actions):
+#   DOCKERHUB_USERNAME  - Docker Hub username (qobil7681)
+#   DOCKERHUB_TOKEN     - Docker Hub access token (hub.docker.com -> Account Settings -> Security)
+
+name: Build and push Docker image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+
+env:
+  IMAGE: qobil7681/splitter
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # latest on every trigger (main + tags); the git tag name on tag pushes.
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
