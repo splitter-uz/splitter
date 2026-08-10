@@ -48,6 +48,10 @@ services:
       - splitter-ssl:/etc/nginx/ssl
       - splitter-acl:/etc/nginx/acl.d
       - splitter-confd:/etc/nginx/conf.d
+      # Per-mapping nginx logs. Persisting them keeps history across recreates;
+      # the entrypoint also recreates missing log dirs so nginx can start even
+      # without this volume.
+      - splitter-logs:/var/log/splitter
       # Host DNS + hosts files so the Interfaces page edits the REAL host files,
       # not the container's throwaway copies. (These are bind mounts, so an
       # atomic rename over them fails — net_settings falls back to in-place
@@ -67,3 +71,4 @@ volumes:
   splitter-ssl:
   splitter-acl:
   splitter-confd:
+  splitter-logs:

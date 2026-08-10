@@ -47,6 +47,19 @@ if [ "${SPLITTER_IP_NONLOCAL_BIND:-1}" = "1" ]; then
     || echo " ! could not set net.ipv4.ip_nonlocal_bind (set it on the host, or run privileged)" >&2
 fi
 
+# Recreate the per-mapping log directories referenced by the persisted configs.
+# The conf volumes (stream.d/conf.d) survive a container recreate, but the log
+# tree may not — and nginx refuses to start if an access_log/error_log
+# directory is missing.
+LOG_DIR="${SPLITTER_LOG_DIR:-/var/log/splitter}"
+mkdir -p "$LOG_DIR"
+for f in /etc/nginx/stream.d/*.conf /etc/nginx/conf.d/*.conf; do
+  [ -f "$f" ] || continue
+  awk '$1 == "access_log" || $1 == "error_log" {print $2}' "$f"
+done | grep '^/' | while read -r logpath; do
+  mkdir -p "$(dirname "$logpath")"
+done
+
 # Validate the baked config, then start nginx (daemon mode). Empty stream.d is
 # fine — a glob include with no matches is valid.
 nginx -t
