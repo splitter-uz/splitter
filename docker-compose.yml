@@ -8,7 +8,7 @@
 services:
   splitter:
     build: .
-    image: splitter:latest
+    image: qobil7681/splitter:latest
     container_name: splitter
 
     # Share the host's network namespace: `ip link add … type macvlan`, the IPs
