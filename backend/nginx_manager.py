@@ -359,7 +359,7 @@ def provision_ip(mapping, steps):
         steps.append(StepResult(
             f"Bind to sub-interface {mapping.get('subiface')} "
             f"({mapping.get('bind_ip')})", True,
-            "using a sub-interface managed on the Interfaces page"))
+            "using a sub-interface managed on the Sub-interfaces page"))
         return True
     if mapping["alloc_method"] == "dhcp":
         return _provision_dhcp(mapping, steps)
@@ -375,7 +375,7 @@ def deprovision_ip(mapping, delete_vlan=False):
     steps = []
     dev = mapping.get("subiface")
     # Mappings never own their device: a direct bind has none, and a managed
-    # sub-interface is torn down from the Interfaces page, not on mapping delete.
+    # sub-interface is torn down from the Sub-interfaces page, not on mapping delete.
     if not dev or mapping.get("subiface_kind") in ("direct", "managed"):
         return steps
     if mapping.get("alloc_method") == "dhcp":

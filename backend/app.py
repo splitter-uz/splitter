@@ -1087,7 +1087,7 @@ def host_metrics():
 @require_role("admin", "creator")
 def interfaces_traffic():
     """Live upload/download per interface (physical at top, sub-interfaces
-    nested) for the Interfaces page throughput tree."""
+    nested) for the Monitoring page throughput tree."""
     return jsonify({"ok": True, **metrics.per_interface()})
 
 
@@ -1470,7 +1470,7 @@ def create_mapping():
 
     # Resolve where this mapping binds — a mapping never creates a device now.
     # bind_kind drives provisioning: "direct" = an existing interface IP,
-    # "managed" = an IP owned by a sub-interface from the Interfaces page.
+    # "managed" = an IP owned by a sub-interface from the Sub-interfaces page.
     bind_subiface = None
     bind_kind = "direct"
     if not subiface_enabled:
@@ -1494,7 +1494,7 @@ def create_mapping():
         if rec:
             if not rec.get("bind_ip"):
                 return _err(f"Sub-interface {selected} has no IP yet — "
-                            "re-provision it on the Interfaces page.")
+                            "re-provision it on the Sub-interfaces page.")
             bind_kind, bind_subiface = "managed", selected
             interface = rec["interface"]
             bind_ip = rec["bind_ip"]
@@ -1505,7 +1505,7 @@ def create_mapping():
             sel = net_detect.find(selected) if selected else None
             if not sel:
                 return _err("Select a sub-interface or interface to bind to — "
-                            "create a sub-interface on the Interfaces page first.")
+                            "create a sub-interface on the Sub-interfaces page first.")
             addrs = sel.get("addresses") or []
             if not addrs:
                 return _err(f"{selected} has no IPv4 address to bind to — assign "
