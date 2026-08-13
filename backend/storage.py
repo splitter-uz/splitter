@@ -328,7 +328,7 @@ def settings_update(patch):
 
 
 # --- Managed sub-interface registry ---------------------------------------
-# Sub-interfaces are created/edited/deleted on the Interfaces page (when the
+# Sub-interfaces are created/edited/deleted on the Sub-interfaces page (when the
 # global subinterface toggle is on) and exist independently of mappings. Each
 # record is shaped like the fields nginx_manager.provision_ip/deprovision_ip
 # read (interface / vlan_id / mac / subiface / subiface_index / alloc_method /

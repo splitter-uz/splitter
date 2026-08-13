@@ -42,7 +42,7 @@ MONITOR_DISK_PATH = os.environ.get("SPLITTER_MONITOR_DISK_PATH", "/")
 # <domain>.<port>-error.log, written by nginx and browsed from the Logs page.
 LOG_DIR = os.environ.get("SPLITTER_LOG_DIR", "/var/log/splitter")
 
-# Host network-settings files editable from the Interfaces page.
+# Host network-settings files editable from the Network page.
 RESOLV_CONF = os.environ.get("SPLITTER_RESOLV_CONF", "/etc/resolv.conf")
 HOSTS_FILE = os.environ.get("SPLITTER_HOSTS_FILE", "/etc/hosts")
 

@@ -16,6 +16,10 @@ let SETTINGS = { subinterface_enabled: false };  // tool-wide settings
 let ME = null;        // current user {username, role}
 let EDITING = null;   // domain currently being edited, or null
 let EDIT_HAS_CERT = false;   // does the mapping being edited terminate TLS?
+// Stream and Proxy are two nav pages over the same mapping data, split by
+// waf_bound: "stream" = plain L4 mappings, "proxy" = WAF-bound L7 HTTP ones.
+let MAP_MODE = "stream";        // which nav page rendered the mappings table
+let FORM_INTENT_MODE = "stream"; // which mode a fresh "New …" should create into
 
 const isAdmin = () => ME && ME.role === "admin";
 
@@ -30,15 +34,21 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["mappings", "form", "users", "activity", "logs", "monitoring", "livemap", "interfaces", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
+const PAGES = ["stream", "proxy", "form", "users", "activity", "logs", "monitoring", "livemap", "subinterfaces", "network", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
+// A few nav pages share one underlying <section> (filtered views of the same
+// data) rather than each owning its own — map nav name -> section id.
+const PAGE_SECTION = { stream: "mappings", proxy: "mappings" };
+const SECTION_IDS = Array.from(new Set(PAGES.map((p) => PAGE_SECTION[p] || p)));
 // Pages whose data is loaded lazily on first visit (see showPage).
 const PAGE_LOADED = new Set();
 function showPage(name) {
-  if (!PAGES.includes(name)) name = "mappings";
+  if (!PAGES.includes(name)) name = "stream";
+  if (name === "stream" || name === "proxy") MAP_MODE = name;
   history.replaceState(null, "", "#" + name);
-  PAGES.forEach((p) => {
-    const sec = $("#page-" + p);
-    if (sec) sec.classList.toggle("hidden", p !== name);
+  const sectionId = PAGE_SECTION[name] || name;
+  SECTION_IDS.forEach((id) => {
+    const sec = $("#page-" + id);
+    if (sec) sec.classList.toggle("hidden", id !== sectionId);
   });
   if (name === "activity") loadActivity();
   // Logs page reloads its mapping list on entry; leaving stops auto-refresh.
@@ -52,10 +62,15 @@ function showPage(name) {
   if (name === "docker") loadDocker();
   // Heavy list pages: load their data on first access (not eagerly on refresh),
   // then keep it fresh via the pollers / the page's Refresh button.
-  if (name === "mappings" && !PAGE_LOADED.has("mappings")) {
-    PAGE_LOADED.add("mappings");
-    loadMappings();
-    startHealthPolling();
+  if (name === "stream" || name === "proxy") {
+    // Header text + table must follow MAP_MODE even before data has loaded
+    // (e.g. landing directly on #proxy on a cold page load).
+    applyMappingsMode();
+    if (!PAGE_LOADED.has("mappings")) {
+      PAGE_LOADED.add("mappings");
+      loadMappings();
+      startHealthPolling();
+    }
   }
   if (name === "users" && !PAGE_LOADED.has("users")) {
     PAGE_LOADED.add("users");
@@ -67,17 +82,19 @@ function showPage(name) {
   // Live routing map only while the Live Map page is open.
   if (name === "livemap") startLivemap();
   else stopLivemap();
-  // The Interfaces page renders its sub-interface overview.
-  if (name === "interfaces") startInterfaces();
-  else stopInterfaces();
+  // Sub-interfaces / Network pages render their own overview.
+  if (name === "subinterfaces") startSubinterfaces();
+  else stopSubinterfaces();
+  if (name === "network") startNetwork();
+  else stopNetwork();
   // Tools page: initialise tab strip on first visit.
   if (name === "tools") startTools();
   // Live traffic sparklines only matter while the mappings table is visible.
-  if (name === "mappings") startTrafficPolling();
+  if (name === "stream" || name === "proxy") startTrafficPolling();
   else stopTrafficPolling();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
   // restart the fade-in animation on the now-visible page
-  const active = $("#page-" + name);
+  const active = $("#page-" + sectionId);
   if (active) { active.classList.remove("page"); void active.offsetWidth; active.classList.add("page"); }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -504,7 +521,7 @@ async function dockerCreateMapping(e) {
     toast(`Mapping ${domain} created from ${backends.length} container(s).`);
     DOCKER_SEL.clear();
     await loadMappings();
-    showPage("mappings");
+    showPage("stream");
   } catch (err) {
     toast(String(err.message || err), false);
   }
@@ -989,12 +1006,34 @@ function animateCount(el, to) {
 }
 
 function updateStats(list) {
-  const backends = list.reduce((n, m) =>
+  const modeList = list.filter((m) => !!m.waf_bound === (MAP_MODE === "proxy"));
+  const backends = modeList.reduce((n, m) =>
     n + (m.backends || (m.backend ? [m.backend] : [])).length, 0);
   const set = (id, v) => { const e = $("#" + id); if (e) animateCount(e, v); };
-  set("stat-total", list.length);
+  set("stat-total", modeList.length);
   set("stat-backends", backends);
-  set("nav-count", list.length);
+  set("nav-count-stream", list.filter((m) => !m.waf_bound).length);
+  set("nav-count-proxy", list.filter((m) => !!m.waf_bound).length);
+}
+
+// Re-apply the Stream/Proxy header text + button labels for the current
+// MAP_MODE, and re-render the (mode-filtered) table. Called on nav switch and
+// whenever the underlying data changes.
+function applyMappingsMode() {
+  const isProxy = MAP_MODE === "proxy";
+  const title = $("#mappings-title");
+  if (title) title.textContent = isProxy ? "Proxy" : "Stream";
+  const sub = $("#mappings-subtitle");
+  if (sub) sub.textContent = isProxy
+    ? "Layer-7 HTTP reverse proxies with ModSecurity/WAF inspection."
+    : "Layer-4 stream proxies provisioned on this host.";
+  const newLabel = $("#mappings-new-label");
+  if (newLabel) newLabel.textContent = isProxy ? "New Proxy" : "New Stream";
+  const emptyText = $("#mappings-empty-text");
+  if (emptyText) emptyText.textContent = isProxy ? "No proxy mappings yet." : "No stream mappings yet.";
+  MAP_PAGE = 1;
+  updateStats(MAPPINGS);
+  renderMappings();
 }
 
 // The TLS Certs stat reflects the managed certificate registry (the SSL page),
@@ -1043,7 +1082,8 @@ let MAP_PAGE = 1;
 
 function renderMappings() {
   const q = ($("#search")?.value || "").trim().toLowerCase();
-  const full = q ? MAPPINGS.filter((m) => (m.domain || "").toLowerCase().includes(q)) : MAPPINGS;
+  const modeList = MAPPINGS.filter((m) => !!m.waf_bound === (MAP_MODE === "proxy"));
+  const full = q ? modeList.filter((m) => (m.domain || "").toLowerCase().includes(q)) : modeList;
   // Clamp the current page to the available range (e.g. after deletes/filtering).
   const pages = Math.max(1, Math.ceil(full.length / MAP_PAGE_SIZE));
   if (MAP_PAGE > pages) MAP_PAGE = pages;
@@ -1216,10 +1256,28 @@ function formData() {
   return fd;
 }
 
+// A fresh "New Proxy" save should land in the WAF-bound Proxy list, not Stream.
+// The mapping API itself has no notion of "proxy" — binding is a separate call
+// (see /api/waf/bind) — so chain it right after a successful create.
+async function tryBindWaf(domain) {
+  try {
+    const fd = new FormData();
+    fd.append("domain", domain);
+    const j = await (await fetch("/api/waf/bind", { method: "POST", body: fd })).json();
+    if (j.ok) { toast(`${domain} is live as a Proxy (WAF-bound).`); return true; }
+    toast(`${domain} was saved as a Stream mapping — could not switch to Proxy: ${j.error || "bind failed"}`, false);
+    return false;
+  } catch (err) {
+    toast(`${domain} was saved as a Stream mapping — could not switch to Proxy: ${err.message || err}`, false);
+    return false;
+  }
+}
+
 async function apply(e) {
   e.preventDefault();
   const btn = $("#apply-btn");
   const editing = EDITING;
+  const wantsProxy = !editing && FORM_INTENT_MODE === "proxy";
   setBtnLoading(btn, true, editing ? "Updating…" : "Applying…");
   showStatus("loading", editing ? "Updating mapping…" : "Applying mapping…",
              "Provisioning the bind IP, writing the Nginx config and reloading.");
@@ -1232,8 +1290,10 @@ async function apply(e) {
       showStatus("success", editing ? "Mapping updated" : "Mapping applied",
                  `${j.mapping.domain} is live.`);
       resetForm();
+      let finalMode = editing ? FORM_INTENT_MODE : "stream";
+      if (wantsProxy) finalMode = (await tryBindWaf(j.mapping.domain)) ? "proxy" : "stream";
       await loadMappings();
-      showPage("mappings");
+      showPage(finalMode);
     } else {
       showStatus("error", "Couldn't apply mapping",
                  j.error || "The host rejected the request. Check the step log for the failing command.");
@@ -1435,8 +1495,9 @@ function resetForm() {
   $("#domain").classList.remove("bg-slate-100");
   $("#edit-banner").classList.add("hidden");
   $("#apply-btn").textContent = "Save / Apply";
-  const ft = $("#form-title"); if (ft) ft.textContent = "Add Mapping";
-  const fl = $("#nav-form-label"); if (fl) fl.textContent = "Add Mapping";
+  const addTitle = FORM_INTENT_MODE === "proxy" ? "Add Proxy" : "Add Stream";
+  const ft = $("#form-title"); if (ft) ft.textContent = addTitle;
+  const fl = $("#nav-form-label"); if (fl) fl.textContent = addTitle;
 }
 
 // --- edit an existing mapping ---------------------------------------------
@@ -1448,6 +1509,7 @@ function editMapping(domain, port) {
     (p == null || String(x.listen_port || 443) === p));
   if (!m) return;
   EDITING = mkey(m);
+  FORM_INTENT_MODE = m.waf_bound ? "proxy" : "stream";   // return here on save
   // Remember the exact mapping being edited so the backend overwrites it (and
   // detects a rename if the domain/port changes on save).
   setVal("orig_domain", m.domain);
@@ -2137,18 +2199,18 @@ function fmtUptime(sec) {
   return `${mn}m`;
 }
 
-// --- Interfaces page -------------------------------------------------------
+// --- Sub-interfaces / Network pages (formerly one "Interfaces" page) -------
 let IFACE_TIMER = null;
 let IFACE_RATES = {};   // name -> {rx_rate, tx_rate, up} from /api/interfaces/traffic
 
-function startInterfaces() {
+function startSubinterfaces() {
   // Reflect the persisted toggle and render the overview immediately.
   $("#subiface-toggle").checked = !!SETTINGS.subinterface_enabled;
   applySubifaceManagerVisibility();
-  if (isAdmin()) loadNetworkSettings();
   fillSiInterfaceSelect();
   loadSubinterfaces();
 }
+function stopSubinterfaces() {}
 
 // The sub-interface manager only applies when the toggle is on (and to admins).
 function applySubifaceManagerVisibility() {
@@ -2156,7 +2218,11 @@ function applySubifaceManagerVisibility() {
   const card = $("#subiface-manager");
   if (card) card.classList.toggle("hidden", !show);
 }
-function stopInterfaces() {}
+
+function startNetwork() {
+  if (isAdmin()) loadNetworkSettings();
+}
+function stopNetwork() {}
 
 // --- host network settings (DNS + /etc/hosts) ------------------------------
 function dnsRowHtml(ip) {
@@ -4026,6 +4092,8 @@ async function bindApp(domain) {
   renderWafSteps(j.steps);
   toast(j.ok ? `${domain} is now behind the WAF.` : (j.error || "Bind failed."), j.ok);
   loadWafApps();
+  // Binding moves this mapping from the Stream list to the Proxy list.
+  if (j.ok && PAGE_LOADED.has("mappings")) await loadMappings();
 }
 
 async function unbindApp(domain) {
@@ -4035,6 +4103,8 @@ async function unbindApp(domain) {
   renderWafSteps(j.steps);
   toast(j.ok ? `${domain} reverted to Layer-4.` : (j.error || "Unbind failed."), j.ok);
   loadWafApps();
+  // Unbinding moves this mapping back from the Proxy list to the Stream list.
+  if (j.ok && PAGE_LOADED.has("mappings")) await loadMappings();
 }
 
 function renderWaf(s, events) {
@@ -4169,10 +4239,12 @@ function startWafInstallPoll() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
-  // correct section is visible from the first paint instead of flashing mappings.
+  // correct section is visible from the first paint instead of flashing stream.
   const _initHash = location.hash.slice(1);
-  if (PAGES.includes(_initHash) && _initHash !== "mappings") {
-    PAGES.forEach(p => { const el = $("#page-" + p); if (el) el.classList.toggle("hidden", p !== _initHash); });
+  if (PAGES.includes(_initHash) && _initHash !== "stream") {
+    if (_initHash === "proxy") MAP_MODE = "proxy";
+    const _sectionId = PAGE_SECTION[_initHash] || _initHash;
+    SECTION_IDS.forEach(id => { const el = $("#page-" + id); if (el) el.classList.toggle("hidden", id !== _sectionId); });
     $$(".nav-link").forEach(b => b.classList.toggle("active", b.dataset.page === _initHash));
   }
 
@@ -4191,7 +4263,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // sidebar nav: switch pages (preserve form state)
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
   // "New Mapping" / empty-state jumps start a fresh add
-  $$(".nav-jump").forEach((b) => b.addEventListener("click", () => { resetForm(); showPage("form"); }));
+  // "New Stream" / "New Proxy" jumps inherit the mode of the page clicked from.
+  $$(".nav-jump").forEach((b) => b.addEventListener("click", () => {
+    FORM_INTENT_MODE = MAP_MODE;
+    resetForm();
+    showPage("form");
+  }));
   $("#search").addEventListener("input", () => { MAP_PAGE = 1; renderMappings(); });
 
   $("#map-form").addEventListener("submit", apply);
@@ -4304,7 +4381,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener("mousemove", onRouteNodeMove);
   window.addEventListener("mouseup", onRouteNodeUp);
   $("#mon-refresh").addEventListener("click", () => { loadMetrics(); loadIfaceTraffic(); });
-  $("#iface-refresh").addEventListener("click", () => { loadSubinterfaces(); if (isAdmin()) loadNetworkSettings(); });
+  $("#iface-refresh").addEventListener("click", () => loadSubinterfaces());
+  $("#network-refresh").addEventListener("click", () => { if (isAdmin()) loadNetworkSettings(); });
   $("#subiface-toggle").addEventListener("change", (e) => saveSubifaceSetting(e.target.checked));
   $("#dns-add").addEventListener("click", () => addDnsRow(""));
   $("#dns-save").addEventListener("click", saveDns);
@@ -4364,7 +4442,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // front — so the shell + sidebar paint immediately and only the page you open
   // fetches its rows (mappings/health, users, …).
   const hash = location.hash.slice(1);
-  showPage(PAGES.includes(hash) ? hash : "mappings");
+  showPage(PAGES.includes(hash) ? hash : "stream");
 });
 
 // ==========================================================================
