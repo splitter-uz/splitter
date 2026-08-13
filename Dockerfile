@@ -18,7 +18,7 @@ RUN apt-get update \
       python3 python3-venv \
       iproute2 isc-dhcp-client openssl iptables \
       procps iputils-ping traceroute tcpdump whois dnsutils net-tools \
-      ca-certificates \
+      ca-certificates certbot \
  && rm -rf /var/lib/apt/lists/*
 
 # Python deps in an isolated venv (Debian bookworm is PEP-668 "externally

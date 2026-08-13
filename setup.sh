@@ -119,19 +119,19 @@ install_deps() {
       apt-get update -qq
       apt-get install -y --no-install-recommends \
         nginx libnginx-mod-stream python3 python3-venv \
-        iproute2 isc-dhcp-client openssl iptables \
+        iproute2 isc-dhcp-client openssl iptables certbot \
         iputils-ping traceroute tcpdump whois dnsutils net-tools
       ;;
     dnf|yum)
-      "$PM" install -y nginx python3 iproute openssl iptables || true
+      "$PM" install -y nginx python3 iproute openssl iptables certbot || true
       "$PM" install -y nginx-mod-stream || c_y "nginx-mod-stream not found — your nginx may already include stream."
       "$PM" install -y dhcp-client || "$PM" install -y dhclient || c_y "no dhcp client (DHCP allocation will be unavailable)."
       "$PM" install -y iputils traceroute tcpdump whois bind-utils net-tools || \
         c_y "Some diagnostic tools could not be installed — Tools page features may be limited."
       ;;
     pacman)
-      pacman -Sy --noconfirm nginx-mainline python iproute2 openssl || \
-        pacman -Sy --noconfirm nginx python iproute2 openssl
+      pacman -Sy --noconfirm nginx-mainline python iproute2 openssl certbot || \
+        pacman -Sy --noconfirm nginx python iproute2 openssl certbot
       pacman -Sy --noconfirm dhclient || c_y "no dhcp client (DHCP allocation unavailable)."
       pacman -Sy --noconfirm iptables-nft || pacman -Sy --noconfirm iptables || \
         c_y "iptables not installed — the Firewall page will be unavailable."
@@ -139,12 +139,12 @@ install_deps() {
         c_y "Some diagnostic tools could not be installed — Tools page features may be limited."
       ;;
     zypper)
-      zypper --non-interactive install nginx python3 iproute2 openssl dhcp-client iptables || true
+      zypper --non-interactive install nginx python3 iproute2 openssl dhcp-client iptables certbot || true
       zypper --non-interactive install iputils traceroute tcpdump whois bind-utils net-tools || \
         c_y "Some diagnostic tools could not be installed — Tools page features may be limited."
       ;;
     "")
-      c_y "No known package manager detected — install manually: nginx(+stream), python3+venv, iproute2, a dhcp client, openssl, iptables."
+      c_y "No known package manager detected — install manually: nginx(+stream), python3+venv, iproute2, a dhcp client, openssl, iptables, certbot."
       c_y "Also install for the Tools page: iputils, traceroute, tcpdump, whois, bind-utils (or dnsutils), net-tools."
       ;;
   esac
@@ -162,6 +162,8 @@ check_tools() {
   fi
   command -v iptables >/dev/null 2>&1 && c_g "  [ok] iptables" || \
     c_y "  [missing] iptables — the Firewall page will be unavailable."
+  command -v certbot >/dev/null 2>&1 && c_g "  [ok] certbot" || \
+    c_y "  [missing] certbot — the SSL page's Let's Encrypt option will be unavailable."
 }
 [ "$DO_DEPS" = "1" ] && install_deps || c_y "Skipping dependency install (--no-deps)."
 

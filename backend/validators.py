@@ -23,6 +23,10 @@ _ACL_RESERVED = {"_default"}
 # 6 colon-separated hex octets.
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
+# Deliberately permissive (not full RFC 5322) — good enough to catch typos
+# before it's handed to certbot for ACME account registration.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 
 def random_mac():
     """
@@ -76,6 +80,13 @@ def clean_domain(value):
     # Defence in depth: the domain becomes part of file paths.
     if "/" in value or ".." in value:
         raise ValidationError(f"Illegal characters in domain: {value!r}")
+    return value
+
+
+def clean_email(value):
+    value = (value or "").strip()
+    if not value or not _EMAIL_RE.match(value):
+        raise ValidationError(f"Invalid email address: {value!r}")
     return value
 
 

@@ -2631,7 +2631,38 @@ function renderIfaceTree() {
 }
 
 // --- SSL management (certificate registry) ---------------------------------
+// Populate the Let's Encrypt card's HTTP-01 bind-IP select from the same
+// physical-interface / sub-interface data the mapping form's dropdown uses —
+// but keyed by IP (what the backend actually needs), not device name.
+function fillLeBindIpSelect() {
+  const sel = $("#ssl-le-bind-ip");
+  if (!sel) return;
+  const cur = sel.value;
+  const seen = new Set();
+  const opts = [];
+  (IFACES || []).forEach((i) => (i.addresses || []).forEach((a) => {
+    if (a.ip && !seen.has(a.ip)) { seen.add(a.ip); opts.push({ ip: a.ip, label: `${a.ip} · ${i.name}` }); }
+  }));
+  (SUBIFACES || []).forEach((s) => {
+    if (s.bind_ip && !seen.has(s.bind_ip)) {
+      seen.add(s.bind_ip);
+      opts.push({ ip: s.bind_ip, label: `${s.bind_ip} · ${s.name}${s.vlan_id ? " · vlan " + s.vlan_id : ""}` });
+    }
+  });
+  sel.innerHTML = opts.length
+    ? opts.map((o) => `<option value="${escapeHtml(o.ip)}">${escapeHtml(o.label)}</option>`).join("")
+    : '<option value="">no interfaces available</option>';
+  if (opts.some((o) => o.ip === cur)) sel.value = cur;
+}
+
+const SSL_SOURCE_BADGE = {
+  upload: '<span class="inline-block px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs">uploaded</span>',
+  selfsigned: '<span class="inline-block px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs">self-signed</span>',
+  letsencrypt: '<span class="inline-block px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 text-xs">Let\'s Encrypt</span>',
+};
+
 async function loadSslCerts() {
+  fillLeBindIpSelect();
   try {
     const j = await (await fetch("/api/ssl/certs")).json();
     if (!j.ok) return;
@@ -2646,18 +2677,23 @@ async function loadSslCerts() {
       const tr = document.createElement("tr");
       tr.className = "hover:bg-slate-50 align-top";
       tr.style.setProperty("--i", Math.min(idx, 12));
-      const srcBadge = c.source === "upload"
-        ? '<span class="inline-block px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs">uploaded</span>'
-        : '<span class="inline-block px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs">self-signed</span>';
+      const srcBadge = SSL_SOURCE_BADGE[c.source] || SSL_SOURCE_BADGE.selfsigned;
+      const staging = c.staging
+        ? ' <span class="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] align-middle" title="Staging — untrusted test certificate">staging</span>'
+        : "";
       const inUse = c.in_use
         ? '<span class="text-xs text-emerald-700">● in use</span>'
         : '<span class="text-xs text-slate-400">unused</span>';
+      const renewBtn = c.source === "letsencrypt"
+        ? `<button data-cert="${escapeHtml(c.name)}" class="ssl-renew-btn text-xs font-medium text-sky-600 hover:text-sky-800 mr-3">Renew</button>`
+        : "";
       tr.innerHTML = `
         <td class="px-6 py-3 font-mono">${escapeHtml(c.name)}${c.subject ? `<div class="text-xs text-slate-400 font-sans">${escapeHtml(c.subject)}</div>` : ""}</td>
-        <td class="px-6 py-3">${srcBadge}</td>
+        <td class="px-6 py-3">${srcBadge}${staging}</td>
         <td class="px-6 py-3 text-xs text-slate-500">${c.not_after ? escapeHtml(c.not_after) : "—"}</td>
         <td class="px-6 py-3">${inUse}</td>
-        <td class="px-6 py-3 text-right">
+        <td class="px-6 py-3 text-right whitespace-nowrap">
+          ${renewBtn}
           <button data-cert="${escapeHtml(c.name)}" class="ssl-del-btn text-xs font-medium ${c.in_use ? "text-slate-300 cursor-not-allowed" : "text-red-600 hover:text-red-800"}" ${c.in_use ? "disabled" : ""}
             ${c.in_use ? 'title="In use by a mapping — detach it first"' : ""}>Delete</button>
         </td>`;
@@ -2665,6 +2701,8 @@ async function loadSslCerts() {
     });
     tb.querySelectorAll(".ssl-del-btn:not([disabled])").forEach((b) =>
       b.addEventListener("click", () => deleteCert(b.dataset.cert)));
+    tb.querySelectorAll(".ssl-renew-btn").forEach((b) =>
+      b.addEventListener("click", () => renewCert(b.dataset.cert)));
   } catch (_) { /* non-fatal */ }
 }
 
@@ -2672,12 +2710,18 @@ async function createCert(mode, form) {
   const fd = new FormData(form);
   fd.append("mode", mode);
   const btn = form.querySelector('button[type="submit"]');
-  setBtnLoading(btn, true, mode === "selfsigned" ? "Generating…" : "Adding…");
-  showStatus("loading", mode === "selfsigned" ? "Generating certificate…" : "Adding certificate…",
-             mode === "selfsigned" ? "Creating a self-signed cert + key on the host."
-                                   : "Validating and storing the uploaded cert + key.");
+  const labels = { selfsigned: "Generating…", letsencrypt: "Requesting…" };
+  setBtnLoading(btn, true, labels[mode] || "Adding…");
+  const loadingMsg = {
+    selfsigned: "Creating a self-signed cert + key on the host.",
+    letsencrypt: "Running certbot against Let's Encrypt (HTTP-01) — this can take up to a minute.",
+  };
+  showStatus("loading", mode === "letsencrypt" ? "Requesting certificate…"
+                        : mode === "selfsigned" ? "Generating certificate…" : "Adding certificate…",
+             loadingMsg[mode] || "Validating and storing the uploaded cert + key.");
   try {
     const j = await (await fetch("/api/ssl/certs", { method: "POST", body: fd })).json();
+    renderSteps(j.steps);
     if (j.ok) {
       showStatus("success", "Certificate added", `${j.cert.name} is ready to use.`);
       form.reset();
@@ -2690,6 +2734,14 @@ async function createCert(mode, form) {
   } finally {
     setBtnLoading(btn, false);
   }
+}
+
+async function renewCert(name) {
+  if (!confirm(`Renew the Let's Encrypt certificate for ${name} now?`)) return;
+  const j = await (await fetch(`/api/ssl/certs/${encodeURIComponent(name)}/renew`, { method: "POST" })).json();
+  renderSteps(j.steps);
+  if (j.ok) { toast(`${name} renewed — expires ${j.cert.not_after || "soon"}.`); await loadSslCerts(); }
+  else toast(j.error || "Renewal failed.", false);
 }
 
 async function deleteCert(name) {
@@ -4320,6 +4372,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#si-bulk-delete").addEventListener("click", deleteSelectedSubifaces);
   $("#subiface-select").addEventListener("change", syncSubifaceBindIp);
   $("#ssl-refresh").addEventListener("click", loadSslCerts);
+  $("#ssl-le-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("letsencrypt", e.target); });
   $("#ssl-selfsigned-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("selfsigned", e.target); });
   $("#ssl-upload-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("upload", e.target); });
 

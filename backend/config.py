@@ -154,6 +154,18 @@ WAF_UPSTREAM = os.environ.get(
     "SPLITTER_WAF_UPSTREAM",
     "127.0.0.1:" + os.environ.get("SPLITTER_PORT", "8088"))
 
+# --- Let's Encrypt (certbot) ----------------------------------------------
+# HTTP-01 only: certbot's --standalone authenticator binds the challenge
+# directly on the mapping's own bind IP:80, so no nginx webroot wiring is
+# needed. The issued cert is copied into SSL_DIR alongside uploaded/self-signed
+# ones, so every other code path (render_conf, the mapping form's cert picker,
+# …) treats it identically regardless of how it got there.
+CERTBOT_BIN = os.environ.get("SPLITTER_CERTBOT_BIN", "certbot")
+LETSENCRYPT_STAGING_DEFAULT = _env_bool("SPLITTER_LETSENCRYPT_STAGING", False)
+# Re-checked periodically; a cert is renewed once it's within this many days
+# of expiring (mirrors certbot's/Let's Encrypt's own 30-day guidance).
+LETSENCRYPT_RENEW_WITHIN_DAYS = int(os.environ.get("SPLITTER_LETSENCRYPT_RENEW_DAYS", "30"))
+
 # Prefix used for privileged commands. Empty when already running as root
 # (the systemd unit sets SPLITTER_SUDO=""); falls back to "sudo" otherwise.
 SUDO = os.environ.get("SPLITTER_SUDO", "" if os.geteuid() == 0 else "sudo")
@@ -225,4 +237,5 @@ def as_dict():
         "default_backend": DEFAULT_BACKEND,
         "listen_port": LISTEN_PORT,
         "simulate": SIMULATE,
+        "letsencrypt_staging_default": LETSENCRYPT_STAGING_DEFAULT,
     }
