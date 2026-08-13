@@ -29,6 +29,7 @@ import docker_reconcile
 import failover
 import firewall
 import health
+import letsencrypt as le
 import metrics
 import net_detect
 import net_settings
@@ -42,6 +43,7 @@ from validators import (
     clean_backend_pool,
     clean_cidr_list,
     clean_domain,
+    clean_email,
     clean_fw_action,
     clean_fw_direction,
     clean_fw_protocol,
@@ -1156,7 +1158,8 @@ def ssl_list():
 @app.post("/api/ssl/certs")
 @require_role("admin", "creator")
 def ssl_create():
-    """Add a managed certificate: upload a cert+key, or generate a self-signed."""
+    """Add a managed certificate: upload a cert+key, generate a self-signed one,
+    or request one from Let's Encrypt (HTTP-01, via certbot)."""
     form = request.form
     mode = (form.get("mode") or "").strip().lower()
     try:
@@ -1167,6 +1170,8 @@ def ssl_create():
         return _err(f"A certificate named {name} already exists.")
 
     steps = []
+    cert_bytes = key_bytes = None   # set when this branch needs the generic save below
+    extra_meta = {}
     if mode == "upload":
         cert_file = request.files.get("cert")
         key_file = request.files.get("key")
@@ -1187,18 +1192,62 @@ def ssl_create():
         if not step["ok"]:
             return _err(step["detail"], code=500, steps=steps)
         source = "selfsigned"
+    elif mode == "letsencrypt":
+        try:
+            email = clean_email(form.get("email"))
+            bind_ip = clean_ip(form.get("bind_ip"), "HTTP-01 bind IP") if form.get("bind_ip") else None
+            extra_domains = [clean_domain(d) for d in
+                             (form.get("extra_domains") or "").split(",") if d.strip()]
+        except ValidationError as exc:
+            return _err(str(exc))
+        staging = _truthy(form.get("staging"))
+
+        ok, le_steps = le.request_certificate(
+            name, email, bind_ip, extra_domains=extra_domains, staging=staging)
+        steps.extend(le_steps)
+        if not ok:
+            return _err("Could not obtain the Let's Encrypt certificate — see the step log.",
+                        code=502, steps=steps)
+        source = "letsencrypt"
+        extra_meta = {"email": email, "bind_ip": bind_ip, "staging": staging,
+                     "domains": [name] + extra_domains}
     else:
-        return _err("Choose 'upload' or 'selfsigned'.")
+        return _err("Choose 'upload', 'selfsigned' or 'letsencrypt'.")
 
-    _c, _k, res = nm.save_certificate(name, cert_bytes, key_bytes)
-    steps.append(res)
-    if not res["ok"]:
-        return _err(res["detail"], code=500, steps=steps)
+    if cert_bytes is not None:   # letsencrypt already saved its own cert files
+        _c, _k, res = nm.save_certificate(name, cert_bytes, key_bytes)
+        steps.append(res)
+        if not res["ok"]:
+            return _err(res["detail"], code=500, steps=steps)
 
-    rec = {"name": name, "source": source, "created": _now(), **nm.cert_info(name)}
+    rec = {"name": name, "source": source, "created": _now(), **extra_meta, **nm.cert_info(name)}
     storage.cert_add(rec)
     _audit("ssl.create", target=name, detail=source)
     return jsonify({"ok": True, "cert": {**rec, "in_use": False}, "steps": steps})
+
+
+@app.post("/api/ssl/certs/<name>/renew")
+@require_role("admin", "creator")
+def ssl_renew(name):
+    """Force-renew a Let's Encrypt certificate."""
+    try:
+        name = clean_domain(name)
+    except ValidationError as exc:
+        return _err(str(exc))
+    rec = storage.cert_get(name)
+    if not rec:
+        return _err("No such certificate.", code=404)
+    if rec.get("source") != "letsencrypt":
+        return _err("Only Let's Encrypt certificates can be renewed.")
+
+    ok, steps = le.renew_certificate(name, bind_ip=rec.get("bind_ip"))
+    if not ok:
+        return _err("Renewal failed — see the step log.", code=502, steps=steps)
+
+    rec = {**rec, **nm.cert_info(name), "renewed": _now()}
+    storage.cert_add(rec)
+    _audit("ssl.renew", target=name)
+    return jsonify({"ok": True, "cert": {**rec, "in_use": storage.cert_in_use(name)}, "steps": steps})
 
 
 @app.delete("/api/ssl/certs/<name>")
@@ -1208,15 +1257,18 @@ def ssl_delete(name):
         name = clean_domain(name)
     except ValidationError as exc:
         return _err(str(exc))
-    if not storage.cert_get(name):
+    rec = storage.cert_get(name)
+    if not rec:
         return _err("No such certificate.", code=404)
     if storage.cert_in_use(name):
         return _err(f"Certificate {name} is in use by a mapping — change that "
                     "mapping's SSL to none/another cert first.")
-    step = nm.remove_certificate(name)
+    steps = [nm.remove_certificate(name)]
+    if rec.get("source") == "letsencrypt":
+        steps.append(le.delete_certbot_data(name))
     storage.cert_remove(name)
     _audit("ssl.delete", target=name)
-    return jsonify({"ok": True, "steps": [step]})
+    return jsonify({"ok": True, "steps": steps})
 
 
 # --------------------------------------------------------------------------
@@ -2330,6 +2382,7 @@ if __name__ == "__main__":
     docker_reconcile.start_scheduler()  # keep docker-backed backends' IPs current (poll)
     docker_events.start_watcher()       # + react instantly to Docker events (Traefik-style)
     firewall.sync_all()        # re-apply per-interface iptables rules (self-healing on boot)
+    le.start_scheduler()       # auto-renew Let's Encrypt certs nearing expiry
     mode = "SIMULATION (no system commands executed)" if config.SIMULATE else "LIVE"
     print(f" * Splitter starting in {mode} mode")
     print(f" * stream.d : {config.STREAM_CONF_DIR}")

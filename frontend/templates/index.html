@@ -734,6 +734,39 @@
           <div class="grid gap-6 lg:grid-cols-3">
             <!-- create -->
             <div class="lg:col-span-1 space-y-6">
+              <!-- let's encrypt -->
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                <h3 class="text-sm font-semibold mb-4">Let's Encrypt</h3>
+                <form id="ssl-le-form" class="space-y-3">
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Domain</label>
+                    <input name="name" id="ssl-le-name" required placeholder="app.example.com"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Extra domains <span class="text-slate-400 font-normal">(opt, comma-separated)</span></label>
+                    <input name="extra_domains" id="ssl-le-extra" placeholder="www.app.example.com"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Email</label>
+                    <input name="email" id="ssl-le-email" type="email" required placeholder="you@example.com"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">HTTP-01 bind IP</label>
+                    <select name="bind_ip" id="ssl-le-bind-ip"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white outline-none focus:ring-2 focus:ring-emerald-500"></select>
+                    <p class="mt-1 text-[10px] text-slate-400">The address this domain's DNS points at. Let's Encrypt must be able to reach it on port 80 for a few seconds.</p>
+                  </div>
+                  <label class="flex items-center gap-2 text-xs text-slate-600">
+                    <input type="checkbox" name="staging" id="ssl-le-staging" class="rounded border-slate-300" />
+                    Use staging (testing — untrusted certs, no rate limits)
+                  </label>
+                  <button type="submit" class="btn-primary w-full bg-gradient-to-br from-sky-500 to-sky-600 hover:from-sky-600 hover:to-sky-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-sky-600/25">Request certificate</button>
+                </form>
+              </div>
+
               <!-- self-signed -->
               <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
                 <h3 class="text-sm font-semibold mb-4">Generate self-signed</h3>
