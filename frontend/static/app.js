@@ -4158,30 +4158,42 @@ async function saveSchedule() {
   } catch (e) { toast(String(e.message || e), false); }
 }
 
+// Null-safe classList.toggle — loadMe() runs once at startup and gates the
+// rest of the boot sequence (later awaits in DOMContentLoaded, including the
+// showPage() call that loads whichever page/tab the URL hash points at); one
+// missing selector throwing here used to take the whole chain down with it,
+// so e.g. a page reload landing on an admin-only tab would silently render
+// blank with no visible error — this keeps one bad selector from cascading.
+function toggleHidden(sel, hide) {
+  const el = $(sel);
+  if (!el) { console.error(`toggleHidden: missing element ${sel}`); return; }
+  el.classList.toggle("hidden", hide);
+}
+
 async function loadMe() {
   try {
     const st = await (await fetch("/api/auth/status")).json();
     ME = st.user || null;
   } catch (_) { ME = null; }
   if (!ME) { window.location.href = "/login"; return; }
-  $("#who").textContent = `${ME.username} · ${ME.role}`;
+  const who = $("#who"); if (who) who.textContent = `${ME.username} · ${ME.role}`;
   const av = $("#avatar"); if (av) av.textContent = (ME.username[0] || "?").toUpperCase();
   // Creators can add/edit + export, but not destructive/bulk or user mgmt.
   const admin = isAdmin();
-  $("#import-btn").classList.toggle("hidden", !admin);
-  $("#reapply-btn").classList.toggle("hidden", !admin);
-  $("#users-card").classList.toggle("hidden", !admin);
-  $("#nav-users").classList.toggle("hidden", !admin);
-  $("#activity-card").classList.toggle("hidden", !admin);
-  $("#nav-activity").classList.toggle("hidden", !admin);
-  $("#nav-logs").classList.toggle("hidden", !admin);
-  $("#nav-backup").classList.toggle("hidden", !admin);
-  $("#nav-waf").classList.toggle("hidden", !admin);
-  $("#nav-firewall").classList.toggle("hidden", !admin);
+  toggleHidden("#import-btn", !admin);
+  toggleHidden("#reapply-btn", !admin);
+  toggleHidden("#users-card", !admin);
+  toggleHidden("#nav-users", !admin);
+  toggleHidden("#activity-card", !admin);
+  toggleHidden("#nav-activity", !admin);
+  toggleHidden("#nav-logs", !admin);
+  toggleHidden("#nav-backup", !admin);
+  toggleHidden("#nav-waf", !admin);
+  toggleHidden("#nav-firewall", !admin);
   // Network page: only admins can change the sub-interface policy / network.
-  $("#iface-settings-card").classList.toggle("hidden", !admin);
-  $("#iface-network-card").classList.toggle("hidden", !admin);
-  $("#iface-system-card").classList.toggle("hidden", !admin);
+  toggleHidden("#iface-settings-card", !admin);
+  toggleHidden("#iface-network-card", !admin);
+  toggleHidden("#iface-system-card", !admin);
 }
 
 async function logout() {
@@ -4205,9 +4217,24 @@ async function changePassword() {
 let USERS = [];
 async function loadUsers() {
   if (!isAdmin()) return;
+  const rows = $("#user-rows");
+  try {
+    await loadUsersInner(rows);
+  } catch (err) {
+    // Surface failures visibly instead of leaving a blank table with no clue
+    // why — a network hiccup, a malformed response, etc. would otherwise fail
+    // silently here since nothing else on this page shows a loading/error
+    // state for it.
+    console.error("loadUsers failed:", err);
+    if (rows) rows.innerHTML = `<tr><td colspan="4" class="px-6 py-4 text-sm text-red-600">
+      Couldn't load users: ${escapeHtml(err.message || String(err))}. Try refreshing.</td></tr>`;
+    toast("Couldn't load users — see the table for details.", false);
+  }
+}
+
+async function loadUsersInner(rows) {
   const users = (await (await fetch("/api/users")).json()).users || [];
   USERS = users;
-  const rows = $("#user-rows");
   rows.innerHTML = "";
   for (const u of users) {
     const self = ME && u.username === ME.username;
