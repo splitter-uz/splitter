@@ -1196,7 +1196,14 @@ def render_forward_proxy_conf(fp):
     port = fp.get("listen_port")
     allow_all = bool(fp.get("allow_all"))
     patterns = fp.get("allowed_domains") or []
-    target_var = f"fwdtarget_{name}"
+    # nginx variable names allow only [A-Za-z0-9_] — but forward-proxy names
+    # allow '-' (clean_fwdproxy_name), so a hyphenated name like "fwd-relay"
+    # would otherwise render "$fwdtarget_fwd-relay", which nginx parses as
+    # the variable "$fwdtarget_fwd" followed by literal "-relay" and rejects
+    # with "unknown variable" on every non-allow-all proxy using one. Hash it
+    # (same approach as upstream_name()) rather than just swapping '-' for
+    # '_', which would let two differently-named proxies collide on one var.
+    target_var = "fwdtarget_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
 
     lines = [
         "# Automatically generated SNI-based Forward Proxy relay",
