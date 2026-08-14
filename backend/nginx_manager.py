@@ -889,7 +889,7 @@ def _legacy_http_conf_path(domain):
     return os.path.join(config.WAF_APP_CONF_DIR, f"splitter-app-{domain}.conf")
 
 
-def _proxy_headers(scheme, hsts_line=None, indent="        "):
+def _proxy_headers(client_scheme, hsts_line=None, indent="        "):
     """The standard proxied-request header set (mirrors nginx-proxy-manager's
     conf.d/include/proxy.conf), emitted into every location block this
     renderer generates so a custom location behaves consistently with the
@@ -902,13 +902,22 @@ def _proxy_headers(scheme, hsts_line=None, indent="        "):
     HSTS header would silently vanish on every actual response. nginx-proxy-
     manager works around the exact same gotcha by re-emitting its HSTS
     add_header inside `location /` too; this does the same for every location.
+
+    client_scheme is the scheme the CLIENT used to reach nginx (https iff this
+    server block terminates TLS) — distinct from the scheme nginx uses to
+    reach the backend (proxy_ssl), which is what proxy_pass's own URL scheme
+    encodes. X-Forwarded-Proto must reflect the former: it's how the backend
+    app learns whether the original request was secure, so getting it from
+    the wrong variable causes force-HTTPS backends to redirect-loop and
+    secure-cookie logic to misfire whenever the two schemes differ (the
+    common case: TLS terminated at nginx, plain HTTP to the backend).
     """
     lines = [f"{indent}add_header       X-Served-By $host;"]
     if hsts_line:
         lines.append(f"{indent}{hsts_line}")
     lines += [
         f"{indent}proxy_set_header Host $host;",
-        f"{indent}proxy_set_header X-Forwarded-Proto {scheme};",
+        f"{indent}proxy_set_header X-Forwarded-Proto {client_scheme};",
         f"{indent}proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;",
         f"{indent}proxy_set_header X-Real-IP         $remote_addr;",
     ]
@@ -940,8 +949,9 @@ def render_http_conf(mapping):
     cert_domain = mapping.get("cert_domain") or mapping["domain"]
     cert_path = os.path.join(config.SSL_DIR, f"{cert_domain}.crt")
     key_path = os.path.join(config.SSL_DIR, f"{cert_domain}.key")
-    scheme = "https" if mapping.get("proxy_ssl") else "http"
+    scheme = "https" if mapping.get("proxy_ssl") else "http"   # nginx -> backend
     terminate = bool(mapping.get("has_cert"))   # HTTPS front vs plain HTTP front
+    client_scheme = "https" if terminate else "http"            # client -> nginx
     websocket = bool(mapping.get("websocket_upgrade"))
     # WebSocket already forces 1.1 via _websocket_headers(); this only adds a
     # standalone line when 1.1-to-backend is wanted without WebSocket.
@@ -1039,7 +1049,7 @@ def render_http_conf(mapping):
             lines += _websocket_headers()
         elif http11_only:
             lines.append("        proxy_http_version 1.1;")
-        lines += _proxy_headers(scheme, hsts_line)
+        lines += _proxy_headers(client_scheme, hsts_line)
         lines.append(f"        proxy_pass {scheme}://{name};")
         lines.append("    }")
 
@@ -1054,7 +1064,7 @@ def render_http_conf(mapping):
         lines += _websocket_headers()
     elif http11_only:
         lines.append("        proxy_http_version 1.1;")
-    lines += _proxy_headers(scheme, hsts_line)
+    lines += _proxy_headers(client_scheme, hsts_line)
     lines.append(f"        proxy_pass {scheme}://{name};")
     lines.append("    }")
     lines += ["}", ""]

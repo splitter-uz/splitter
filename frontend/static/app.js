@@ -1368,11 +1368,39 @@ async function tryBindWaf(domain) {
   }
 }
 
+// Mirrors the backend's nm.waf_eligible() so a "New Proxy" save can't run
+// straight into the same rejection AFTER already creating the mapping — the
+// default fresh-form state (protocol "https" @ 443, no cert picked yet) is
+// TLS passthrough, which is exactly the case that's never eligible, so
+// without this check a first-time "Add Proxy" click silently lands in the
+// Stream list with only an easy-to-miss toast explaining why.
+function proxyEligibilityError() {
+  if (currentTransport() === "udp") {
+    return "UDP is Layer-4 only — a WAF can't inspect it. Switch Transport to TCP, or save this as a Stream mapping instead.";
+  }
+  const hasCert = $("#ssl_mode").value !== "none";
+  const protocol = $("#protocol").value;
+  if (hasCert || protocol === "http") return null;
+  if (protocol === "https") {
+    return "This is set up as TLS passthrough (HTTPS with no certificate selected), which a WAF can't inspect. " +
+      "Pick a certificate on the SSL tab to terminate TLS here, or set Protocol to HTTP.";
+  }
+  return "Reverse Proxy needs HTTP, or HTTPS with TLS terminated here. " +
+    "Set Protocol to HTTP, or pick a certificate on the SSL tab.";
+}
+
 async function apply(e) {
   e.preventDefault();
   const btn = $("#apply-btn");
   const editing = EDITING;
   const wantsProxy = !editing && FORM_INTENT_MODE === "proxy";
+  if (wantsProxy) {
+    const problem = proxyEligibilityError();
+    if (problem) {
+      showStatus("error", "Can't save as a Reverse Proxy yet", problem);
+      return;
+    }
+  }
   setBtnLoading(btn, true, editing ? "Updating…" : "Applying…");
   showStatus("loading", editing ? "Updating mapping…" : "Applying mapping…",
              "Provisioning the bind IP, writing the Nginx config and reloading.");
