@@ -2283,7 +2283,17 @@ const ROUTE_FIT_MIN_ZOOM = 0.25;
 function centerRouteOnContent(ox, oy, cw, ch) {
   const box = $("#route-scroll");
   if (!box) return;
-  requestAnimationFrame(() => {
+  // Double rAF: the SVG's full node/link markup was just written via
+  // innerHTML this same tick, and the page section may still be mid-way
+  // through its own fadeUp entrance animation. A single rAF can still land
+  // before the browser has committed layout for that brand-new content, so
+  // clientWidth/scrollWidth read stale (pre-content) values and the fit/
+  // center math below silently computes against the wrong box — the visible
+  // symptom is the diagram sitting pinned near the scroll origin (top-left)
+  // with the zoom label showing a fit percentage that never actually got
+  // applied to the scroll position. A second rAF guarantees a layout has
+  // already happened by the time we measure.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
     // Auto-fit: with several mappings the diagram (fixed-size nodes/rows) is
     // routinely taller than the visible pane at 100%, so a plain "center on
     // content" leaves the top and bottom rows scrolled out of view. Zoom out
@@ -2298,10 +2308,16 @@ function centerRouteOnContent(ox, oy, cw, ch) {
       );
       ROUTE_ZOOM = Math.min(1, Math.max(ROUTE_FIT_MIN_ZOOM, Math.round(fit * 100) / 100));
       applyRouteZoom();
+      // Force a synchronous layout flush so the box's scrollWidth/Height (and
+      // therefore its scrollLeft/Top clamp range) reflect the width we just
+      // applied above, rather than the pre-resize layout — without this, the
+      // scrollLeft/Top assignment right below can get clamped against the
+      // stale, usually-much-smaller scrollable range and silently no-op.
+      void box.scrollWidth;
     }
     box.scrollLeft = Math.max(0, (ox + cw / 2) * ROUTE_ZOOM - box.clientWidth / 2);
     box.scrollTop = Math.max(0, (oy + ch / 2) * ROUTE_ZOOM - box.clientHeight / 2);
-  });
+  }));
 }
 function setRouteZoom(z) {
   ROUTE_ZOOM = Math.min(3, Math.max(0.6, Math.round(z * 100) / 100));
