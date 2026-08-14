@@ -6,31 +6,16 @@
   <title>Splitter — L4 Stream Proxy Manager</title>
   <link rel="icon" type="image/svg+xml" href="/static/logo.svg" />
   <link rel="apple-touch-icon" href="/static/favicon.png" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: { extend: {
-        fontFamily: { mono: ['ui-monospace','SFMono-Regular','Menlo','monospace'] },
-        keyframes: {
-          fadeUp:  { '0%': { opacity: 0, transform: 'translateY(14px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } },
-          fadeIn:  { '0%': { opacity: 0 }, '100%': { opacity: 1 } },
-          scaleIn: { '0%': { opacity: 0, transform: 'scale(.96)' }, '100%': { opacity: 1, transform: 'scale(1)' } },
-          slideIn: { '0%': { opacity: 0, transform: 'translateX(-12px)' }, '100%': { opacity: 1, transform: 'translateX(0)' } },
-          shimmer: { '0%': { backgroundPosition: '-200% 0' }, '100%': { backgroundPosition: '200% 0' } },
-          floaty:  { '0%,100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-6px)' } },
-          drift:   { '0%,100%': { backgroundPosition: '0% 50%' }, '50%': { backgroundPosition: '100% 50%' } },
-        },
-        animation: {
-          fadeUp:  'fadeUp .5s cubic-bezier(.22,1,.36,1) both',
-          fadeIn:  'fadeIn .45s ease both',
-          scaleIn: 'scaleIn .45s cubic-bezier(.22,1,.36,1) both',
-          slideIn: 'slideIn .45s cubic-bezier(.22,1,.36,1) both',
-          shimmer: 'shimmer 2.2s linear infinite',
-          floaty:  'floaty 7s ease-in-out infinite',
-        },
-      } },
-    };
-  </script>
+  <!-- Pre-compiled, static Tailwind build (frontend/build/ -> frontend/static/tailwind.css).
+       Deliberately NOT the cdn.tailwindcss.com Play CDN: that script JIT-compiles every
+       utility class at runtime via eval()/new Function(), so it silently produces ZERO
+       styles under any CSP that blocks 'unsafe-eval' (common browser/security-extension
+       policy) — the page still renders its DOM/text, just completely unstyled, which
+       looks like a blank/broken page. A static stylesheet has no runtime JS dependency
+       and works under any CSP. Rebuild after changing templates/app.js:
+         cd frontend/build && npm install && npm run build
+       (the Dockerfile does this automatically on every image build). -->
+  <link rel="stylesheet" href="/static/tailwind.css" />
   <style>
     :root {
       /* fluid type + spacing scale — UI grows/shrinks with the viewport */
@@ -82,9 +67,9 @@
 
     /* mappings table: tighter column padding so every column fits without a
        horizontal scrollbar (px-6 cells were overflowing once Traffic was added) */
-    #page-mappings table th, #page-mappings table td { padding-left: .8rem; padding-right: .8rem; }
-    #page-mappings table th:first-child, #page-mappings table td:first-child { padding-left: 1.25rem; }
-    #page-mappings table th:last-child, #page-mappings table td:last-child { padding-right: 1.25rem; }
+    #mappanel-mappings table th, #mappanel-mappings table td { padding-left: .8rem; padding-right: .8rem; }
+    #mappanel-mappings table th:first-child, #mappanel-mappings table td:first-child { padding-left: 1.25rem; }
+    #mappanel-mappings table th:last-child, #mappanel-mappings table td:last-child { padding-right: 1.25rem; }
 
     /* table rows slide in + smooth hover */
     #rows tr, #user-rows tr { animation: fadeUp .4s cubic-bezier(.22,1,.36,1) both; transition: background-color .18s ease; }
@@ -105,6 +90,13 @@
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; border: 2px solid transparent; background-clip: content-box; }
     ::-webkit-scrollbar-thumb:hover { background: #94a3b8; background-clip: content-box; }
 
+    /* Sidebar nav scrolls independently of the header/account footer once its
+       item list is taller than the viewport (small screens, many nav items). */
+    #sidebar-nav { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; }
+    #sidebar-nav::-webkit-scrollbar { width: 6px; }
+    #sidebar-nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border: none; background-clip: padding-box; }
+    #sidebar-nav::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.32); background-clip: padding-box; }
+
     @media (prefers-reduced-motion: reduce) {
       *, body { animation: none !important; transition: none !important; }
     }
@@ -124,20 +116,11 @@
       </div>
 
       <!-- nav -->
-      <nav class="flex-1 px-3 py-4 space-y-1">
-        <button data-page="stream" class="nav-link active w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+      <nav id="sidebar-nav" class="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-1">
+        <button data-page="map" class="nav-link active w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
           <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
-          <span>Stream</span>
-          <span id="nav-count-stream" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200">0</span>
-        </button>
-        <button data-page="proxy" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
-          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3"/></svg>
-          <span>Proxy</span>
-          <span id="nav-count-proxy" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200">0</span>
-        </button>
-        <button data-page="form" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
-          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          <span id="nav-form-label">Add Mapping</span>
+          <span>Map</span>
+          <span id="nav-count-map" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200">0</span>
         </button>
         <button data-page="ssl" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
           <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"/></svg>
@@ -151,10 +134,6 @@
           <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M9 6.75V15m6-6v8.25m.503 3.498 4.875-2.437c.381-.19.622-.58.622-1.006V4.82c0-.836-.88-1.38-1.628-1.006l-3.869 1.934c-.317.159-.69.159-1.006 0L9.503 3.252a1.125 1.125 0 0 0-1.006 0L3.622 5.689C3.24 5.88 3 6.27 3 6.695V19.18c0 .836.88 1.38 1.628 1.006l3.869-1.934c.317-.159.69-.159 1.006 0l4.994 2.497c.317.158.69.158 1.006 0Z"/></svg>
           <span>Live Mapping</span>
         </button>
-        <button data-page="subinterfaces" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
-          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z"/></svg>
-          <span>Sub-interfaces</span>
-        </button>
         <button data-page="network" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
           <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M3.6 9h16.8M3.6 15h16.8M12 3a14.5 14.5 0 0 1 3 9 14.5 14.5 0 0 1-3 9 14.5 14.5 0 0 1-3-9 14.5 14.5 0 0 1 3-9Z"/></svg>
           <span>Network</span>
@@ -163,11 +142,6 @@
           <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.75h16.5v3a5.25 5.25 0 0 1-5.25 5.25H9A5.25 5.25 0 0 1 3.75 12.75v-3Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 9.75V7.5m3 2.25V7.5m3 2.25V7.5m3 2.25V6M20.25 12.75c1.2 0 1.8-.6 2.25-1.5"/></svg>
           <span>Docker</span>
           <span id="nav-docker-count" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200">0</span>
-        </button>
-        <button data-page="access" id="nav-access" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
-          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
-          <span>Access Lists</span>
-          <span id="nav-access-count" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200">0</span>
         </button>
         <button data-page="tools" class="nav-link w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
           <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l5.654-4.655m5.65-5.65 2.496 3.03a2.652 2.652 0 0 1-3.586 3.586M11.42 15.17l5.65-5.65m0 0 3.03-2.496a2.652 2.652 0 0 0-3.586-3.586l-3.03 2.496"/></svg>
@@ -221,13 +195,36 @@
       <div class="shell mx-auto w-full max-w-[120rem]">
 
         <!-- ====== PAGE: Stream / Proxy mappings (shared table, filtered by MAP_MODE) ====== -->
-        <section id="page-mappings" class="page space-y-6">
+        <section id="page-map" class="page space-y-6">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Map</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Stream, reverse proxy and forward proxy mappings.</p>
+            </div>
+          </div>
+
+          <!-- Tab strip -->
+          <div class="flex overflow-x-auto bg-slate-50/70 border border-slate-200 rounded-xl px-2 pt-2 gap-0.5">
+            <button data-maptab="stream" class="map-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+              Stream <span id="maptab-count-stream" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">0</span>
+            </button>
+            <button data-maptab="proxy" class="map-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+              Reverse Proxy <span id="maptab-count-proxy" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">0</span>
+            </button>
+            <button data-maptab="fwdproxy" class="map-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+              Forward Proxy <span id="maptab-count-fwdproxy" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">0</span>
+            </button>
+          </div>
+
+          <!-- ── Stream / Reverse Proxy (shared table, filtered by MAP_MODE) ── -->
+          <div id="mappanel-mappings" class="map-panel space-y-6">
+          <div id="mapping-list-view">
           <div class="flex items-end justify-between flex-wrap gap-3">
             <div>
               <h2 id="mappings-title" class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Stream</h2>
               <p id="mappings-subtitle" class="text-sm text-slate-500 mt-0.5">Layer-4 stream proxies provisioned on this host.</p>
             </div>
-            <button data-page="form" class="nav-jump btn-primary inline-flex items-center gap-2 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">
+            <button class="nav-jump btn-primary inline-flex items-center gap-2 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">
               <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
               <span id="mappings-new-label">New Stream</span>
             </button>
@@ -311,13 +308,12 @@
                 <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
               </div>
               <p id="mappings-empty-text" class="text-sm text-slate-500">No mappings yet.</p>
-              <button data-page="form" class="nav-jump mt-3 text-sm font-medium text-emerald-700 hover:text-emerald-900">Add your first mapping →</button>
+              <button class="nav-jump mt-3 text-sm font-medium text-emerald-700 hover:text-emerald-900">Add your first mapping →</button>
             </div>
           </div>
-        </section>
+          </div><!-- /#mapping-list-view -->
 
-        <!-- ====== PAGE: Add / Update Mapping ====== -->
-        <section id="page-form" class="page hidden">
+          <div id="mapping-form-view" class="hidden">
           <div class="grid gap-6 lg:grid-cols-5">
             <div class="lg:col-span-3">
               <div class="mb-5">
@@ -393,7 +389,7 @@
                       <option>loading…</option>
                     </select>
                     <p id="iface-info" class="text-xs text-slate-400 mt-1"></p>
-                    <p id="direct-bind-note" class="hidden text-xs text-emerald-600 mt-1">Sub-interface creation is disabled — this mapping will bind directly to the interface's existing IP. Enable it on the <b>Sub-interfaces</b> page to provision a dedicated IP.</p>
+                    <p id="direct-bind-note" class="hidden text-xs text-emerald-600 mt-1">Sub-interface creation is disabled — this mapping will bind directly to the interface's existing IP. Enable it on the <b>Network → Sub-interfaces</b> tab to provision a dedicated IP.</p>
                   </div>
 
                   <!-- Managed sub-interface picker (shown when the toggle is ON) -->
@@ -401,7 +397,7 @@
                     <label class="block text-sm font-medium mb-1">Sub-interface</label>
                     <select name="subiface" id="subiface-select"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"></select>
-                    <p id="subiface-pick-note" class="text-xs text-slate-400 mt-1">Bind to a sub-interface managed on the <b>Sub-interfaces</b> page. Several mappings can share one on different ports.</p>
+                    <p id="subiface-pick-note" class="text-xs text-slate-400 mt-1">Bind to a sub-interface managed on the <b>Network → Sub-interfaces</b> tab. Several mappings can share one on different ports.</p>
                   </div>
 
                   <div id="subiface-fields" class="space-y-4">
@@ -592,6 +588,44 @@
                     </div>
                   </details>
 
+                  <!-- Reverse Proxy (L7) options — only take effect once this mapping
+                       is bound to Reverse Proxy/WAF; ignored on a plain L4 stream. -->
+                  <details id="l7-advanced-details" class="group rounded-lg border border-slate-200">
+                    <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 flex items-center justify-between">
+                      Reverse Proxy (L7) options <span class="text-xs text-slate-400 group-open:hidden">show</span>
+                    </summary>
+                    <div class="px-3 pb-3 space-y-3">
+                      <label class="flex items-center gap-2 text-xs text-slate-700">
+                        <input type="checkbox" name="websocket_upgrade" id="websocket_upgrade" value="1" class="rounded" />
+                        <span><b>WebSocket support</b> — forward <span class="font-mono">Upgrade</span>/<span class="font-mono">Connection</span> headers.</span>
+                      </label>
+                      <label class="flex items-center gap-2 text-xs text-slate-700">
+                        <input type="checkbox" name="http2" id="http2" value="1" checked class="rounded" />
+                        <span><b>HTTP/2</b> — on the TLS-terminating listener (clients that don't support it automatically fall back to HTTP/1.1; this doesn't remove HTTP/1.1).</span>
+                      </label>
+                      <label class="flex items-center gap-2 text-xs text-slate-700">
+                        <input type="checkbox" name="proxy_http11" id="proxy_http11" value="1" class="rounded" />
+                        <span><b>HTTP/1.1 to backend</b> — send <span class="font-mono">proxy_http_version 1.1</span> instead of nginx's 1.0 default. Needed for keep-alive/chunked backends; always on automatically when WebSocket support is on.</span>
+                      </label>
+
+                      <div>
+                        <div class="flex items-center justify-between mb-1.5">
+                          <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path-specific config</span></label>
+                          <button type="button" id="add-location" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add location</button>
+                        </div>
+                        <div id="locations" class="space-y-2"></div>
+                        <p class="text-[11px] text-slate-400 mt-1">Each block becomes <span class="font-mono">location &lt;path&gt; { ... }</span>, evaluated before the default <span class="font-mono">location /</span>. Add headers, rewrites or other path-specific directives here — the proxy target (this mapping's backend pool) is appended automatically, same as the default location.</p>
+                      </div>
+
+                      <div>
+                        <label class="block text-xs font-medium mb-1">Advanced config <span class="text-slate-400 font-normal">(raw nginx, inserted into the server block)</span></label>
+                        <textarea name="advanced_config" id="advanced_config" rows="4" spellcheck="false" placeholder="# e.g. extra headers, rewrites…"
+                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                        <p class="text-[11px] text-amber-600 mt-1">Written verbatim into the generated config — a mistake here can fail <span class="font-mono">nginx -t</span> for this mapping only (rolled back automatically). Admin/creator access required, same as everything else on this form.</p>
+                      </div>
+                    </div>
+                  </details>
+
                   <!-- SSL -->
                   <div id="ssl-section">
                     <label class="block text-sm font-medium mb-1">SSL / TLS</label>
@@ -620,6 +654,20 @@
                         <input type="checkbox" name="proxy_ssl" id="proxy_ssl" value="1" checked class="rounded" />
                         Re-encrypt to backend (<span class="font-mono">proxy_ssl on</span>) — keep on for TLS backends (:443)
                       </label>
+                      <label class="flex items-center gap-2">
+                        <input type="checkbox" name="ssl_forced" id="ssl_forced" value="1" class="rounded" />
+                        Force HTTPS — redirect plain <span class="font-mono">:80</span> requests for this domain to this listener. Reverse Proxy (L7) only.
+                      </label>
+                      <div id="hsts-block" class="hidden pl-5 space-y-2">
+                        <label class="flex items-center gap-2">
+                          <input type="checkbox" name="hsts_enabled" id="hsts_enabled" value="1" class="rounded" />
+                          Send <span class="font-mono">Strict-Transport-Security</span> (HSTS)
+                        </label>
+                        <label id="hsts-subdomains-row" class="hidden flex items-center gap-2 pl-5">
+                          <input type="checkbox" name="hsts_subdomains" id="hsts_subdomains" value="1" class="rounded" />
+                          Include subdomains (<span class="font-mono">includeSubDomains</span>)
+                        </label>
+                      </div>
                     </div>
                   </div>
 
@@ -631,7 +679,7 @@
                       <option value="__default__">Use global default</option>
                       <option value="">None — allow all</option>
                     </select>
-                    <p class="text-xs text-slate-400 mt-1">Only the networks in the selected list may connect (others denied). Manage lists on the <b>Access Lists</b> page.</p>
+                    <p class="text-xs text-slate-400 mt-1">Only the networks in the selected list may connect (others denied). Manage lists on the <b>Network → Access Lists</b> tab.</p>
                   </div>
 
                   <!-- Hostname restriction (SNI) -->
@@ -670,7 +718,8 @@
               </div>
             </div>
           </div>
-        </section>
+          </div><!-- /#mapping-form-view -->
+          </div><!-- /#mappanel-mappings -->
 
         <!-- ====== PAGE: Users ====== -->
         <section id="page-users" class="page hidden">
@@ -733,6 +782,91 @@
           </div>
         </section>
 
+          <!-- ── Forward Proxy ──────────────────────────────────────────── -->
+          <div id="mappanel-fwdproxy" class="map-panel hidden space-y-6">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <p class="text-sm text-slate-500 mt-0.5 max-w-3xl">SNI-based HTTPS relay — reads the hostname from each TLS ClientHello and forwards the encrypted connection there. No CONNECT method, no certificate, no decryption.</p>
+            <button id="fp-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition shrink-0">Refresh</button>
+          </div>
+
+          <div class="grid gap-6 lg:grid-cols-3">
+            <!-- create / edit -->
+            <div class="lg:col-span-1">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 id="fp-form-title" class="text-sm font-semibold">New forward proxy</h3>
+                  <button type="button" id="fp-cancel-edit" class="hidden text-xs underline text-slate-500 hover:text-slate-900">cancel edit</button>
+                </div>
+                <form id="fp-form" class="space-y-3">
+                  <input type="hidden" id="fp-edit-name" value="" />
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Name <span class="text-slate-400 font-normal">(filename slug)</span></label>
+                    <input name="name" id="fp-name" required placeholder="relay1"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Label <span class="text-slate-400 font-normal">(optional)</span></label>
+                    <input name="label" id="fp-label" placeholder="General relay"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div class="grid grid-cols-3 gap-3">
+                    <div class="col-span-2">
+                      <label class="block text-xs font-medium mb-1">Bind IP</label>
+                      <select name="bind_ip" id="fp-bind-ip"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white outline-none focus:ring-2 focus:ring-emerald-500"></select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Port</label>
+                      <input name="listen_port" id="fp-port" type="number" min="1" max="65535" value="3128"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Client access list <span class="text-slate-400 font-normal">(who may connect)</span></label>
+                    <select name="access_list" id="fp-access-list"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500"></select>
+                  </div>
+                  <label class="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                    <input type="checkbox" name="allow_all" id="fp-allow-all" class="rounded border-red-300 mt-0.5" />
+                    <span><b>Allow all destinations</b> — open relay. Anyone who can reach this listener (per the access list above) can relay to <i>any</i> HTTPS host. Leave off and list allowed domains instead unless you specifically need this.</span>
+                  </label>
+                  <div id="fp-domains-block">
+                    <label class="block text-xs font-medium mb-1">Allowed destination domains <span class="text-slate-400 font-normal">(one per line, <span class="font-mono">*.example.com</span> ok)</span></label>
+                    <textarea name="allowed_domains" id="fp-domains" rows="5" placeholder="example.com&#10;*.example.com&#10;github.com"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                  </div>
+                  <button type="submit" id="fp-save-btn" class="btn-primary w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Save</button>
+                </form>
+              </div>
+            </div>
+
+            <!-- list -->
+            <div class="lg:col-span-2">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                  <h3 class="text-sm font-semibold">Forward proxies</h3>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                      <tr>
+                        <th class="text-left px-6 py-3 font-medium">Name</th>
+                        <th class="text-left px-6 py-3 font-medium">Listen</th>
+                        <th class="text-left px-6 py-3 font-medium">Destinations</th>
+                        <th class="text-left px-6 py-3 font-medium">Access list</th>
+                        <th class="px-6 py-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody id="fp-rows" class="divide-y divide-slate-100"></tbody>
+                  </table>
+                </div>
+                <div id="fp-empty" class="hidden px-6 py-10 text-center text-sm text-slate-400">No forward proxies yet — create one on the left.</div>
+              </div>
+            </div>
+          </div>
+          </div><!-- /#mappanel-fwdproxy -->
+        </section>
+
         <!-- ====== PAGE: SSL Management ====== -->
         <section id="page-ssl" class="page hidden">
           <div class="mb-5">
@@ -742,9 +876,16 @@
 
           <div class="grid gap-6 lg:grid-cols-3">
             <!-- create -->
-            <div class="lg:col-span-1 space-y-6">
+            <div class="lg:col-span-1 space-y-4">
+              <!-- Tab strip -->
+              <div class="flex overflow-x-auto bg-slate-50/70 border border-slate-200 rounded-xl px-2 pt-2 gap-0.5">
+                <button data-ssltab="letsencrypt" class="ssl-create-tab flex items-center gap-2 px-3 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Let's Encrypt</button>
+                <button data-ssltab="selfsigned" class="ssl-create-tab flex items-center gap-2 px-3 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Self-signed</button>
+                <button data-ssltab="upload" class="ssl-create-tab flex items-center gap-2 px-3 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Upload</button>
+              </div>
+
               <!-- let's encrypt -->
-              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+              <div id="sslcreate-letsencrypt" class="ssl-create-panel card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
                 <h3 class="text-sm font-semibold mb-4">Let's Encrypt</h3>
                 <form id="ssl-le-form" class="space-y-3">
                   <div>
@@ -777,7 +918,7 @@
               </div>
 
               <!-- self-signed -->
-              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+              <div id="sslcreate-selfsigned" class="ssl-create-panel hidden card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
                 <h3 class="text-sm font-semibold mb-4">Generate self-signed</h3>
                 <form id="ssl-selfsigned-form" class="space-y-3">
                   <div>
@@ -791,7 +932,7 @@
               </div>
 
               <!-- upload -->
-              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+              <div id="sslcreate-upload" class="ssl-create-panel hidden card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
                 <h3 class="text-sm font-semibold mb-4">Upload certificate</h3>
                 <form id="ssl-upload-form" class="space-y-3">
                   <div>
@@ -836,97 +977,6 @@
                   </table>
                 </div>
                 <div id="ssl-empty" class="hidden px-6 py-10 text-center text-sm text-slate-400">No certificates yet — generate or upload one.</div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- ====== PAGE: Access Lists ====== -->
-        <section id="page-access" class="page hidden">
-          <div class="mb-5">
-            <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Access Lists</h2>
-            <p class="text-sm text-slate-500 mt-0.5">IP/CIDR allow lists. A mapping picks one (or the global default) and only those networks may connect — everything else is denied. Snippets live in <span class="font-mono" id="acl-dir-label">/etc/nginx/acl.d</span>.</p>
-          </div>
-
-          <!-- global default -->
-          <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-5 mb-6 flex flex-wrap items-center gap-3">
-            <div class="flex-1 min-w-[14rem]">
-              <label class="block text-sm font-semibold">Global default list</label>
-              <p class="text-xs text-slate-500 mt-0.5">Applied to mappings set to “Use global default”. Changing it updates them all without re-applying.</p>
-            </div>
-            <select id="acl-default-select"
-              class="rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 min-w-[12rem]"></select>
-          </div>
-
-          <div class="grid gap-6 lg:grid-cols-3">
-            <!-- create / edit -->
-            <div class="lg:col-span-1">
-              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
-                <div class="flex items-center justify-between mb-4">
-                  <h3 id="acl-form-title" class="text-sm font-semibold">New access list</h3>
-                  <button type="button" id="acl-cancel-edit" class="hidden text-xs underline text-slate-500 hover:text-slate-900">cancel edit</button>
-                </div>
-                <form id="acl-form" class="space-y-3">
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Name <span class="text-slate-400 font-normal">(filename: name.conf)</span></label>
-                    <input name="name" id="acl-name" required placeholder="office"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                    <p class="text-[11px] text-slate-400 mt-1">lower-case letters, digits, <span class="font-mono">- _</span></p>
-                  </div>
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Label <span class="text-slate-400 font-normal">(optional)</span></label>
-                    <input name="label" id="acl-label" placeholder="Office network"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
-                  </div>
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Networks (CIDR) — one per line</label>
-                    <textarea name="entries" id="acl-entries" rows="6" placeholder="203.0.113.0/24&#10;198.51.100.10/32&#10;# comments allowed"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
-                  </div>
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Source URL <span class="text-slate-400 font-normal">(optional — auto-refresh)</span></label>
-                    <input name="source_url" id="acl-source-url" placeholder="http://mrlg.tas-ix.uz/index.php"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                    <p class="text-[11px] text-slate-400 mt-1">Set a URL to re-fetch CIDRs in the background like a cron. Leave blank for a manual list.</p>
-                  </div>
-                  <div class="grid grid-cols-2 gap-3 items-end">
-                    <div>
-                      <label class="block text-xs font-medium mb-1">Refresh (hours)</label>
-                      <input name="refresh_hours" id="acl-refresh-hours" type="number" min="1" value="24"
-                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                    </div>
-                    <label class="flex items-center gap-2 text-xs text-slate-700 pb-2">
-                      <input type="checkbox" name="include_private" id="acl-include-private" value="1" checked class="rounded" />
-                      Allow loopback (127.0.0.1)
-                    </label>
-                  </div>
-                  <button type="submit" id="acl-save-btn" class="btn-primary w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Save list</button>
-                </form>
-              </div>
-            </div>
-
-            <!-- list -->
-            <div class="lg:col-span-2">
-              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
-                <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-                  <h3 class="text-sm font-semibold">Lists</h3>
-                  <button id="acl-refresh-all" class="text-xs text-slate-500 hover:text-slate-900 px-2 py-1 rounded-md hover:bg-slate-100">Reload</button>
-                </div>
-                <div class="overflow-x-auto">
-                  <table class="w-full text-sm">
-                    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-                      <tr>
-                        <th class="text-left px-6 py-3 font-medium">List</th>
-                        <th class="text-left px-6 py-3 font-medium">Type</th>
-                        <th class="text-left px-6 py-3 font-medium">Networks</th>
-                        <th class="text-left px-6 py-3 font-medium">Last refresh</th>
-                        <th class="px-6 py-3"></th>
-                      </tr>
-                    </thead>
-                    <tbody id="acl-rows" class="divide-y divide-slate-100"></tbody>
-                  </table>
-                </div>
-                <div id="acl-empty" class="hidden px-6 py-10 text-center text-sm text-slate-400">No access lists yet — create one on the left.</div>
               </div>
             </div>
           </div>
@@ -1142,6 +1192,9 @@
               </button>
               <button data-tool="routes"      class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
                 <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">07</span> Routing Tables
+              </button>
+              <button data-tool="sslcheck"    class="tool-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-200 text-slate-500 text-[10px] font-bold font-mono">08</span> SSL Checker
               </button>
             </div>
 
@@ -1377,148 +1430,283 @@
               </div>
             </div>
 
+            <!-- ── 08 SSL Checker ──────────────────────────────────── -->
+            <div id="toolpanel-sslcheck" class="tool-panel hidden p-6 flex gap-6 flex-col lg:flex-row">
+              <div class="w-full lg:w-72 shrink-0 space-y-4">
+                <div class="grid grid-cols-2 gap-1 text-xs">
+                  <button type="button" data-sslcheck-mode="external" class="sslcheck-mode-tab rounded-md px-2 py-1.5 border">Website</button>
+                  <button type="button" data-sslcheck-mode="own" class="sslcheck-mode-tab rounded-md px-2 py-1.5 border">Managed cert</button>
+                </div>
+
+                <div id="sslcheck-external-fields" class="space-y-4">
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Host / Website</label>
+                    <input id="sslcheck-host" type="text" placeholder="example.com"
+                      class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100 placeholder:text-slate-400">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Port</label>
+                    <input id="sslcheck-port" type="number" min="1" max="65535" value="443"
+                      class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100">
+                  </div>
+                  <p class="text-[10px] text-slate-400">Connects out over TLS and inspects whatever certificate the server actually presents — same as a browser, including chain-trust verification.</p>
+                </div>
+
+                <div id="sslcheck-own-fields" class="hidden space-y-4">
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Managed certificate</label>
+                    <select id="sslcheck-cert" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100"></select>
+                  </div>
+                  <p class="text-[10px] text-slate-400">Reads the certificate straight off disk — no network connection, no trust-chain check.</p>
+                </div>
+
+                <button onclick="runTool('sslcheck')"
+                  class="tool-run-btn w-full flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[.98] transition-all">
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
+                  Check Certificate
+                </button>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-bold font-mono tracking-widest text-slate-400">OUTPUT</span>
+                  <div class="flex gap-2">
+                    <button onclick="copyToolOutput('sslcheck')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy</button>
+                    <button onclick="clearToolOutput('sslcheck')" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-100 transition-colors">Clear</button>
+                  </div>
+                </div>
+                <pre id="tool-output-sslcheck" class="flex-1 overflow-auto rounded-xl bg-slate-900 p-4 text-xs font-mono text-emerald-400 leading-relaxed min-h-[300px] whitespace-pre-wrap break-all">Enter a host (or pick a managed certificate) and click Check Certificate.</pre>
+              </div>
+            </div>
+
           </div><!-- /card -->
         </section>
 
-        <!-- ====== PAGE: Sub-interfaces ====== -->
-        <section id="page-subinterfaces" class="page hidden space-y-6">
-          <div class="flex items-end justify-between flex-wrap gap-3">
-            <div>
-              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Sub-interfaces</h2>
-              <p class="text-sm text-slate-500 mt-0.5">macvlan/VLAN devices that mappings can bind to.</p>
-            </div>
-            <button id="iface-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
-          </div>
-
-          <!-- Sub-interface toggle (admin) -->
-          <div id="iface-settings-card" class="hidden card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
-            <div class="flex items-center justify-between gap-4">
-              <div>
-                <div class="text-sm font-semibold text-slate-800">Create a sub-interface per mapping</div>
-                <p class="text-xs text-slate-500 mt-1 max-w-xl">When <b>on</b>, saving a mapping provisions a real macvlan sub-interface with its own MAC/IP (VLAN, MAC and static/DHCP options appear in the form). When <b>off</b> (default), a mapping binds nginx straight to the chosen interface's existing IP — distinguished by listen port.</p>
-              </div>
-              <label class="relative inline-flex items-center cursor-pointer shrink-0">
-                <input type="checkbox" id="subiface-toggle" class="sr-only peer" />
-                <div class="w-12 h-6 bg-slate-300 rounded-full peer peer-checked:bg-emerald-500 transition-colors"></div>
-                <div class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-6"></div>
-              </label>
-            </div>
-            <p id="subiface-toggle-msg" class="hidden text-xs mt-3"></p>
-          </div>
-
-          <!-- Sub-interfaces manager (admin, only when the toggle is on) -->
-          <div id="subiface-manager" class="hidden card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
-            <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
-              <div class="text-sm font-semibold text-slate-800">Sub-interfaces <span class="font-normal text-slate-400">macvlan devices mappings can bind</span></div>
-              <div class="flex items-center gap-3">
-                <button id="si-bulk-delete" type="button" class="hidden text-xs font-medium text-red-600 hover:text-red-800">Delete selected (<span id="si-bulk-count">0</span>)</button>
-                <span id="subiface-form-title" class="text-xs text-slate-400"></span>
-              </div>
-            </div>
-
-            <form id="subiface-form" class="flex flex-wrap items-end gap-3">
-              <input type="hidden" id="si-edit-name" value="" />
-              <div class="flex-1 min-w-[150px]">
-                <label class="block text-xs font-medium mb-1">Parent interface</label>
-                <select id="si-interface" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 outline-none"></select>
-              </div>
-              <div class="w-28">
-                <label class="block text-xs font-medium mb-1">Label <span class="text-slate-400 font-normal">(opt)</span></label>
-                <input id="si-label" placeholder="web" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
-              </div>
-              <div class="w-24">
-                <label class="block text-xs font-medium mb-1">VLAN <span class="text-slate-400 font-normal">(opt)</span></label>
-                <input id="si-vlan" type="number" min="1" max="4094" placeholder="50" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
-              </div>
-              <div class="w-44">
-                <label class="block text-xs font-medium mb-1">MAC <span class="text-slate-400 font-normal">(blank=random)</span></label>
-                <div class="flex gap-2">
-                  <input id="si-mac" placeholder="auto" class="flex-1 min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
-                  <button type="button" id="si-gen-mac" title="Generate" class="px-3 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm">⟳</button>
-                </div>
-              </div>
-              <div class="w-40">
-                <label class="block text-xs font-medium mb-1">Bind IP</label>
-                <input id="si-bind-ip" placeholder="192.168.50.20" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
-              </div>
-              <div class="w-20">
-                <label class="block text-xs font-medium mb-1">Prefix</label>
-                <input id="si-bind-prefix" placeholder="24" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
-              </div>
-              <div class="flex gap-2">
-                <button type="submit" id="si-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Create</button>
-                <button type="button" id="si-cancel" class="hidden text-sm text-slate-500 hover:text-slate-800 rounded-lg px-3 py-2">Cancel</button>
-              </div>
-            </form>
-
-            <div class="mt-5 overflow-x-auto">
-              <table class="w-full text-sm">
-                <thead class="text-xs text-slate-400 border-b border-slate-200">
-                  <tr>
-                    <th class="py-2 pr-3 w-8"><input type="checkbox" id="si-check-all" title="Select all" class="rounded border-slate-300 cursor-pointer align-middle" /></th>
-                    <th class="text-left py-2 pr-4 font-medium">Device</th>
-                    <th class="text-left py-2 pr-4 font-medium">Parent</th>
-                    <th class="text-left py-2 pr-4 font-medium">VLAN</th>
-                    <th class="text-left py-2 pr-4 font-medium">Alloc</th>
-                    <th class="text-left py-2 pr-4 font-medium">Address</th>
-                    <th class="text-left py-2 pr-4 font-medium">Used by</th>
-                    <th class="text-right py-2 font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="subiface-rows"></tbody>
-              </table>
-              <div id="subiface-empty" class="hidden py-5 text-center text-slate-400 text-sm">No sub-interfaces yet — create one above.</div>
-            </div>
-          </div>
-
-        </section>
-
-        <!-- ====== PAGE: Network ====== -->
+        <!-- ====== PAGE: Network (General / Sub-interfaces / Access Lists tabs) ====== -->
         <section id="page-network" class="page hidden space-y-6">
           <div class="flex items-end justify-between flex-wrap gap-3">
             <div>
               <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Network</h2>
-              <p class="text-sm text-slate-500 mt-0.5">DNS, hosts file and host system controls.</p>
+              <p class="text-sm text-slate-500 mt-0.5">DNS, hosts, sub-interfaces and access lists — everything that shapes how traffic reaches a mapping.</p>
             </div>
             <button id="network-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
           </div>
 
-          <!-- Host network settings (admin) — Phase 2 -->
-          <div id="iface-network-card" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-[var(--gap)]">
-            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
-              <div class="flex items-center justify-between mb-3">
-                <div class="text-sm font-semibold text-slate-800">DNS servers <span class="font-normal text-slate-400">/etc/resolv.conf</span></div>
-                <button id="dns-add" type="button" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add</button>
+          <!-- Tab strip -->
+          <div class="flex overflow-x-auto bg-slate-50/70 border border-slate-200 rounded-xl px-2 pt-2 gap-0.5">
+            <button data-nettab="general" class="net-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">General</button>
+            <button data-nettab="subinterfaces" class="net-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Sub-interfaces</button>
+            <button data-nettab="access" class="net-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Access Lists</button>
+          </div>
+
+          <!-- ── General: DNS / hosts / reboot ─────────────────────────── -->
+          <div id="netpanel-general" class="net-panel space-y-6">
+            <div id="iface-network-card" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-[var(--gap)]">
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="text-sm font-semibold text-slate-800">DNS servers <span class="font-normal text-slate-400">/etc/resolv.conf</span></div>
+                  <button id="dns-add" type="button" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add</button>
+                </div>
+                <div id="dns-rows" class="space-y-2"></div>
+                <div class="flex items-center gap-3 mt-4">
+                  <button id="dns-save" type="button" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save DNS</button>
+                  <span id="dns-msg" class="text-xs"></span>
+                </div>
               </div>
-              <div id="dns-rows" class="space-y-2"></div>
-              <div class="flex items-center gap-3 mt-4">
-                <button id="dns-save" type="button" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save DNS</button>
-                <span id="dns-msg" class="text-xs"></span>
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-3">Hosts file <span class="font-normal text-slate-400">/etc/hosts</span></div>
+                <textarea id="hosts-text" rows="8" spellcheck="false"
+                  class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" placeholder="127.0.0.1   localhost"></textarea>
+                <div class="flex items-center gap-3 mt-3">
+                  <button id="hosts-save" type="button" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save hosts</button>
+                  <span id="hosts-msg" class="text-xs"></span>
+                </div>
               </div>
             </div>
-            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
-              <div class="text-sm font-semibold text-slate-800 mb-3">Hosts file <span class="font-normal text-slate-400">/etc/hosts</span></div>
-              <textarea id="hosts-text" rows="8" spellcheck="false"
-                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" placeholder="127.0.0.1   localhost"></textarea>
-              <div class="flex items-center gap-3 mt-3">
-                <button id="hosts-save" type="button" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save hosts</button>
-                <span id="hosts-msg" class="text-xs"></span>
+
+            <!-- System / danger zone (admin) -->
+            <div id="iface-system-card" class="hidden card bg-white/80 rounded-2xl border border-red-200/70 shadow-sm p-5">
+              <div class="flex items-center justify-between gap-4 flex-wrap">
+                <div>
+                  <div class="text-sm font-semibold text-red-700">Reboot host</div>
+                  <p class="text-xs text-slate-500 mt-1 max-w-xl">Restarts the whole operating system. All proxied connections drop and the dashboard is unreachable until the host comes back up. Mappings and settings persist and are re-applied on boot.</p>
+                </div>
+                <button id="reboot-host" type="button" class="shrink-0 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-sm font-semibold rounded-lg px-4 py-2.5 shadow">Reboot host</button>
+              </div>
+              <p id="reboot-msg" class="hidden text-xs mt-3"></p>
+            </div>
+          </div>
+
+          <!-- ── Sub-interfaces ─────────────────────────────────────────── -->
+          <div id="netpanel-subinterfaces" class="net-panel hidden space-y-6">
+            <!-- Sub-interface toggle (admin) -->
+            <div id="iface-settings-card" class="hidden card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <div class="text-sm font-semibold text-slate-800">Create a sub-interface per mapping</div>
+                  <p class="text-xs text-slate-500 mt-1 max-w-xl">When <b>on</b>, saving a mapping provisions a real macvlan sub-interface with its own MAC/IP (VLAN, MAC and static/DHCP options appear in the form). When <b>off</b> (default), a mapping binds nginx straight to the chosen interface's existing IP — distinguished by listen port.</p>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input type="checkbox" id="subiface-toggle" class="sr-only peer" />
+                  <div class="w-12 h-6 bg-slate-300 rounded-full peer peer-checked:bg-emerald-500 transition-colors"></div>
+                  <div class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-6"></div>
+                </label>
+              </div>
+              <p id="subiface-toggle-msg" class="hidden text-xs mt-3"></p>
+            </div>
+
+            <!-- Sub-interfaces manager (admin, only when the toggle is on) -->
+            <div id="subiface-manager" class="hidden card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                <div class="text-sm font-semibold text-slate-800">Sub-interfaces <span class="font-normal text-slate-400">macvlan devices mappings can bind</span></div>
+                <div class="flex items-center gap-3">
+                  <button id="si-bulk-delete" type="button" class="hidden text-xs font-medium text-red-600 hover:text-red-800">Delete selected (<span id="si-bulk-count">0</span>)</button>
+                  <span id="subiface-form-title" class="text-xs text-slate-400"></span>
+                </div>
+              </div>
+
+              <form id="subiface-form" class="flex flex-wrap items-end gap-3">
+                <input type="hidden" id="si-edit-name" value="" />
+                <div class="flex-1 min-w-[150px]">
+                  <label class="block text-xs font-medium mb-1">Parent interface</label>
+                  <select id="si-interface" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 outline-none"></select>
+                </div>
+                <div class="w-28">
+                  <label class="block text-xs font-medium mb-1">Label <span class="text-slate-400 font-normal">(opt)</span></label>
+                  <input id="si-label" placeholder="web" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+                </div>
+                <div class="w-24">
+                  <label class="block text-xs font-medium mb-1">VLAN <span class="text-slate-400 font-normal">(opt)</span></label>
+                  <input id="si-vlan" type="number" min="1" max="4094" placeholder="50" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+                </div>
+                <div class="w-44">
+                  <label class="block text-xs font-medium mb-1">MAC <span class="text-slate-400 font-normal">(blank=random)</span></label>
+                  <div class="flex gap-2">
+                    <input id="si-mac" placeholder="auto" class="flex-1 min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+                    <button type="button" id="si-gen-mac" title="Generate" class="px-3 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm">⟳</button>
+                  </div>
+                </div>
+                <div class="w-40">
+                  <label class="block text-xs font-medium mb-1">Bind IP</label>
+                  <input id="si-bind-ip" placeholder="192.168.50.20" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+                </div>
+                <div class="w-20">
+                  <label class="block text-xs font-medium mb-1">Prefix</label>
+                  <input id="si-bind-prefix" placeholder="24" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+                </div>
+                <div class="flex gap-2">
+                  <button type="submit" id="si-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Create</button>
+                  <button type="button" id="si-cancel" class="hidden text-sm text-slate-500 hover:text-slate-800 rounded-lg px-3 py-2">Cancel</button>
+                </div>
+              </form>
+
+              <div class="mt-5 overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead class="text-xs text-slate-400 border-b border-slate-200">
+                    <tr>
+                      <th class="py-2 pr-3 w-8"><input type="checkbox" id="si-check-all" title="Select all" class="rounded border-slate-300 cursor-pointer align-middle" /></th>
+                      <th class="text-left py-2 pr-4 font-medium">Device</th>
+                      <th class="text-left py-2 pr-4 font-medium">Parent</th>
+                      <th class="text-left py-2 pr-4 font-medium">VLAN</th>
+                      <th class="text-left py-2 pr-4 font-medium">Alloc</th>
+                      <th class="text-left py-2 pr-4 font-medium">Address</th>
+                      <th class="text-left py-2 pr-4 font-medium">Used by</th>
+                      <th class="text-right py-2 font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="subiface-rows"></tbody>
+                </table>
+                <div id="subiface-empty" class="hidden py-5 text-center text-slate-400 text-sm">No sub-interfaces yet — create one above.</div>
               </div>
             </div>
           </div>
 
-          <!-- System / danger zone (admin) -->
-          <div id="iface-system-card" class="hidden card bg-white/80 rounded-2xl border border-red-200/70 shadow-sm p-5">
-            <div class="flex items-center justify-between gap-4 flex-wrap">
-              <div>
-                <div class="text-sm font-semibold text-red-700">Reboot host</div>
-                <p class="text-xs text-slate-500 mt-1 max-w-xl">Restarts the whole operating system. All proxied connections drop and the dashboard is unreachable until the host comes back up. Mappings and settings persist and are re-applied on boot.</p>
-              </div>
-              <button id="reboot-host" type="button" class="shrink-0 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-sm font-semibold rounded-lg px-4 py-2.5 shadow">Reboot host</button>
-            </div>
-            <p id="reboot-msg" class="hidden text-xs mt-3"></p>
-          </div>
+          <!-- ── Access Lists ───────────────────────────────────────────── -->
+          <div id="netpanel-access" class="net-panel hidden space-y-6">
+            <p class="text-sm text-slate-500 -mt-1">IP/CIDR allow lists. A mapping (or forward proxy) picks one — or the global default — and only those networks may connect; everything else is denied. Snippets live in <span class="font-mono" id="acl-dir-label">/etc/nginx/acl.d</span>.</p>
 
+            <!-- global default -->
+            <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-5 flex flex-wrap items-center gap-3">
+              <div class="flex-1 min-w-[14rem]">
+                <label class="block text-sm font-semibold">Global default list</label>
+                <p class="text-xs text-slate-500 mt-0.5">Applied to mappings set to “Use global default”. Changing it updates them all without re-applying.</p>
+              </div>
+              <select id="acl-default-select"
+                class="rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500 min-w-[12rem]"></select>
+            </div>
+
+            <div class="grid gap-6 lg:grid-cols-3">
+              <!-- create / edit -->
+              <div class="lg:col-span-1">
+                <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                  <div class="flex items-center justify-between mb-4">
+                    <h3 id="acl-form-title" class="text-sm font-semibold">New access list</h3>
+                    <button type="button" id="acl-cancel-edit" class="hidden text-xs underline text-slate-500 hover:text-slate-900">cancel edit</button>
+                  </div>
+                  <form id="acl-form" class="space-y-3">
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Name <span class="text-slate-400 font-normal">(filename: name.conf)</span></label>
+                      <input name="name" id="acl-name" required placeholder="office"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                      <p class="text-[11px] text-slate-400 mt-1">lower-case letters, digits, <span class="font-mono">- _</span></p>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Label <span class="text-slate-400 font-normal">(optional)</span></label>
+                      <input name="label" id="acl-label" placeholder="Office network"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Networks (CIDR) — one per line</label>
+                      <textarea name="entries" id="acl-entries" rows="6" placeholder="203.0.113.0/24&#10;198.51.100.10/32&#10;# comments allowed"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Source URL <span class="text-slate-400 font-normal">(optional — auto-refresh)</span></label>
+                      <input name="source_url" id="acl-source-url" placeholder="http://mrlg.tas-ix.uz/index.php"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                      <p class="text-[11px] text-slate-400 mt-1">Set a URL to re-fetch CIDRs in the background like a cron. Leave blank for a manual list.</p>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3 items-end">
+                      <div>
+                        <label class="block text-xs font-medium mb-1">Refresh (hours)</label>
+                        <input name="refresh_hours" id="acl-refresh-hours" type="number" min="1" value="24"
+                          class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                      </div>
+                      <label class="flex items-center gap-2 text-xs text-slate-700 pb-2">
+                        <input type="checkbox" name="include_private" id="acl-include-private" value="1" checked class="rounded" />
+                        Allow loopback (127.0.0.1)
+                      </label>
+                    </div>
+                    <button type="submit" id="acl-save-btn" class="btn-primary w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Save list</button>
+                  </form>
+                </div>
+              </div>
+
+              <!-- list -->
+              <div class="lg:col-span-2">
+                <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+                  <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                    <h3 class="text-sm font-semibold">Lists</h3>
+                    <button id="acl-refresh-all" class="text-xs text-slate-500 hover:text-slate-900 px-2 py-1 rounded-md hover:bg-slate-100">Reload</button>
+                  </div>
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                      <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                        <tr>
+                          <th class="text-left px-6 py-3 font-medium">List</th>
+                          <th class="text-left px-6 py-3 font-medium">Type</th>
+                          <th class="text-left px-6 py-3 font-medium">Networks</th>
+                          <th class="text-left px-6 py-3 font-medium">Last refresh</th>
+                          <th class="px-6 py-3"></th>
+                        </tr>
+                      </thead>
+                      <tbody id="acl-rows" class="divide-y divide-slate-100"></tbody>
+                    </table>
+                  </div>
+                  <div id="acl-empty" class="hidden px-6 py-10 text-center text-sm text-slate-400">No access lists yet — create one on the left.</div>
+                </div>
+              </div>
+            </div>
+          </div>
         </section>
 
         <!-- ====== PAGE: Activity ====== -->

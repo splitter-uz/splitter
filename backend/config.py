@@ -101,6 +101,11 @@ LISTEN_PORT = int(os.environ.get("SPLITTER_LISTEN_PORT", "443"))
 PROXY_TIMEOUT = os.environ.get("SPLITTER_PROXY_TIMEOUT", "10m")
 PROXY_CONNECT_TIMEOUT = os.environ.get("SPLITTER_PROXY_CONNECT_TIMEOUT", "5s")
 
+# DNS resolver a forward proxy uses to look up its dynamic (SNI-decided) relay
+# targets — required by nginx whenever `proxy_pass` is given a variable rather
+# than a literal address/upstream.
+FWDPROXY_RESOLVER = os.environ.get("SPLITTER_FWDPROXY_RESOLVER", "8.8.8.8 1.1.1.1")
+
 # --- Behaviour ------------------------------------------------------------
 # When a bind IP is removed, also tear it down from the interface.
 UNBIND_ON_DELETE = _env_bool("SPLITTER_UNBIND_ON_DELETE", True)

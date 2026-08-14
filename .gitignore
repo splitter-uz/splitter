@@ -5,3 +5,4 @@ venv/
 data/
 *.log
 .claude/
+frontend/build/node_modules/

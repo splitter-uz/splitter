@@ -83,6 +83,36 @@ def clean_domain(value):
     return value
 
 
+def clean_sni_pattern(value):
+    """Validate one SNI hostname pattern for the forward-proxy allowlist: a
+    plain domain, or a '*.domain' wildcard (matches nginx's
+    `map ... { hostnames; }` wildcard syntax, which only allows a single
+    leading '*.' label — not '*' alone or '*' mid-string)."""
+    value = (value or "").strip().lower().rstrip(".")
+    if value.startswith("*."):
+        rest = value[2:]
+        if not rest or not _DOMAIN_RE.match(rest):
+            raise ValidationError(f"Invalid wildcard domain pattern: {value!r}")
+        return value
+    return clean_domain(value)
+
+
+def clean_sni_list(text):
+    """Parse a textarea/list of SNI patterns (one per line, or comma/space
+    separated). Ignores blank lines and '#' comments. Dedupes, preserves order."""
+    if isinstance(text, (list, tuple)):
+        lines = list(text)
+    else:
+        lines = (text or "").splitlines()
+    out = []
+    for line in lines:
+        line = (line or "").split("#", 1)[0]
+        for tok in re.split(r"[\s,]+", line.strip()):
+            if tok:
+                out.append(clean_sni_pattern(tok))
+    return list(dict.fromkeys(out))
+
+
 def clean_email(value):
     value = (value or "").strip()
     if not value or not _EMAIL_RE.match(value):
@@ -296,6 +326,19 @@ def clean_transport(value, default="tcp"):
     value = (value or "").strip().lower() or default
     if value not in ("tcp", "udp"):
         raise ValidationError(f"Transport must be tcp or udp, got {value!r}")
+    return value
+
+
+_FWDPROXY_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+
+
+def clean_fwdproxy_name(value):
+    """Validate a forward-proxy name (becomes part of its conf/log filenames)."""
+    value = (value or "").strip().lower()
+    if not value or not _FWDPROXY_NAME_RE.match(value):
+        raise ValidationError(
+            f"Invalid forward-proxy name {value!r} — use lower-case letters, "
+            "digits, '-' or '_' (max 40 chars, must start alphanumeric).")
     return value
 
 

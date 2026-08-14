@@ -16,9 +16,12 @@ let SETTINGS = { subinterface_enabled: false };  // tool-wide settings
 let ME = null;        // current user {username, role}
 let EDITING = null;   // domain currently being edited, or null
 let EDIT_HAS_CERT = false;   // does the mapping being edited terminate TLS?
-// Stream and Proxy are two nav pages over the same mapping data, split by
-// waf_bound: "stream" = plain L4 mappings, "proxy" = WAF-bound L7 HTTP ones.
-let MAP_MODE = "stream";        // which nav page rendered the mappings table
+// Stream, Reverse Proxy and Forward Proxy are three tabs on one "Map" nav
+// page. Stream/Proxy share the mappings table (split by waf_bound: "stream" =
+// plain L4, "proxy" = WAF-bound L7 HTTP); Forward Proxy is its own resource
+// with its own table+form, shown/hidden as a sibling panel.
+const MAP_TABS = ["stream", "proxy", "fwdproxy"];
+let MAP_MODE = "stream";        // which map tab is active
 let FORM_INTENT_MODE = "stream"; // which mode a fresh "New …" should create into
 
 const isAdmin = () => ME && ME.role === "admin";
@@ -34,21 +37,19 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["stream", "proxy", "form", "users", "activity", "logs", "monitoring", "livemap", "subinterfaces", "network", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
-// A few nav pages share one underlying <section> (filtered views of the same
-// data) rather than each owning its own — map nav name -> section id.
-const PAGE_SECTION = { stream: "mappings", proxy: "mappings" };
-const SECTION_IDS = Array.from(new Set(PAGES.map((p) => PAGE_SECTION[p] || p)));
+const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall"];
 // Pages whose data is loaded lazily on first visit (see showPage).
 const PAGE_LOADED = new Set();
 function showPage(name) {
-  if (!PAGES.includes(name)) name = "stream";
-  if (name === "stream" || name === "proxy") MAP_MODE = name;
-  history.replaceState(null, "", "#" + name);
-  const sectionId = PAGE_SECTION[name] || name;
-  SECTION_IDS.forEach((id) => {
-    const sec = $("#page-" + id);
-    if (sec) sec.classList.toggle("hidden", id !== sectionId);
+  // Old bookmarks/links to a bare tab hash (#stream, #proxy, #fwdproxy) land
+  // on the Map page with that tab selected, rather than 404-ing to the default.
+  let requestedTab = null;
+  if (MAP_TABS.includes(name)) { requestedTab = name; name = "map"; }
+  if (!PAGES.includes(name)) name = "map";
+  history.replaceState(null, "", "#" + (name === "map" ? MAP_MODE : name));
+  PAGES.forEach((p) => {
+    const sec = $("#page-" + p);
+    if (sec) sec.classList.toggle("hidden", p !== name);
   });
   if (name === "activity") loadActivity();
   // Logs page reloads its mapping list on entry; leaving stops auto-refresh.
@@ -57,21 +58,10 @@ function showPage(name) {
   if (name === "backup") loadBackups();
   if (name === "waf") loadWaf();
   if (name === "ssl") loadSslCerts();
-  if (name === "access") loadAccessLists();
   if (name === "firewall") loadFirewall();
   if (name === "docker") loadDocker();
-  // Heavy list pages: load their data on first access (not eagerly on refresh),
-  // then keep it fresh via the pollers / the page's Refresh button.
-  if (name === "stream" || name === "proxy") {
-    // Header text + table must follow MAP_MODE even before data has loaded
-    // (e.g. landing directly on #proxy on a cold page load).
-    applyMappingsMode();
-    if (!PAGE_LOADED.has("mappings")) {
-      PAGE_LOADED.add("mappings");
-      loadMappings();
-      startHealthPolling();
-    }
-  }
+  if (name === "map") startMapPage(requestedTab || MAP_MODE);
+  else stopTrafficPolling();
   if (name === "users" && !PAGE_LOADED.has("users")) {
     PAGE_LOADED.add("users");
     loadUsers();
@@ -82,21 +72,81 @@ function showPage(name) {
   // Live routing map only while the Live Map page is open.
   if (name === "livemap") startLivemap();
   else stopLivemap();
-  // Sub-interfaces / Network pages render their own overview.
-  if (name === "subinterfaces") startSubinterfaces();
-  else stopSubinterfaces();
+  // Network page (General / Sub-interfaces / Access Lists tabs) renders on entry.
   if (name === "network") startNetwork();
   else stopNetwork();
   // Tools page: initialise tab strip on first visit.
   if (name === "tools") startTools();
-  // Live traffic sparklines only matter while the mappings table is visible.
-  if (name === "stream" || name === "proxy") startTrafficPolling();
-  else stopTrafficPolling();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
   // restart the fade-in animation on the now-visible page
-  const active = $("#page-" + sectionId);
+  const active = $("#page-" + name);
   if (active) { active.classList.remove("page"); void active.offsetWidth; active.classList.add("page"); }
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// --- Map page: Stream / Reverse Proxy / Forward Proxy tabs ------------------
+let _mapTabsReady = false;
+
+function startMapPage(tab) {
+  if (!_mapTabsReady) {
+    _mapTabsReady = true;
+    $$(".map-tab").forEach((btn) => btn.addEventListener("click", () => showMapTab(btn.dataset.maptab)));
+  }
+  showMapTab(tab || MAP_MODE);
+}
+
+function showMapTab(name) {
+  if (!MAP_TABS.includes(name)) name = "stream";
+  MAP_MODE = name;
+  history.replaceState(null, "", "#" + name);
+  $$(".map-tab").forEach((btn) => {
+    const active = btn.dataset.maptab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  const isFwd = name === "fwdproxy";
+  $("#mappanel-mappings").classList.toggle("hidden", isFwd);
+  $("#mappanel-fwdproxy").classList.toggle("hidden", !isFwd);
+
+  if (isFwd) {
+    stopTrafficPolling();
+    if (!PAGE_LOADED.has("fwdproxy")) {
+      PAGE_LOADED.add("fwdproxy");
+      loadFwdProxies();
+    }
+  } else {
+    // Switching tabs always lands on the list — the add/edit form (if left
+    // open on the previously active tab) doesn't carry over.
+    hideMappingForm();
+    // Header text + table must follow MAP_MODE even before data has loaded
+    // (e.g. landing directly on #proxy on a cold page load).
+    applyMappingsMode();
+    if (!PAGE_LOADED.has("mappings")) {
+      PAGE_LOADED.add("mappings");
+      loadMappings();
+      startHealthPolling();
+    }
+    startTrafficPolling();
+  }
+}
+
+// The Stream/Reverse Proxy tab shows either its mapping list or its add/edit
+// form, in place — never a separate page. Editing keeps you on whichever tab
+// you were browsing (FORM_INTENT_MODE tracks where a *new* mapping should
+// land; it does not move you off the tab you clicked Edit from).
+function showMappingForm() {
+  $("#mapping-list-view").classList.add("hidden");
+  $("#mapping-form-view").classList.remove("hidden");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function hideMappingForm() {
+  $("#mapping-form-view").classList.add("hidden");
+  $("#mapping-list-view").classList.remove("hidden");
 }
 
 function toast(message, ok = true) {
@@ -656,6 +706,18 @@ function syncHealthUI() {
   if (sec) sec.classList.toggle("hidden", !on);
 }
 
+// HSTS only makes sense once Force HTTPS is on (mirrors nginx-proxy-manager's
+// own dependency: HSTS is only emitted when ssl_forced is also set), and the
+// subdomains flag only matters once HSTS itself is on — nest both reveals.
+function syncHstsUI() {
+  const forced = $("#ssl_forced") && $("#ssl_forced").checked;
+  const block = $("#hsts-block");
+  if (block) block.classList.toggle("hidden", !forced);
+  const hstsOn = forced && $("#hsts_enabled") && $("#hsts_enabled").checked;
+  const sub = $("#hsts-subdomains-row");
+  if (sub) sub.classList.toggle("hidden", !hstsOn);
+}
+
 function serializeBackends() {
   // Priority tiers only mean something under failover; skip them otherwise so a
   // plain load-balanced pool doesn't accumulate stray priority=1 on every server.
@@ -685,6 +747,30 @@ function serializeBackends() {
     }
     return e;
   }).filter((e) => e.server || e.docker_container);
+}
+
+// --- custom locations (Reverse Proxy / L7 only) -----------------------------
+function addLocationRow(loc) {
+  loc = loc || {};
+  const wrap = document.createElement("div");
+  wrap.className = "loc-row rounded-lg border border-slate-200 p-2 space-y-1.5";
+  wrap.innerHTML = `
+    <div class="flex gap-2 items-center">
+      <input class="loc-path flex-1 min-w-0 rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+        placeholder="/api" value="${escapeHtml(loc.path || "")}" />
+      <button type="button" class="rm-location px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
+    </div>
+    <textarea class="loc-config w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" rows="3"
+      placeholder="proxy_set_header X-Api-Key mykey;">${escapeHtml(loc.config || "")}</textarea>`;
+  wrap.querySelector(".rm-location").addEventListener("click", () => wrap.remove());
+  $("#locations").appendChild(wrap);
+}
+
+function serializeLocations() {
+  return $$("#locations .loc-row").map((row) => ({
+    path: row.querySelector(".loc-path").value.trim(),
+    config: row.querySelector(".loc-config").value,
+  })).filter((l) => l.path && l.config.trim());
 }
 
 // --- load-balancing method panels -----------------------------------------
@@ -1012,8 +1098,16 @@ function updateStats(list) {
   const set = (id, v) => { const e = $("#" + id); if (e) animateCount(e, v); };
   set("stat-total", modeList.length);
   set("stat-backends", backends);
-  set("nav-count-stream", list.filter((m) => !m.waf_bound).length);
-  set("nav-count-proxy", list.filter((m) => !!m.waf_bound).length);
+  set("maptab-count-stream", list.filter((m) => !m.waf_bound).length);
+  set("maptab-count-proxy", list.filter((m) => !!m.waf_bound).length);
+  updateMapNavBadge();
+}
+
+// The sidebar "Map" badge is the combined count across all three tabs —
+// refreshed whenever either the mappings list or the forward-proxy list changes.
+function updateMapNavBadge() {
+  const e = $("#nav-count-map");
+  if (e) animateCount(e, MAPPINGS.length + FWDPROXIES.length);
 }
 
 // Re-apply the Stream/Proxy header text + button labels for the current
@@ -1022,7 +1116,7 @@ function updateStats(list) {
 function applyMappingsMode() {
   const isProxy = MAP_MODE === "proxy";
   const title = $("#mappings-title");
-  if (title) title.textContent = isProxy ? "Proxy" : "Stream";
+  if (title) title.textContent = isProxy ? "Reverse Proxy" : "Stream";
   const sub = $("#mappings-subtitle");
   if (sub) sub.textContent = isProxy
     ? "Layer-7 HTTP reverse proxies with ModSecurity/WAF inspection."
@@ -1253,6 +1347,7 @@ function renderSteps(steps) {
 function formData() {
   const fd = new FormData($("#map-form"));
   fd.set("backends_json", JSON.stringify(serializeBackends()));
+  fd.set("locations_json", JSON.stringify(serializeLocations()));
   return fd;
 }
 
@@ -1481,11 +1576,13 @@ function resetForm() {
   setVal("orig_port", "");
   $("#backends").innerHTML = "";
   addBackendRow();   // empty — placeholder shows the example address (also syncs LB)
+  $("#locations").innerHTML = "";
   selectSsl("none");
   onMethodChange();
   onLbChange();
   toggleRateSection();   // collapse rate-limit panel (reset() unchecked the toggle)
   syncHealthUI();        // collapse health-check panel
+  syncHstsUI();          // collapse force-SSL/HSTS panel (reset() unchecked the toggles)
   $("#bind_prefix").value = CFG.bind_prefix || "24";
   setTransport("tcp");
   filterProtocols();
@@ -1497,7 +1594,6 @@ function resetForm() {
   $("#apply-btn").textContent = "Save / Apply";
   const addTitle = FORM_INTENT_MODE === "proxy" ? "Add Proxy" : "Add Stream";
   const ft = $("#form-title"); if (ft) ft.textContent = addTitle;
-  const fl = $("#nav-form-label"); if (fl) fl.textContent = addTitle;
 }
 
 // --- edit an existing mapping ---------------------------------------------
@@ -1595,6 +1691,23 @@ function editMapping(domain, port) {
 
   $("#sni_guard").checked = !!m.sni_guard;
 
+  // Reverse Proxy (L7) options — websocket/HTTP2/force-SSL/HSTS/custom locations/
+  // advanced config. Stored on every mapping (preserved across Stream <-> Reverse
+  // Proxy toggles) but only rendered once the mapping is WAF-bound.
+  $("#websocket_upgrade").checked = !!m.websocket_upgrade;
+  $("#http2").checked = m.http2 !== false;   // absent (pre-feature mapping) => on
+  $("#proxy_http11").checked = !!m.proxy_http11;
+  $("#ssl_forced").checked = !!m.ssl_forced;
+  $("#hsts_enabled").checked = !!m.hsts_enabled;
+  $("#hsts_subdomains").checked = !!m.hsts_subdomains;
+  syncHstsUI();
+  setVal("advanced_config", m.advanced_config || "");
+  $("#locations").innerHTML = "";
+  (m.locations || []).forEach(addLocationRow);
+  if (m.websocket_upgrade || !m.http2 || m.proxy_http11 || m.ssl_forced || m.advanced_config || (m.locations || []).length) {
+    const l7d = $("#l7-advanced-details"); if (l7d) l7d.open = true;
+  }
+
   // Access list — fall back to the global default for pre-feature mappings.
   populateAccessDropdown();
   $("#access_list").value = (m.access_list !== undefined && m.access_list !== null)
@@ -1619,8 +1732,7 @@ function editMapping(domain, port) {
   $("#edit-banner").classList.remove("hidden");
   $("#apply-btn").textContent = "Update";
   const ft = $("#form-title"); if (ft) ft.textContent = "Update Mapping";
-  const fl = $("#nav-form-label"); if (fl) fl.textContent = "Edit Mapping";
-  showPage("form");
+  showMappingForm();
 }
 
 // --- auth / current user ---------------------------------------------------
@@ -2199,18 +2311,57 @@ function fmtUptime(sec) {
   return `${mn}m`;
 }
 
-// --- Sub-interfaces / Network pages (formerly one "Interfaces" page) -------
+// --- Network page: General / Sub-interfaces / Access Lists tabs ------------
 let IFACE_TIMER = null;
 let IFACE_RATES = {};   // name -> {rx_rate, tx_rate, up} from /api/interfaces/traffic
 
-function startSubinterfaces() {
+let _networkReady = false;
+let NET_TAB = "general";
+
+function startNetwork() {
+  // Data for all three tabs loads on every visit (cheap, keeps whichever tab
+  // you land on already fresh); only the tab-strip wiring is one-time.
+  if (isAdmin()) loadNetworkSettings();
+  loadSubinterfacesTab();
+  loadAccessLists();
+
+  if (_networkReady) return;
+  _networkReady = true;
+  $$(".net-tab").forEach((btn) => btn.addEventListener("click", () => showNetTab(btn.dataset.nettab)));
+  showNetTab(NET_TAB);
+}
+function stopNetwork() {}
+
+function showNetTab(name) {
+  NET_TAB = name;
+  $$(".net-tab").forEach((btn) => {
+    const active = btn.dataset.nettab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  $$(".net-panel").forEach((p) => p.classList.add("hidden"));
+  const panel = $("#netpanel-" + name);
+  if (panel) panel.classList.remove("hidden");
+}
+
+// Refresh button dispatches to whichever tab is currently open.
+function refreshNetworkTab() {
+  if (NET_TAB === "subinterfaces") loadSubinterfacesTab();
+  else if (NET_TAB === "access") loadAccessLists();
+  else if (isAdmin()) loadNetworkSettings();
+}
+
+function loadSubinterfacesTab() {
   // Reflect the persisted toggle and render the overview immediately.
   $("#subiface-toggle").checked = !!SETTINGS.subinterface_enabled;
   applySubifaceManagerVisibility();
   fillSiInterfaceSelect();
   loadSubinterfaces();
 }
-function stopSubinterfaces() {}
 
 // The sub-interface manager only applies when the toggle is on (and to admins).
 function applySubifaceManagerVisibility() {
@@ -2218,11 +2369,6 @@ function applySubifaceManagerVisibility() {
   const card = $("#subiface-manager");
   if (card) card.classList.toggle("hidden", !show);
 }
-
-function startNetwork() {
-  if (isAdmin()) loadNetworkSettings();
-}
-function stopNetwork() {}
 
 // --- host network settings (DNS + /etc/hosts) ------------------------------
 function dnsRowHtml(ip) {
@@ -2727,6 +2873,22 @@ const SSL_SOURCE_BADGE = {
   letsencrypt: '<span class="inline-block px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 text-xs">Let\'s Encrypt</span>',
 };
 
+// The SSL page's three creation methods (Let's Encrypt / Self-signed / Upload)
+// are tabs, like the Map page's Stream/Reverse Proxy/Forward Proxy — one panel
+// visible at a time instead of three cards stacked on top of each other.
+function selectSslCreateTab(name) {
+  $$(".ssl-create-tab").forEach((btn) => {
+    const active = btn.dataset.ssltab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  $$(".ssl-create-panel").forEach((p) => p.classList.toggle("hidden", p.id !== "sslcreate-" + name));
+}
+
 async function loadSslCerts() {
   fillLeBindIpSelect();
   try {
@@ -2817,6 +2979,162 @@ async function deleteCert(name) {
   else toast(j.error || "Could not delete.", false);
 }
 
+// --- Forward Proxy (SNI-based HTTPS relay) ----------------------------------
+let FWDPROXIES = [];
+let FP_EDITING = null;   // name currently being edited, or null
+
+async function loadFwdProxies() {
+  fillFpBindIpSelect();
+  populateAccessDropdown("#fp-access-list");
+  try {
+    const j = await (await fetch("/api/forward-proxies")).json();
+    if (!j.ok) return;
+    FWDPROXIES = j.proxies || [];
+    const badge = $("#maptab-count-fwdproxy"); if (badge) animateCount(badge, FWDPROXIES.length);
+    updateMapNavBadge();
+    renderFwdProxyTable();
+  } catch (_) { /* non-fatal */ }
+}
+
+// Same IP-keyed picker the SSL page's Let's Encrypt card uses (see
+// fillLeBindIpSelect) — physical interfaces + managed sub-interfaces, by IP.
+function fillFpBindIpSelect() {
+  const sel = $("#fp-bind-ip");
+  if (!sel) return;
+  const cur = sel.value;
+  const seen = new Set();
+  const opts = [];
+  (IFACES || []).forEach((i) => (i.addresses || []).forEach((a) => {
+    if (a.ip && !seen.has(a.ip)) { seen.add(a.ip); opts.push({ ip: a.ip, label: `${a.ip} · ${i.name}` }); }
+  }));
+  (SUBIFACES || []).forEach((s) => {
+    if (s.bind_ip && !seen.has(s.bind_ip)) {
+      seen.add(s.bind_ip);
+      opts.push({ ip: s.bind_ip, label: `${s.bind_ip} · ${s.name}${s.vlan_id ? " · vlan " + s.vlan_id : ""}` });
+    }
+  });
+  sel.innerHTML = opts.length
+    ? opts.map((o) => `<option value="${escapeHtml(o.ip)}">${escapeHtml(o.label)}</option>`).join("")
+    : '<option value="">no interfaces available</option>';
+  if (opts.some((o) => o.ip === cur)) sel.value = cur;
+}
+
+function renderFwdProxyTable() {
+  const tb = $("#fp-rows");
+  if (!tb) return;
+  tb.innerHTML = "";
+  $("#fp-empty").classList.toggle("hidden", FWDPROXIES.length > 0);
+  FWDPROXIES.forEach((f, idx) => {
+    const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50 align-top" + (f.enabled === false ? " opacity-50" : "");
+    tr.style.setProperty("--i", Math.min(idx, 12));
+    const dest = f.allow_all
+      ? '<span class="inline-block px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs">allow all</span>'
+      : `<span class="text-xs text-slate-600">${(f.allowed_domains || []).length} domain(s)</span>`;
+    const domainsPreview = !f.allow_all && (f.allowed_domains || []).length
+      ? `<div class="text-xs text-slate-400 font-mono">${escapeHtml(f.allowed_domains.slice(0, 3).join(", "))}${f.allowed_domains.length > 3 ? "…" : ""}</div>` : "";
+    const acl = f.access_list
+      ? escapeHtml(f.access_list === "__default__" ? "global default" : f.access_list)
+      : '<span class="text-slate-400">open</span>';
+    tr.innerHTML = `
+      <td class="px-6 py-3 font-mono">${escapeHtml(f.label || f.name)}${f.enabled === false ? ' <span class="inline-block px-2 py-0.5 rounded-full bg-slate-200 text-slate-500 text-[10px] font-sans align-middle uppercase tracking-wide">disabled</span>' : ""}
+        ${f.label && f.label !== f.name ? `<div class="text-xs text-slate-400 font-sans">${escapeHtml(f.name)}</div>` : ""}</td>
+      <td class="px-6 py-3 font-mono text-slate-600">${escapeHtml(f.bind_ip)}<span class="text-slate-400">:${escapeHtml(f.listen_port)}</span></td>
+      <td class="px-6 py-3">${dest}${domainsPreview}</td>
+      <td class="px-6 py-3 text-xs text-slate-600">${acl}</td>
+      <td class="px-6 py-3 text-right whitespace-nowrap">
+        <button data-fp="${escapeHtml(f.name)}" class="fp-edit-btn text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+        ${isAdmin() ? `<button data-fp="${escapeHtml(f.name)}" class="fp-toggle-btn text-xs font-medium text-sky-600 hover:text-sky-800 mr-3">${f.enabled === false ? "Enable" : "Disable"}</button>` : ""}
+        ${isAdmin() ? `<button data-fp="${escapeHtml(f.name)}" class="fp-del-btn text-xs font-medium text-red-600 hover:text-red-800">Delete</button>` : ""}
+      </td>`;
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll(".fp-edit-btn").forEach((b) => b.addEventListener("click", () => editFwdProxy(b.dataset.fp)));
+  tb.querySelectorAll(".fp-toggle-btn").forEach((b) => b.addEventListener("click", () => toggleFwdProxy(b.dataset.fp)));
+  tb.querySelectorAll(".fp-del-btn").forEach((b) => b.addEventListener("click", () => deleteFwdProxy(b.dataset.fp)));
+}
+
+function toggleFpDomainsVisibility() {
+  const allowAll = $("#fp-allow-all")?.checked;
+  const block = $("#fp-domains-block");
+  if (block) block.classList.toggle("hidden", !!allowAll);
+}
+
+function resetFwdProxyForm() {
+  FP_EDITING = null;
+  $("#fp-form").reset();
+  $("#fp-edit-name").value = "";
+  $("#fp-name").readOnly = false;
+  $("#fp-name").classList.remove("bg-slate-100");
+  $("#fp-form-title").textContent = "New forward proxy";
+  $("#fp-cancel-edit").classList.add("hidden");
+  $("#fp-save-btn").textContent = "Save";
+  toggleFpDomainsVisibility();
+}
+
+function editFwdProxy(name) {
+  const f = FWDPROXIES.find((x) => x.name === name);
+  if (!f) return;
+  FP_EDITING = name;
+  $("#fp-edit-name").value = name;
+  $("#fp-name").value = name;
+  $("#fp-name").readOnly = true;
+  $("#fp-name").classList.add("bg-slate-100");
+  $("#fp-label").value = f.label && f.label !== f.name ? f.label : "";
+  fillFpBindIpSelect();
+  $("#fp-bind-ip").value = f.bind_ip;
+  $("#fp-port").value = f.listen_port;
+  populateAccessDropdown("#fp-access-list");
+  $("#fp-access-list").value = f.access_list || "";
+  $("#fp-allow-all").checked = !!f.allow_all;
+  $("#fp-domains").value = (f.allowed_domains || []).join("\n");
+  toggleFpDomainsVisibility();
+  $("#fp-form-title").textContent = `Edit ${f.label || f.name}`;
+  $("#fp-cancel-edit").classList.remove("hidden");
+  $("#fp-save-btn").textContent = "Update";
+}
+
+async function submitFwdProxy(e) {
+  e.preventDefault();
+  const editing = FP_EDITING;
+  if (!editing && $("#fp-allow-all").checked &&
+      !confirm("This forward proxy will relay to ANY HTTPS destination — an open relay. Continue?")) return;
+  const fd = new FormData($("#fp-form"));
+  const btn = $("#fp-save-btn");
+  setBtnLoading(btn, true, editing ? "Updating…" : "Saving…");
+  try {
+    const url = editing ? `/api/forward-proxies/${encodeURIComponent(editing)}` : "/api/forward-proxies";
+    const j = await (await fetch(url, { method: "POST", body: fd })).json();
+    renderSteps(j.steps);
+    if (j.ok) {
+      toast(editing ? `${j.proxy.name} updated.` : `${j.proxy.name} created.`);
+      resetFwdProxyForm();
+      await loadFwdProxies();
+    } else {
+      toast(j.error || "Could not save.", false);
+    }
+  } catch (err) {
+    toast(String(err.message || err), false);
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+async function toggleFwdProxy(name) {
+  const j = await (await fetch(`/api/forward-proxies/${encodeURIComponent(name)}/toggle`, { method: "POST" })).json();
+  renderSteps(j.steps);
+  if (j.ok) { toast(`${name} ${j.proxy.enabled ? "enabled" : "disabled"}.`); await loadFwdProxies(); }
+  else toast(j.error || "Failed to toggle.", false);
+}
+
+async function deleteFwdProxy(name) {
+  if (!confirm(`Delete forward proxy ${name}? Its listener config will be removed.`)) return;
+  const j = await (await fetch(`/api/forward-proxies/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
+  renderSteps(j.steps);
+  if (j.ok) { toast(`${name} deleted.`); await loadFwdProxies(); }
+  else toast(j.error || "Could not delete.", false);
+}
+
 // --- access lists (allow/deny) ---------------------------------------------
 let ACCESS_LISTS = [];        // cached for the mapping-form dropdown
 let ACCESS_DEFAULT = "";      // current global default list name
@@ -2830,9 +3148,10 @@ function aclTypeBadge(a) {
   return '<span class="inline-block px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs">manual</span>';
 }
 
-// Fill the mapping form's #access_list dropdown, preserving the current value.
-function populateAccessDropdown() {
-  const sel = $("#access_list");
+// Fill an access-list dropdown (mapping form's #access_list by default, but
+// reused by the Forward Proxy form too), preserving the current value.
+function populateAccessDropdown(selector = "#access_list") {
+  const sel = $(selector);
   if (!sel) return;
   const cur = sel.value || "__default__";
   sel.innerHTML = "";
@@ -2853,7 +3172,6 @@ async function loadAccessLists() {
     ACCESS_LISTS = j.lists || [];
     ACCESS_DEFAULT = j.default || "";
     if (j.acl_dir) { const l = $("#acl-dir-label"); if (l) l.textContent = j.acl_dir; }
-    const cnt = $("#nav-access-count"); if (cnt) cnt.textContent = ACCESS_LISTS.length;
 
     // global-default selector
     const dsel = $("#acl-default-select");
@@ -3793,9 +4111,8 @@ async function loadMe() {
   $("#nav-logs").classList.toggle("hidden", !admin);
   $("#nav-backup").classList.toggle("hidden", !admin);
   $("#nav-waf").classList.toggle("hidden", !admin);
-  $("#nav-access").classList.toggle("hidden", !admin);
   $("#nav-firewall").classList.toggle("hidden", !admin);
-  // Interfaces page: only admins can change the sub-interface policy / network.
+  // Network page: only admins can change the sub-interface policy / network.
   $("#iface-settings-card").classList.toggle("hidden", !admin);
   $("#iface-network-card").classList.toggle("hidden", !admin);
   $("#iface-system-card").classList.toggle("hidden", !admin);
@@ -4291,13 +4608,14 @@ function startWafInstallPoll() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
-  // correct section is visible from the first paint instead of flashing stream.
+  // correct section is visible from the first paint instead of flashing Map/Stream.
+  // A bare tab hash (#stream / #proxy / #fwdproxy) resolves to the Map page.
   const _initHash = location.hash.slice(1);
-  if (PAGES.includes(_initHash) && _initHash !== "stream") {
-    if (_initHash === "proxy") MAP_MODE = "proxy";
-    const _sectionId = PAGE_SECTION[_initHash] || _initHash;
-    SECTION_IDS.forEach(id => { const el = $("#page-" + id); if (el) el.classList.toggle("hidden", id !== _sectionId); });
-    $$(".nav-link").forEach(b => b.classList.toggle("active", b.dataset.page === _initHash));
+  let _initPage = _initHash;
+  if (MAP_TABS.includes(_initHash)) { MAP_MODE = _initHash; _initPage = "map"; }
+  if (PAGES.includes(_initPage) && _initPage !== "map") {
+    PAGES.forEach(p => { const el = $("#page-" + p); if (el) el.classList.toggle("hidden", p !== _initPage); });
+    $$(".nav-link").forEach(b => b.classList.toggle("active", b.dataset.page === _initPage));
   }
 
   await loadMe();
@@ -4319,7 +4637,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $$(".nav-jump").forEach((b) => b.addEventListener("click", () => {
     FORM_INTENT_MODE = MAP_MODE;
     resetForm();
-    showPage("form");
+    showMappingForm();
   }));
   $("#search").addEventListener("input", () => { MAP_PAGE = 1; renderMappings(); });
 
@@ -4338,6 +4656,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.target.value = "";   // allow re-importing the same file
   });
   $("#add-backend").addEventListener("click", () => addBackendRow());
+  $("#add-location").addEventListener("click", () => addLocationRow());
+  $("#ssl_forced").addEventListener("change", syncHstsUI);
+  $("#hsts_enabled").addEventListener("change", syncHstsUI);
   // Docker page
   const dcf = $("#docker-create-form"); if (dcf) dcf.addEventListener("submit", dockerCreateMapping);
   const dr = $("#docker-refresh"); if (dr) dr.addEventListener("click", loadDocker);
@@ -4345,7 +4666,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#protocol").addEventListener("change", onProtocolChange);
   $("#listen_port").addEventListener("input", onListenPortChange);
   $$('input[name="transport"]').forEach((r) => r.addEventListener("change", onTransportChange));
-  $("#cancel-edit").addEventListener("click", resetForm);
+  $("#cancel-edit").addEventListener("click", () => { resetForm(); hideMappingForm(); });
   $("#gen-mac").addEventListener("click", generateMac);
   $("#interface").addEventListener("change", updateIfaceInfo);
   $("#lb_method").addEventListener("change", onLbChange);
@@ -4433,8 +4754,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener("mousemove", onRouteNodeMove);
   window.addEventListener("mouseup", onRouteNodeUp);
   $("#mon-refresh").addEventListener("click", () => { loadMetrics(); loadIfaceTraffic(); });
-  $("#iface-refresh").addEventListener("click", () => loadSubinterfaces());
-  $("#network-refresh").addEventListener("click", () => { if (isAdmin()) loadNetworkSettings(); });
+  $("#network-refresh").addEventListener("click", refreshNetworkTab);
   $("#subiface-toggle").addEventListener("change", (e) => saveSubifaceSetting(e.target.checked));
   $("#dns-add").addEventListener("click", () => addDnsRow(""));
   $("#dns-save").addEventListener("click", saveDns);
@@ -4453,6 +4773,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#ssl-le-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("letsencrypt", e.target); });
   $("#ssl-selfsigned-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("selfsigned", e.target); });
   $("#ssl-upload-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("upload", e.target); });
+  $$(".ssl-create-tab").forEach((b) => b.addEventListener("click", () => selectSslCreateTab(b.dataset.ssltab)));
+  selectSslCreateTab("letsencrypt");
+
+  // Forward Proxy
+  $("#fp-refresh").addEventListener("click", loadFwdProxies);
+  $("#fp-form").addEventListener("submit", submitFwdProxy);
+  $("#fp-cancel-edit").addEventListener("click", resetFwdProxyForm);
+  $("#fp-allow-all").addEventListener("change", toggleFpDomainsVisibility);
+  toggleFpDomainsVisibility();
 
   // Access lists
   $("#acl-form").addEventListener("submit", submitAccessList);
@@ -4493,9 +4822,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Lazy: each page's list data loads on first access (showPage), not all up
   // front — so the shell + sidebar paint immediately and only the page you open
-  // fetches its rows (mappings/health, users, …).
+  // fetches its rows (mappings/health, users, …). showPage itself resolves a
+  // bare tab hash (#stream/#proxy/#fwdproxy) to the Map page + that tab.
   const hash = location.hash.slice(1);
-  showPage(PAGES.includes(hash) ? hash : "stream");
+  showPage(hash || "map");
 });
 
 // ==========================================================================
@@ -4517,18 +4847,49 @@ function startTools() {
   _toolsPopulateInterfaces();
 
   // Allow Enter key to submit in tool input fields
-  ["ping-host", "port-host", "port-port", "dns-host", "traceroute-host", "whois-query"].forEach((id) => {
+  ["ping-host", "port-host", "port-port", "dns-host", "traceroute-host", "whois-query", "sslcheck-host", "sslcheck-port"].forEach((id) => {
     const el = $("#" + id);
     if (el) el.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
-        const tool = id.split("-")[0];
+        const tool = id.startsWith("sslcheck") ? "sslcheck" : id.split("-")[0];
         runTool(tool);
       }
     });
   });
 
+  // SSL Checker: Website vs Managed-cert mode
+  $$(".sslcheck-mode-tab").forEach((b) => b.addEventListener("click", () => selectSslCheckMode(b.dataset.sslcheckMode)));
+  selectSslCheckMode("external");
+  fillSslCheckCertSelect();
+
   // Show first tab
   showToolTab("ping");
+}
+
+function selectSslCheckMode(mode) {
+  $$(".sslcheck-mode-tab").forEach((b) => {
+    const active = b.dataset.sslcheckMode === mode;
+    b.classList.toggle("border-sky-500", active);
+    b.classList.toggle("bg-sky-50", active);
+    b.classList.toggle("text-sky-700", active);
+  });
+  $("#sslcheck-external-fields").classList.toggle("hidden", mode !== "external");
+  $("#sslcheck-own-fields").classList.toggle("hidden", mode !== "own");
+  if (mode === "own") fillSslCheckCertSelect();
+}
+
+async function fillSslCheckCertSelect() {
+  const sel = $("#sslcheck-cert");
+  if (!sel) return;
+  try {
+    const j = await (await fetch("/api/ssl/certs")).json();
+    const certs = j.certs || [];
+    const cur = sel.value;
+    sel.innerHTML = certs.length
+      ? certs.map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)} (${escapeHtml(c.source || "?")})</option>`).join("")
+      : '<option value="">no managed certificates yet</option>';
+    if (certs.some((c) => c.name === cur)) sel.value = cur;
+  } catch (_) { /* non-fatal */ }
 }
 
 function showToolTab(name) {
@@ -4616,6 +4977,19 @@ function runTool(tool) {
     const query = ($("#whois-query").value || "").trim();
     if (!query) { out.textContent = "Error: Domain or IP is required."; return; }
     fd.set("query", query);
+  } else if (tool === "sslcheck") {
+    const mode = $(".sslcheck-mode-tab.bg-sky-50")?.dataset.sslcheckMode || "external";
+    fd.set("mode", mode);
+    if (mode === "own") {
+      const certName = $("#sslcheck-cert").value || "";
+      if (!certName) { out.textContent = "Error: Pick a managed certificate."; return; }
+      fd.set("cert_name", certName);
+    } else {
+      const host = ($("#sslcheck-host").value || "").trim();
+      if (!host) { out.textContent = "Error: Host is required."; return; }
+      fd.set("host", host);
+      fd.set("port", $("#sslcheck-port").value || "443");
+    }
   }
 
   // Show running state
