@@ -2273,10 +2273,32 @@ function applyRouteZoom() {
 
 // Centre the scroll window on the actual content, leaving the big margins to
 // pan into on every side.
+// Absolute floor for the auto-fit calculation below — lower than the manual
+// zoom controls' own 0.6 floor (see setRouteZoom) because with many mappings
+// the alternative is "the diagram is bigger than the window, go scroll for
+// it", which is the exact complaint auto-fit exists to fix. Once the user
+// touches the wheel/zoom buttons, the normal 0.6 floor takes back over.
+const ROUTE_FIT_MIN_ZOOM = 0.25;
+
 function centerRouteOnContent(ox, oy, cw, ch) {
   const box = $("#route-scroll");
   if (!box) return;
   requestAnimationFrame(() => {
+    // Auto-fit: with several mappings the diagram (fixed-size nodes/rows) is
+    // routinely taller than the visible pane at 100%, so a plain "center on
+    // content" leaves the top and bottom rows scrolled out of view. Zoom out
+    // just enough that the whole diagram fits — but never zoom IN past 100%
+    // for a small map, and only auto-fit if the pane has already been
+    // measured (clientWidth/Height are 0 before first layout).
+    if (box.clientWidth && box.clientHeight) {
+      const margin = 40;
+      const fit = Math.min(
+        (box.clientWidth - margin) / cw,
+        (box.clientHeight - margin) / ch,
+      );
+      ROUTE_ZOOM = Math.min(1, Math.max(ROUTE_FIT_MIN_ZOOM, Math.round(fit * 100) / 100));
+      applyRouteZoom();
+    }
     box.scrollLeft = Math.max(0, (ox + cw / 2) * ROUTE_ZOOM - box.clientWidth / 2);
     box.scrollTop = Math.max(0, (oy + ch / 2) * ROUTE_ZOOM - box.clientHeight / 2);
   });
