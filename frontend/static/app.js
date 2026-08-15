@@ -78,9 +78,15 @@ function showPage(name) {
   // Tools page: initialise tab strip on first visit.
   if (name === "tools") startTools();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
-  // restart the fade-in animation on the now-visible page
+  // Replay the page-enter transition: add .page-enter (opacity:0, the
+  // transition's starting point), force a reflow so the browser commits that
+  // as a real rendered frame, then remove it — .page's own resting state
+  // (opacity:1, see index.html) takes back over either by transitioning
+  // there smoothly, or — if the transition doesn't fire for any reason —
+  // immediately, since that resting state is the element's actual base
+  // style, not something only the animation could reach.
   const active = $("#page-" + name);
-  if (active) { active.classList.remove("page"); void active.offsetWidth; active.classList.add("page"); }
+  if (active) { active.classList.add("page-enter"); void active.offsetWidth; active.classList.remove("page-enter"); }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 

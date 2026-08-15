@@ -48,16 +48,24 @@
     .nav-link svg { transition: transform .25s cubic-bezier(.22,1,.36,1); }
     .nav-link:hover svg { transform: scale(1.12); }
 
-    /* page transition — opacity:1 is the real base state; the animation is a
-       cosmetic enhancement layered on top of it, never the only thing making
-       content visible. Without this, .page's only source of opacity is the
-       fadeUp keyframes' fill-mode, so anything that stops the animation from
-       actually completing (prefers-reduced-motion below being the most
-       common real case — set the equivalent of "Reduce Motion" in your OS or
-       browser and this section never advances past its 0% keyframe) leaves
-       the page permanently stuck at opacity:0: fully present in the DOM,
-       fully populated with data, completely invisible. */
-    .page { opacity: 1; animation: fadeUp .45s cubic-bezier(.22,1,.36,1) both; }
+    /* Page transition — a CSS *transition*, not a keyframe animation.
+       Rebuilt after a keyframe-animation version (animation:fadeUp ... both)
+       could leave a page permanently stuck invisible: a fill-mode animation
+       OVERRIDES the element's base declared opacity for as long as the
+       browser considers it "in effect" — including a stuck one — so even an
+       explicit `opacity:1` base couldn't win against a keyframe animation
+       that got stuck holding its 0% state (prefers-reduced-motion below is
+       one concrete way that happens; flaky cross-browser timing on the
+       JS-driven restart in showPage() is another). A transition can't get
+       stuck holding a value like that: .page's resting state (no
+       .page-enter class) IS opacity:1 — full stop, not "the animation's
+       0%..100% range happens to end there." showPage() only ever *adds*
+       .page-enter (the 0% starting point) then immediately removes it; if
+       the transition fails to fire for any reason, removing the class still
+       snaps straight to the real resting opacity:1 with no animation, never
+       to a stuck, invisible 0. */
+    .page { opacity: 1; transform: translateY(0); transition: opacity .45s cubic-bezier(.22,1,.36,1), transform .45s cubic-bezier(.22,1,.36,1); }
+    .page.page-enter { opacity: 0; transform: translateY(14px); }
 
     /* frosted cards + hover lift (applied to existing .bg-white rounded-2xl cards) */
     .card { backdrop-filter: blur(8px); transition: transform .3s cubic-bezier(.22,1,.36,1), box-shadow .3s ease, border-color .3s ease; }
