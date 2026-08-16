@@ -4194,6 +4194,8 @@ async function refreshLogs() {
   const { domain, port } = LOGS_CURRENT;
   const q = $("#logs-search").value.trim();
   const kind = LOGS_KIND;
+  const dl = $("#logs-download");
+  if (dl) dl.href = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}/download`;
   const url = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}` +
     `?lines=${$("#logs-lines").value}` + (q ? `&q=${encodeURIComponent(q)}` : "");
   try {
@@ -4944,7 +4946,76 @@ function startWafInstallPoll() {
   }, 3000);
 }
 
+// --- sidebar drag-to-reorder -------------------------------------------
+// Each user's own layout, not a shared/admin setting — kept in localStorage
+// (per browser) rather than /api/settings. Reordering only ever moves the
+// <button> DOM nodes; showPage()/role-based hidden-toggling are entirely
+// class-driven, so neither cares what order they're in.
+const NAV_ORDER_KEY = "splitter_nav_order";
+
+function saveNavOrder() {
+  const nav = $("#sidebar-nav");
+  if (!nav) return;
+  const order = Array.from(nav.querySelectorAll(".nav-link")).map((b) => b.dataset.page);
+  try { localStorage.setItem(NAV_ORDER_KEY, JSON.stringify(order)); } catch (_) { /* private mode etc */ }
+}
+
+function applySavedNavOrder() {
+  const nav = $("#sidebar-nav");
+  if (!nav) return;
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(NAV_ORDER_KEY) || "null"); } catch (_) { saved = null; }
+  if (!Array.isArray(saved) || !saved.length) return;
+  const byPage = new Map(Array.from(nav.querySelectorAll(".nav-link")).map((b) => [b.dataset.page, b]));
+  // appendChild on an already-attached node MOVES it — walking the saved
+  // order in sequence leaves the nav in exactly that order. Any nav-link not
+  // in a stale saved order (a page added since) keeps its original relative
+  // spot, since only the ones explicitly named get moved.
+  saved.forEach((page) => { const b = byPage.get(page); if (b) nav.appendChild(b); });
+}
+
+function initNavReorder() {
+  const nav = $("#sidebar-nav");
+  if (!nav) return;
+  let dragBtn = null;
+  const clearDropMarkers = () =>
+    nav.querySelectorAll(".nav-link").forEach((b) => b.classList.remove("nav-drop-before", "nav-drop-after"));
+  nav.querySelectorAll(".nav-link").forEach((btn) => {
+    btn.draggable = true;
+    btn.title = "Drag to reorder";
+    btn.addEventListener("dragstart", (e) => {
+      dragBtn = btn;
+      btn.classList.add("nav-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", btn.dataset.page); } catch (_) { /* ignore */ }
+    });
+    btn.addEventListener("dragend", () => {
+      btn.classList.remove("nav-dragging");
+      clearDropMarkers();
+      dragBtn = null;
+    });
+    btn.addEventListener("dragover", (e) => {
+      if (!dragBtn || dragBtn === btn) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const before = (e.clientY - btn.getBoundingClientRect().top) < btn.offsetHeight / 2;
+      clearDropMarkers();
+      btn.classList.add(before ? "nav-drop-before" : "nav-drop-after");
+    });
+    btn.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (!dragBtn || dragBtn === btn) return;
+      const before = btn.classList.contains("nav-drop-before");
+      nav.insertBefore(dragBtn, before ? btn : btn.nextSibling);
+      clearDropMarkers();
+      saveNavOrder();
+    });
+  });
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
+  applySavedNavOrder();   // before first paint's active-class pass below
+
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
   // correct section is visible from the first paint instead of flashing Map/Stream.
   // A bare tab hash (#stream / #proxy / #fwdproxy) resolves to the Map page.
@@ -4970,6 +5041,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // sidebar nav: switch pages (preserve form state)
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
+  initNavReorder();
   // "New Mapping" / empty-state jumps start a fresh add
   // "New Stream" / "New Proxy" jumps inherit the mode of the page clicked from.
   $$(".nav-jump").forEach((b) => b.addEventListener("click", () => {

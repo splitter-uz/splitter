@@ -23,6 +23,9 @@ _ACL_RESERVED = {"_default"}
 # 6 colon-separated hex octets.
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
+# Custom-error-page key: an exact 3-digit code, or a "lo-hi" range.
+_ERROR_PAGE_KEY_RE = re.compile(r"^(\d{3})(?:-(\d{3}))?$")
+
 # Deliberately permissive (not full RFC 5322) — good enough to catch typos
 # before it's handed to certbot for ACME account registration.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -337,6 +340,25 @@ def clean_acl_name(value):
             "digits, '-' or '_' (max 40 chars, must start alphanumeric).")
     if value in _ACL_RESERVED:
         raise ValidationError(f"{value!r} is a reserved name.")
+    return value
+
+
+def clean_error_page_key(value):
+    """Validate a custom-error-page key: an exact HTTP status code ("404")
+    or an inclusive range ("400-499"), both ends in 100-599. Also used as
+    the filename (<key>.html), so the strict charset matters."""
+    value = (value or "").strip()
+    m = _ERROR_PAGE_KEY_RE.match(value)
+    if not m:
+        raise ValidationError(
+            f"Invalid status code/range {value!r} — use e.g. '404' or "
+            "'400-499' (3-digit codes, 100-599).")
+    lo = int(m.group(1))
+    hi = int(m.group(2)) if m.group(2) else lo
+    if not (100 <= lo <= hi <= 599):
+        raise ValidationError(
+            f"Invalid status code/range {value!r} — codes must be 100-599 "
+            "and the range's low end can't exceed its high end.")
     return value
 
 

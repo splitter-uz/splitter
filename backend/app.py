@@ -26,6 +26,7 @@ import config
 import docker_detect
 import docker_events
 import docker_reconcile
+import error_pages
 import failover
 import firewall
 import health
@@ -268,15 +269,25 @@ except Exception as _exc:  # never let a migration hiccup stop the server
     app.logger.warning("conf-file migration skipped: %s", _exc)
 
 
-@app.errorhandler(Exception)
-def _log_unhandled(exc):
-    # Let normal HTTP errors (404, 405, ...) pass through unchanged.
-    from werkzeug.exceptions import HTTPException
-    if isinstance(exc, HTTPException):
-        return exc
-    # Never let a bug return a blank 500 — log the traceback and report it.
-    app.logger.exception("Unhandled error on %s %s", request.method, request.path)
-    return _err(f"Server error: {exc}", code=500)
+# Every HTTP error status (routing 404/405, an aborted request, an
+# unhandled exception reported as 500, ...) is handled by error_pages.py:
+# a custom admin-uploaded page if one's been set for that code/range, else
+# a built-in animated default — HTML for a browser, plain JSON for an
+# /api/ path or an Accept: application/json caller either way. A
+# successful (200-399) response never touches an errorhandler at all, so
+# it passes through completely untouched.
+error_pages.register(app)
+
+
+@app.after_request
+def _stamp_request_id(resp):
+    # Correlates a request across logs/support even when nothing went
+    # wrong — error_pages.request_id() lazily mints one if this request
+    # never hit an error handler.
+    resp.headers.setdefault("X-Request-Id", error_pages.request_id())
+    return resp
+
+
 # Session cookie only (no permanent lifetime) → login expires on browser close.
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
@@ -2086,6 +2097,34 @@ def logs_tail(domain, port, kind):
     return jsonify(res)
 
 
+@app.get("/api/logs/<domain>/<int:port>/<kind>/download")
+@require_role("admin")
+def logs_download(domain, port, kind):
+    """Download one mapping's full access/error log file as-is. Path is
+    derived from the STORED mapping, never from user input (same guard as
+    logs_tail), so it can't escape the log directory."""
+    try:
+        domain = clean_domain(domain)
+    except ValidationError as exc:
+        return _err(str(exc))
+    if kind not in ("access", "error"):
+        return _err("kind must be 'access' or 'error'.")
+    if not storage.get(domain, port):
+        return _err("No such mapping.", code=404)
+    path = nm.log_paths_for(domain, port)[kind]
+    if not os.path.exists(path):
+        return _err("Log file not written yet.", code=404)
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        return _err(f"Could not read log file: {exc}", code=500)
+    fname = f"{domain}-{port}-{kind}.log"
+    _audit("logs.download", target=f"{domain}:{port}", detail=kind)
+    return Response(raw, mimetype="text/plain",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 # --------------------------------------------------------------------------
 # Activity / audit log (admin only)
 # --------------------------------------------------------------------------
@@ -2099,6 +2138,51 @@ def list_activity():
         limit = 200
     limit = max(1, min(limit, activity.MAX_EVENTS))
     return jsonify({"ok": True, "events": activity.list_events(limit=limit)})
+
+
+# --------------------------------------------------------------------------
+# Custom error pages (admin only) — see error_pages.py. A key is either an
+# exact HTTP status code ("404") or an inclusive range ("400-499").
+# --------------------------------------------------------------------------
+@app.get("/api/error-pages")
+@require_role("admin")
+def error_pages_list():
+    return jsonify({"ok": True, "pages": error_pages.list_custom(),
+                    "builtin": error_pages.builtin_codes()})
+
+
+@app.post("/api/error-pages")
+@require_role("admin")
+def error_pages_upload():
+    """Upload (or replace) a custom page for a status code/range. Accepts
+    either a file upload (multipart, field 'file') or raw HTML/Jinja2 source
+    in the 'html' form field — same trust level as the mapping form's raw
+    "Advanced config" passthrough (admin-only, rendered as Jinja2 verbatim)."""
+    key = (request.form.get("key") or "").strip()
+    upload = request.files.get("file")
+    html = upload.read().decode("utf-8", "replace") if (upload and upload.filename) \
+        else (request.form.get("html") or "")
+    if not html.strip():
+        return _err("Provide a file upload or non-empty HTML.")
+    try:
+        saved_key = error_pages.upload_custom(key, html)
+    except ValidationError as exc:
+        return _err(str(exc))
+    _audit("error_page.upload", target=saved_key)
+    return jsonify({"ok": True, "key": saved_key})
+
+
+@app.delete("/api/error-pages/<key>")
+@require_role("admin")
+def error_pages_delete(key):
+    try:
+        removed = error_pages.delete_custom(key)
+    except ValidationError as exc:
+        return _err(str(exc))
+    if not removed:
+        return _err("No custom page for that key.", code=404)
+    _audit("error_page.delete", target=key)
+    return jsonify({"ok": True})
 
 
 # --------------------------------------------------------------------------
