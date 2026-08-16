@@ -178,49 +178,89 @@ function hideMappingForm() {
 // Docker-page equivalent of showMappingForm()/hideMappingForm() — same shared
 // #mapping-form-view element, relocated into the Docker page's own slot so
 // selecting containers and configuring the mapping never leaves that page.
+// Which of the Docker page's three mutually-exclusive views is showing:
+// its "Managed mappings" list (default), the backend-container picker (only
+// while actively creating a mapping — see showDockerPicker()), or the
+// mapping form (tracked separately via MAPPING_FORM_SOURCE, since the form
+// is shared with Map). dockerSyncView() is the one place that decides
+// visibility from this state, so every entry point (tab switch, New/Cancel
+// buttons, form open/close) stays consistent instead of each toggling
+// classes on its own.
+let DOCKER_VIEW = "list";   // "list" | "picker"
+
+function dockerSyncView() {
+  const isForm = MAPPING_FORM_SOURCE === "docker";
+  const showPicker = !isForm && DOCKER_VIEW === "picker";
+  const showList = !isForm && DOCKER_VIEW === "list";
+  const hasMappings = MAPPINGS.filter(isDockerMapping)
+    .some((m) => !!m.waf_bound === (DOCKER_TAB === "proxy"));
+
+  const slot = $("#docker-form-slot"); if (slot) slot.classList.toggle("hidden", !isForm);
+  const picker = $("#docker-picker-section"); if (picker) picker.classList.toggle("hidden", !showPicker);
+  const card = $("#docker-mappings-card"); if (card) card.classList.toggle("hidden", !(showList && hasMappings));
+  const emptyCta = $("#docker-new-empty"); if (emptyCta) emptyCta.classList.toggle("hidden", !(showList && !hasMappings));
+}
+
+// The container picker only has anything to do with the page while actively
+// creating a mapping — hidden the rest of the time (see dockerSyncView()).
+function showDockerPicker() {
+  DOCKER_VIEW = "picker";
+  DOCKER_SEL.clear();
+  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
+  renderDockerCards();
+  syncDockerPoolBar();
+  dockerSyncView();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function hideDockerPicker() {
+  DOCKER_VIEW = "list";
+  DOCKER_SEL.clear();
+  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
+  dockerSyncView();
+}
+
 function dockerShowMappingForm() {
   MAPPING_FORM_SOURCE = "docker";
   const slot = $("#docker-form-slot"), form = $("#mapping-form-view");
   if (slot && form) slot.appendChild(form);
-  $("#docker-containers").classList.add("hidden");
-  $("#docker-empty").classList.add("hidden");
-  $("#docker-pool-bar").classList.add("hidden");
-  const mc = $("#docker-mappings-card"); if (mc) mc.classList.add("hidden");
-  if (slot) slot.classList.remove("hidden");
   if (form) form.classList.remove("hidden");
+  dockerSyncView();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function dockerHideMappingForm() {
-  const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
-  $("#docker-containers").classList.remove("hidden");
-  const mc = $("#docker-mappings-card"); if (mc) mc.classList.toggle("hidden", !MAPPINGS.some(isDockerMapping));
   MAPPING_FORM_SOURCE = "map";
+  DOCKER_VIEW = "list";
   loadDocker();   // fresh container list + reset selection state
 }
 
 // The Docker page's own list of mappings it created — kept out of Map's
-// Stream/Reverse Proxy tables entirely (see isDockerMapping()). Re-rendered
-// whenever the mapping list reloads (loadMappings()), whether or not the
-// Docker page happens to be the visible one right now — same pattern
-// renderMappings() already uses for Map's own table.
+// Stream/Reverse Proxy tables entirely (see isDockerMapping()), and further
+// split by kind (Stream vs Reverse Proxy) to match whichever tab is active,
+// same as Map's own table does for MAP_MODE. Re-rendered whenever the
+// mapping list reloads (loadMappings()), whether or not the Docker page
+// happens to be the visible one right now — same pattern renderMappings()
+// already uses for Map's own table.
 function renderDockerMappingsList() {
-  const card = $("#docker-mappings-card");
   const rows = $("#docker-mapping-rows");
-  if (!card || !rows) return;
-  const list = MAPPINGS.filter(isDockerMapping);
-  // Stay hidden while the form is open in this slot — it'll be re-shown by
-  // dockerHideMappingForm() once you're done, not by this running mid-edit.
-  if (MAPPING_FORM_SOURCE !== "docker") card.classList.toggle("hidden", list.length === 0);
+  if (!rows) return;
+  const all = MAPPINGS.filter(isDockerMapping);
+  const setText = (id, v) => { const e = $("#" + id); if (e) e.textContent = v; };
+  setText("docker-tab-count-stream", all.filter((m) => !m.waf_bound).length);
+  setText("docker-tab-count-proxy", all.filter((m) => !!m.waf_bound).length);
+
+  const list = all.filter((m) => !!m.waf_bound === (DOCKER_TAB === "proxy"));
+  setText("docker-stat-total", list.length);
+  setText("docker-stat-backends", list.reduce((n, m) => n + (m.backends || []).length, 0));
+
   rows.innerHTML = list.map((m) => {
     const names = (m.backends || []).map((b) => (b && b.docker_container) || backendLabel(b)).join(", ");
-    const key = mkey(m);
     const port = m.listen_port || 443;
     return `
       <tr class="hover:bg-slate-50">
         <td class="px-6 py-3 font-mono">${escapeHtml(m.domain)}${m.enabled === false ? ' <span class="inline-block px-2 py-0.5 rounded-full bg-slate-200 text-slate-500 text-[10px] font-sans align-middle uppercase tracking-wide">disabled</span>' : ""}
           <div class="text-xs text-slate-400 font-sans">:${escapeHtml(port)}</div></td>
-        <td class="px-6 py-3 text-xs">${m.waf_bound ? '<span class="inline-block px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">Reverse Proxy</span>' : '<span class="inline-block px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Stream</span>'}</td>
         <td class="px-6 py-3 font-mono text-xs text-slate-600">🐳 ${escapeHtml(names)}</td>
         <td class="px-6 py-3 font-mono text-xs text-slate-500">${escapeHtml(m.bind_ip || "(dhcp)")}</td>
         <td class="px-6 py-3 text-right whitespace-nowrap">
@@ -233,6 +273,7 @@ function renderDockerMappingsList() {
     b.addEventListener("click", () => editMapping(b.dataset.domain, b.dataset.port)));
   rows.querySelectorAll(".docker-map-del").forEach((b) =>
     b.addEventListener("click", () => del(b.dataset.domain, b.dataset.port)));
+  dockerSyncView();
 }
 
 function toast(message, ok = true) {
@@ -496,15 +537,24 @@ function showDockerTab(name) {
     btn.classList.toggle("text-slate-500", !active);
     btn.classList.toggle("border-transparent", !active);
   });
+  const isProxy = name === "proxy";
+  const kindLabel = isProxy ? "Reverse Proxy" : "Stream";
+  const setText = (id, v) => { const e = $("#" + id); if (e) e.textContent = v; };
+  setText("docker-mappings-title", kindLabel + " mappings");
+  setText("docker-new-btn-label", "New " + kindLabel);
+  setText("docker-new-btn-empty-label", "+ New " + kindLabel);
+  setText("docker-new-empty-text", `No ${kindLabel} mappings created from Docker yet.`);
+  renderDockerMappingsList();
 }
 
 async function loadDocker() {
   const wrap = $("#docker-containers");
   const unavail = $("#docker-unavailable");
   const empty = $("#docker-empty");
+  DOCKER_VIEW = "list";
   DOCKER_SEL.clear();
   Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
-  renderDockerMappingsList();
+  renderDockerMappingsList();   // also syncs the view (list/picker/form) via dockerSyncView()
   syncDockerPoolBar();
   try {
     const st = await (await fetch("/api/docker/status")).json();
@@ -1844,7 +1894,7 @@ function editMapping(domain, port) {
   $("#edit-banner").classList.remove("hidden");
   $("#apply-btn").textContent = "Update";
   const ft = $("#form-title"); if (ft) ft.textContent = "Update Mapping";
-  if (isDockerMapping(m)) dockerShowMappingForm(); else showMappingForm();
+  if (isDockerMapping(m)) { DOCKER_TAB = FORM_INTENT_MODE; dockerShowMappingForm(); } else showMappingForm();
 }
 
 // --- auth / current user ---------------------------------------------------
@@ -4870,6 +4920,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const dcf = $("#docker-create-form"); if (dcf) dcf.addEventListener("submit", dockerCreateMapping);
   const dr = $("#docker-refresh"); if (dr) dr.addEventListener("click", loadDocker);
   $$(".docker-tab").forEach((b) => b.addEventListener("click", () => showDockerTab(b.dataset.dockertab)));
+  const dnb = $("#docker-new-btn"); if (dnb) dnb.addEventListener("click", showDockerPicker);
+  const dnbe = $("#docker-new-btn-empty"); if (dnbe) dnbe.addEventListener("click", showDockerPicker);
+  const dpc = $("#docker-picker-cancel"); if (dpc) dpc.addEventListener("click", hideDockerPicker);
   showDockerTab("stream");
   refreshDockerNav();
   $("#protocol").addEventListener("change", onProtocolChange);

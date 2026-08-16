@@ -1136,27 +1136,54 @@
           </div>
 
           <!-- Which kind of mapping the selected containers become — same
-               distinction as the Map page's own Stream/Reverse Proxy tabs. -->
+               distinction, and same per-tab mapping count, as the Map
+               page's own Stream/Reverse Proxy tabs. -->
           <div class="inline-flex gap-1 mb-5 p-1 rounded-xl bg-slate-100 border border-slate-200">
-            <button type="button" data-dockertab="stream" class="docker-tab rounded-lg px-3 py-1.5 text-sm font-medium border">Stream</button>
-            <button type="button" data-dockertab="proxy" class="docker-tab rounded-lg px-3 py-1.5 text-sm font-medium border">Reverse Proxy</button>
+            <button type="button" data-dockertab="stream" class="docker-tab flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium border">
+              Stream <span id="docker-tab-count-stream" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">0</span>
+            </button>
+            <button type="button" data-dockertab="proxy" class="docker-tab flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium border">
+              Reverse Proxy <span id="docker-tab-count-proxy" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">0</span>
+            </button>
+          </div>
+
+          <!-- stats — same idea as Map's, scoped to the active tab -->
+          <div class="grid grid-cols-2 gap-[var(--gap)] mb-5">
+            <div class="stat card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-[clamp(.9rem,.6rem+.6vw,1.25rem)]">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px] shadow-emerald-400 animate-pulse"></span> Mappings
+              </div>
+              <div id="docker-stat-total" class="text-[clamp(1.6rem,1.3rem+1vw,2.25rem)] leading-none font-extrabold text-slate-900 mt-2 tabular-nums">0</div>
+            </div>
+            <div class="stat card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-[clamp(.9rem,.6rem+.6vw,1.25rem)]">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-sky-500 shadow-[0_0_8px] shadow-sky-400"></span> Backends
+              </div>
+              <div id="docker-stat-backends" class="text-[clamp(1.6rem,1.3rem+1vw,2.25rem)] leading-none font-extrabold text-slate-900 mt-2 tabular-nums">0</div>
+            </div>
           </div>
 
           <!-- Mappings created from this page — kept entirely separate from
                Map's Stream/Reverse Proxy tables (see isDockerMapping() in
                app.js), since these are managed by container name here, not
-               a manually-typed backend address. -->
+               a manually-typed backend address. Filtered by the active tab,
+               same as Map's own table. -->
           <div id="docker-mappings-card" class="hidden card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden mb-5">
-            <div class="px-6 py-4 border-b border-slate-100">
-              <h3 class="text-sm font-semibold">Managed mappings</h3>
-              <p class="text-xs text-slate-400 mt-0.5">Created from this page — kept separate from Map's Stream/Reverse Proxy lists.</p>
+            <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
+              <div>
+                <h3 id="docker-mappings-title" class="text-sm font-semibold">Stream mappings</h3>
+                <p class="text-xs text-slate-400 mt-0.5">Created from this page — kept separate from Map's Stream/Reverse Proxy lists.</p>
+              </div>
+              <button id="docker-new-btn" type="button" class="btn-primary shrink-0 inline-flex items-center gap-2 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+                <span id="docker-new-btn-label">New Stream</span>
+              </button>
             </div>
             <div class="overflow-x-auto">
               <table class="w-full text-sm">
                 <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
                   <tr>
                     <th class="text-left px-6 py-3 font-medium">Domain</th>
-                    <th class="text-left px-6 py-3 font-medium">Kind</th>
                     <th class="text-left px-6 py-3 font-medium">Container(s)</th>
                     <th class="text-left px-6 py-3 font-medium">Bind IP</th>
                     <th class="px-6 py-3"></th>
@@ -1167,27 +1194,44 @@
             </div>
           </div>
 
+          <!-- No managed mappings in this tab yet — the list card above stays
+               hidden, so this is the only way in when starting from zero. -->
+          <div id="docker-new-empty" class="hidden card bg-white/70 rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500 mb-5">
+            <span id="docker-new-empty-text">No Stream mappings created from Docker yet.</span>
+            <button id="docker-new-btn-empty" type="button" class="mt-3 block mx-auto text-sm font-medium text-emerald-700 hover:text-emerald-900"><span id="docker-new-btn-empty-label">+ New Stream</span> →</button>
+          </div>
+
           <!-- The shared mapping form (same one Map uses) relocates in here
                once "Configure mapping" is clicked — see dockerShowMappingForm()
                in app.js — so configuring it never leaves this page. -->
           <div id="docker-form-slot" class="hidden"></div>
 
-          <!-- Pool builder: appears once containers are selected -->
-          <div id="docker-pool-bar" class="hidden sticky top-2 z-10 card bg-white/90 backdrop-blur rounded-2xl border border-emerald-200 shadow-sm p-4 mb-5">
-            <form id="docker-create-form" class="space-y-3">
-              <div>
-                <div class="text-[11px] font-medium text-slate-500 mb-1">Backend pool — one line per selected container, set each port. Splitter stores the <b>container name</b> and keeps its IP current on restart.</div>
-                <div id="docker-pool-list" class="space-y-2"></div>
-              </div>
-              <div class="flex items-center justify-between">
-                <p class="text-xs text-slate-500"><span id="docker-pool-count">0</span> container(s) selected — load‑balanced pool.</p>
-                <button type="submit" class="btn-primary inline-flex items-center gap-2 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Configure mapping →</button>
-              </div>
-            </form>
-          </div>
+          <!-- Backend picker — only visible while actively creating a new
+               mapping (see showDockerPicker()/hideDockerPicker() in app.js);
+               the container list has nothing to do with the page otherwise. -->
+          <div id="docker-picker-section" class="hidden">
+            <div class="flex items-center justify-between mb-3">
+              <p class="text-sm font-medium text-slate-600">Select backend container(s)</p>
+              <button id="docker-picker-cancel" type="button" class="text-xs font-medium text-slate-500 hover:text-slate-800">✕ Cancel</button>
+            </div>
 
-          <div id="docker-empty" class="hidden card bg-white/70 rounded-2xl border border-slate-200/70 p-8 text-center text-sm text-slate-500">No running containers found.</div>
-          <div id="docker-containers" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+            <!-- Pool builder: appears once containers are selected -->
+            <div id="docker-pool-bar" class="hidden sticky top-2 z-10 card bg-white/90 backdrop-blur rounded-2xl border border-emerald-200 shadow-sm p-4 mb-5">
+              <form id="docker-create-form" class="space-y-3">
+                <div>
+                  <div class="text-[11px] font-medium text-slate-500 mb-1">Backend pool — one line per selected container, set each port. Splitter stores the <b>container name</b> and keeps its IP current on restart.</div>
+                  <div id="docker-pool-list" class="space-y-2"></div>
+                </div>
+                <div class="flex items-center justify-between">
+                  <p class="text-xs text-slate-500"><span id="docker-pool-count">0</span> container(s) selected — load‑balanced pool.</p>
+                  <button type="submit" class="btn-primary inline-flex items-center gap-2 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Configure mapping →</button>
+                </div>
+              </form>
+            </div>
+
+            <div id="docker-empty" class="hidden card bg-white/70 rounded-2xl border border-slate-200/70 p-8 text-center text-sm text-slate-500">No running containers found.</div>
+            <div id="docker-containers" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+          </div>
         </section>
 
         <!-- ====== PAGE: Tools ====== -->
