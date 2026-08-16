@@ -378,6 +378,7 @@ let DOCKER_CONTAINERS = [];       // containers (standalone) OR services (swarm)
 let DOCKER_SWARM = false;         // swarm-manager mode?
 const DOCKER_SEL = new Set();     // selected container/service names -> pool
 const DOCKER_PORTS = {};          // name -> chosen backend port (editable)
+let DOCKER_TAB = "stream";        // which mapping kind selected containers become
 
 // First usable port for a container (exposed port) or service (published port).
 function dockerFirstPort(name) {
@@ -401,6 +402,22 @@ async function refreshDockerNav() {
   }
 }
 
+// Which kind of mapping ("Configure mapping →") hands the selected
+// containers off as — mirrors the Map page's own Stream/Reverse Proxy tabs.
+function showDockerTab(name) {
+  if (name !== "stream" && name !== "proxy") name = "stream";
+  DOCKER_TAB = name;
+  $$(".docker-tab").forEach((btn) => {
+    const active = btn.dataset.dockertab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+}
+
 async function loadDocker() {
   const wrap = $("#docker-containers");
   const unavail = $("#docker-unavailable");
@@ -408,8 +425,6 @@ async function loadDocker() {
   DOCKER_SEL.clear();
   Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
   syncDockerPoolBar();
-  // Populate the bind-target dropdown to match the current mode.
-  await populateDockerBind();
   try {
     const st = await (await fetch("/api/docker/status")).json();
     if (!st.available) throw new Error("Docker unavailable");
@@ -434,27 +449,6 @@ async function loadDocker() {
     empty.classList.add("hidden");
     unavail.classList.remove("hidden");
   }
-}
-
-async function populateDockerBind() {
-  const sel = $("#docker-bind");
-  if (!sel) return;
-  let opts = "";
-  try {
-    if (SETTINGS.subinterface_enabled) {
-      const j = await (await fetch("/api/subinterfaces")).json();
-      (j.subinterfaces || []).forEach((s) => {
-        opts += `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} · ${escapeHtml(s.bind_ip || "")}</option>`;
-      });
-    } else {
-      const j = await (await fetch("/api/interfaces")).json();
-      (j.interfaces || []).forEach((i) => {
-        const ip = (i.addresses && i.addresses[0] && i.addresses[0].ip) || "";
-        if (ip) opts += `<option value="${escapeHtml(i.name)}">${escapeHtml(i.name)} · ${escapeHtml(ip)}</option>`;
-      });
-    }
-  } catch (_e) { /* leave empty */ }
-  sel.innerHTML = opts || `<option value="">(no bind target found)</option>`;
 }
 
 function renderDockerCards() {
@@ -548,39 +542,34 @@ function syncDockerPoolBar() {
   renderDockerPoolList();
 }
 
-async function dockerCreateMapping(e) {
+// Hands the selected containers off to the real mapping form (same one Map
+// uses) as a pre-filled Docker-backed backend pool, rather than creating the
+// mapping directly from a second, separate, stripped-down form — domain,
+// bind target, transport, SSL, load balancing etc. are all just the normal
+// mapping form fields from here on, with these rows locked to their
+// container names (server IP is re-resolved and kept current automatically;
+// see serializeBackends()/addBackendRow()'s docker_container handling).
+function dockerCreateMapping(e) {
   e.preventDefault();
   if (DOCKER_SEL.size === 0) { toast("Select at least one container first.", false); return; }
-  const f = e.target;
-  const domain = f.domain.value.trim();
-  const bind = f.bind.value;
-  if (!domain) { toast("Enter a domain.", false); return; }
-  if (!bind) { toast("No bind target available.", false); return; }
   const missing = [...DOCKER_SEL].filter((n) => !String(DOCKER_PORTS[n] || "").trim());
   if (missing.length) { toast(`Set a port for: ${missing.join(", ")}`, false); return; }
   const backends = [...DOCKER_SEL].map((name) => ({
     docker_container: name,
     docker_port: Number(DOCKER_PORTS[name]),
   }));
-  const fd = new FormData();
-  fd.append("domain", domain);
-  fd.append("listen_port", f.listen_port.value || "443");
-  fd.append("transport", (f.transport && f.transport.value) || "tcp");
-  fd.append("ssl_mode", "none");
-  fd.append("lb_method", "round_robin");
-  fd.append(SETTINGS.subinterface_enabled ? "subiface" : "interface", bind);
-  fd.append("backends_json", JSON.stringify(backends));
-  try {
-    const r = await fetch("/api/mappings", { method: "POST", body: fd });
-    const j = await r.json();
-    if (!r.ok || !j.ok) { toast(j.error || "Create failed.", false); return; }
-    toast(`Mapping ${domain} created from ${backends.length} container(s).`);
-    DOCKER_SEL.clear();
-    await loadMappings();
-    showPage("stream");
-  } catch (err) {
-    toast(String(err.message || err), false);
-  }
+
+  FORM_INTENT_MODE = DOCKER_TAB;
+  resetForm();
+  $("#backends").innerHTML = "";
+  backends.forEach((b) => addBackendRow(b));
+  DOCKER_SEL.clear();
+  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
+
+  showPage("map");
+  showMapTab(DOCKER_TAB);
+  showMappingForm();
+  toast(`${backends.length} container(s) added — finish configuring the mapping below.`);
 }
 
 function addBackendRow(b) {
@@ -4791,6 +4780,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Docker page
   const dcf = $("#docker-create-form"); if (dcf) dcf.addEventListener("submit", dockerCreateMapping);
   const dr = $("#docker-refresh"); if (dr) dr.addEventListener("click", loadDocker);
+  $$(".docker-tab").forEach((b) => b.addEventListener("click", () => showDockerTab(b.dataset.dockertab)));
+  showDockerTab("stream");
   refreshDockerNav();
   $("#protocol").addEventListener("change", onProtocolChange);
   $("#listen_port").addEventListener("input", onListenPortChange);
