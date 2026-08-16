@@ -31,6 +31,12 @@ const isAdmin = () => ME && ME.role === "admin";
 // address a specific mapping in the API.
 const mkey = (m) => `${m.domain}:${m.listen_port || 443}`;
 
+// A mapping is "Docker-managed" once any backend in its pool is a
+// docker_container reference (the only way one gets tagged that way is
+// through the Docker page's own container picker) — these live on the
+// Docker page's own list, not Map's Stream/Reverse Proxy tables.
+const isDockerMapping = (m) => (m.backends || []).some((b) => b && typeof b === "object" && b.docker_container);
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -179,6 +185,7 @@ function dockerShowMappingForm() {
   $("#docker-containers").classList.add("hidden");
   $("#docker-empty").classList.add("hidden");
   $("#docker-pool-bar").classList.add("hidden");
+  const mc = $("#docker-mappings-card"); if (mc) mc.classList.add("hidden");
   if (slot) slot.classList.remove("hidden");
   if (form) form.classList.remove("hidden");
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -187,8 +194,45 @@ function dockerShowMappingForm() {
 function dockerHideMappingForm() {
   const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
   $("#docker-containers").classList.remove("hidden");
+  const mc = $("#docker-mappings-card"); if (mc) mc.classList.toggle("hidden", !MAPPINGS.some(isDockerMapping));
   MAPPING_FORM_SOURCE = "map";
   loadDocker();   // fresh container list + reset selection state
+}
+
+// The Docker page's own list of mappings it created — kept out of Map's
+// Stream/Reverse Proxy tables entirely (see isDockerMapping()). Re-rendered
+// whenever the mapping list reloads (loadMappings()), whether or not the
+// Docker page happens to be the visible one right now — same pattern
+// renderMappings() already uses for Map's own table.
+function renderDockerMappingsList() {
+  const card = $("#docker-mappings-card");
+  const rows = $("#docker-mapping-rows");
+  if (!card || !rows) return;
+  const list = MAPPINGS.filter(isDockerMapping);
+  // Stay hidden while the form is open in this slot — it'll be re-shown by
+  // dockerHideMappingForm() once you're done, not by this running mid-edit.
+  if (MAPPING_FORM_SOURCE !== "docker") card.classList.toggle("hidden", list.length === 0);
+  rows.innerHTML = list.map((m) => {
+    const names = (m.backends || []).map((b) => (b && b.docker_container) || backendLabel(b)).join(", ");
+    const key = mkey(m);
+    const port = m.listen_port || 443;
+    return `
+      <tr class="hover:bg-slate-50">
+        <td class="px-6 py-3 font-mono">${escapeHtml(m.domain)}${m.enabled === false ? ' <span class="inline-block px-2 py-0.5 rounded-full bg-slate-200 text-slate-500 text-[10px] font-sans align-middle uppercase tracking-wide">disabled</span>' : ""}
+          <div class="text-xs text-slate-400 font-sans">:${escapeHtml(port)}</div></td>
+        <td class="px-6 py-3 text-xs">${m.waf_bound ? '<span class="inline-block px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">Reverse Proxy</span>' : '<span class="inline-block px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Stream</span>'}</td>
+        <td class="px-6 py-3 font-mono text-xs text-slate-600">🐳 ${escapeHtml(names)}</td>
+        <td class="px-6 py-3 font-mono text-xs text-slate-500">${escapeHtml(m.bind_ip || "(dhcp)")}</td>
+        <td class="px-6 py-3 text-right whitespace-nowrap">
+          <button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="docker-map-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+          ${isAdmin() ? `<button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="docker-map-del text-xs font-medium text-red-600 hover:text-red-800">Delete</button>` : ""}
+        </td>
+      </tr>`;
+  }).join("");
+  rows.querySelectorAll(".docker-map-edit").forEach((b) =>
+    b.addEventListener("click", () => editMapping(b.dataset.domain, b.dataset.port)));
+  rows.querySelectorAll(".docker-map-del").forEach((b) =>
+    b.addEventListener("click", () => del(b.dataset.domain, b.dataset.port)));
 }
 
 function toast(message, ok = true) {
@@ -460,6 +504,7 @@ async function loadDocker() {
   const empty = $("#docker-empty");
   DOCKER_SEL.clear();
   Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
+  renderDockerMappingsList();
   syncDockerPoolBar();
   try {
     const st = await (await fetch("/api/docker/status")).json();
@@ -1100,6 +1145,7 @@ async function loadMappings() {
   updateStats(MAPPINGS);
   loadSslCount();   // TLS Certs stat comes from the cert registry, not mappings
   renderMappings();
+  renderDockerMappingsList();
   if (livemapVisible()) renderRouteMap();   // keep the routing map in sync
   loadHealth();   // fill in the health column (non-blocking)
 }
@@ -1121,6 +1167,9 @@ function animateCount(el, to) {
 }
 
 function updateStats(list) {
+  // Docker-managed mappings live entirely on the Docker page's own list now —
+  // never counted or shown in Map's Stream/Reverse Proxy tables.
+  list = list.filter((m) => !isDockerMapping(m));
   const modeList = list.filter((m) => !!m.waf_bound === (MAP_MODE === "proxy"));
   const backends = modeList.reduce((n, m) =>
     n + (m.backends || (m.backend ? [m.backend] : [])).length, 0);
@@ -1133,10 +1182,11 @@ function updateStats(list) {
 }
 
 // The sidebar "Map" badge is the combined count across all three tabs —
-// refreshed whenever either the mappings list or the forward-proxy list changes.
+// refreshed whenever either the mappings list or the forward-proxy list
+// changes. Excludes Docker-managed mappings, which aren't part of Map anymore.
 function updateMapNavBadge() {
   const e = $("#nav-count-map");
-  if (e) animateCount(e, MAPPINGS.length + FWDPROXIES.length);
+  if (e) animateCount(e, MAPPINGS.filter((m) => !isDockerMapping(m)).length + FWDPROXIES.length);
 }
 
 // Re-apply the Stream/Proxy header text + button labels for the current
@@ -1205,7 +1255,7 @@ let MAP_PAGE = 1;
 
 function renderMappings() {
   const q = ($("#search")?.value || "").trim().toLowerCase();
-  const modeList = MAPPINGS.filter((m) => !!m.waf_bound === (MAP_MODE === "proxy"));
+  const modeList = MAPPINGS.filter((m) => !isDockerMapping(m) && !!m.waf_bound === (MAP_MODE === "proxy"));
   const full = q ? modeList.filter((m) => (m.domain || "").toLowerCase().includes(q)) : modeList;
   // Clamp the current page to the available range (e.g. after deletes/filtering).
   const pages = Math.max(1, Math.ceil(full.length / MAP_PAGE_SIZE));
@@ -1794,7 +1844,7 @@ function editMapping(domain, port) {
   $("#edit-banner").classList.remove("hidden");
   $("#apply-btn").textContent = "Update";
   const ft = $("#form-title"); if (ft) ft.textContent = "Update Mapping";
-  showMappingForm();
+  if (isDockerMapping(m)) dockerShowMappingForm(); else showMappingForm();
 }
 
 // --- auth / current user ---------------------------------------------------

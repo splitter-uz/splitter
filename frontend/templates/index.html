@@ -1142,6 +1142,31 @@
             <button type="button" data-dockertab="proxy" class="docker-tab rounded-lg px-3 py-1.5 text-sm font-medium border">Reverse Proxy</button>
           </div>
 
+          <!-- Mappings created from this page — kept entirely separate from
+               Map's Stream/Reverse Proxy tables (see isDockerMapping() in
+               app.js), since these are managed by container name here, not
+               a manually-typed backend address. -->
+          <div id="docker-mappings-card" class="hidden card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden mb-5">
+            <div class="px-6 py-4 border-b border-slate-100">
+              <h3 class="text-sm font-semibold">Managed mappings</h3>
+              <p class="text-xs text-slate-400 mt-0.5">Created from this page — kept separate from Map's Stream/Reverse Proxy lists.</p>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                  <tr>
+                    <th class="text-left px-6 py-3 font-medium">Domain</th>
+                    <th class="text-left px-6 py-3 font-medium">Kind</th>
+                    <th class="text-left px-6 py-3 font-medium">Container(s)</th>
+                    <th class="text-left px-6 py-3 font-medium">Bind IP</th>
+                    <th class="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody id="docker-mapping-rows" class="divide-y divide-slate-100"></tbody>
+              </table>
+            </div>
+          </div>
+
           <!-- The shared mapping form (same one Map uses) relocates in here
                once "Configure mapping" is clicked — see dockerShowMappingForm()
                in app.js — so configuring it never leaves this page. -->
