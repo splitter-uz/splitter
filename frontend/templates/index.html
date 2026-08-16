@@ -737,67 +737,6 @@
           </div><!-- /#mapping-form-view -->
           </div><!-- /#mappanel-mappings -->
 
-        <!-- ====== PAGE: Users ====== -->
-        <section id="page-users" class="page hidden">
-          <div class="mb-5">
-            <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Users</h2>
-            <p class="text-sm text-slate-500 mt-0.5">Admins manage everything. Creators may add/edit mappings and export, but cannot delete, import, or re-apply.</p>
-          </div>
-
-          <div id="users-card" class="hidden grid gap-6 lg:grid-cols-3">
-            <!-- create user -->
-            <div class="lg:col-span-1">
-              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
-                <h3 class="text-sm font-semibold mb-4">Add a user</h3>
-                <form id="user-form" class="space-y-3">
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Username</label>
-                    <input name="username" id="u-username" required placeholder="jane"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                  </div>
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Password</label>
-                    <input name="password" id="u-password" type="password" required placeholder="min 8 chars"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
-                  </div>
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Role</label>
-                    <select name="role" id="u-role"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
-                      <option value="creator">creator</option>
-                      <option value="admin">admin</option>
-                    </select>
-                  </div>
-                  <button type="submit" class="btn-primary w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Add user</button>
-                </form>
-              </div>
-            </div>
-
-            <!-- user list -->
-            <div class="lg:col-span-2">
-              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
-                <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
-                  <h3 class="text-sm font-semibold">Team members</h3>
-                  <button id="user-bulk-delete" type="button" class="hidden text-xs font-medium text-red-600 hover:text-red-800">Delete selected (<span id="user-bulk-count">0</span>)</button>
-                </div>
-                <div class="overflow-x-auto">
-                  <table class="w-full text-sm">
-                    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-                      <tr>
-                        <th class="px-4 py-3 w-10"><input type="checkbox" id="user-check-all" title="Select all" class="rounded border-slate-300 cursor-pointer align-middle" /></th>
-                        <th class="text-left px-6 py-3 font-medium">Username</th>
-                        <th class="text-left px-6 py-3 font-medium">Role</th>
-                        <th class="px-6 py-3"></th>
-                      </tr>
-                    </thead>
-                    <tbody id="user-rows" class="divide-y divide-slate-100"></tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
           <!-- ── Forward Proxy ──────────────────────────────────────────── -->
           <div id="mappanel-fwdproxy" class="map-panel hidden space-y-6">
           <div class="flex items-end justify-between flex-wrap gap-3">
@@ -881,6 +820,67 @@
             </div>
           </div>
           </div><!-- /#mappanel-fwdproxy -->
+        </section><!-- /#page-map -->
+
+        <!-- ====== PAGE: Users ====== -->
+        <section id="page-users" class="page hidden">
+          <div class="mb-5">
+            <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Users</h2>
+            <p class="text-sm text-slate-500 mt-0.5">Admins manage everything. Creators may add/edit mappings and export, but cannot delete, import, or re-apply.</p>
+          </div>
+
+          <div id="users-card" class="hidden grid gap-6 lg:grid-cols-3">
+            <!-- create user -->
+            <div class="lg:col-span-1">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-6">
+                <h3 class="text-sm font-semibold mb-4">Add a user</h3>
+                <form id="user-form" class="space-y-3">
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Username</label>
+                    <input name="username" id="u-username" required placeholder="jane"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Password</label>
+                    <input name="password" id="u-password" type="password" required placeholder="min 8 chars"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Role</label>
+                    <select name="role" id="u-role"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                      <option value="creator">creator</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </div>
+                  <button type="submit" class="btn-primary w-full bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Add user</button>
+                </form>
+              </div>
+            </div>
+
+            <!-- user list -->
+            <div class="lg:col-span-2">
+              <div class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
+                  <h3 class="text-sm font-semibold">Team members</h3>
+                  <button id="user-bulk-delete" type="button" class="hidden text-xs font-medium text-red-600 hover:text-red-800">Delete selected (<span id="user-bulk-count">0</span>)</button>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                      <tr>
+                        <th class="px-4 py-3 w-10"><input type="checkbox" id="user-check-all" title="Select all" class="rounded border-slate-300 cursor-pointer align-middle" /></th>
+                        <th class="text-left px-6 py-3 font-medium">Username</th>
+                        <th class="text-left px-6 py-3 font-medium">Role</th>
+                        <th class="px-6 py-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody id="user-rows" class="divide-y divide-slate-100"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
         </section>
 
         <!-- ====== PAGE: SSL Management ====== -->
