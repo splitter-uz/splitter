@@ -733,17 +733,20 @@ function addBackendRow(b) {
   const wrap = document.createElement("div");
   wrap.className = "be-row rounded-lg border border-slate-200 p-2";
   if (isDocker) wrap.dataset.dockerContainer = b.docker_container;
+  const dockerToggleCls = isDocker
+    ? "be-docker-toggle px-2 rounded-md bg-sky-100 text-sky-600"
+    : "be-docker-toggle px-2 rounded-md text-slate-400 hover:text-sky-600";
   wrap.innerHTML = `
     <div class="flex gap-2 items-center">
-      <span class="be-docker-badge shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 cursor-pointer ${isDocker ? "" : "hidden"}" title="Docker container backend — Splitter stores the name and keeps its IP current on restart. Click to change or detach.">🐳 docker</span>
-      <div class="be-hostport flex flex-1 items-stretch rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-emerald-500">
-        <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent ${isDocker ? "text-sky-700" : ""}"
-          placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" ${isDocker ? "readonly title='Docker container name (managed on the Docker page)'" : ""} />
-        <span class="w-px bg-slate-300 shrink-0"></span>
+      <div class="be-hostport flex flex-1 items-stretch rounded-lg border overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-emerald-500 ${isDocker ? "border-sky-200 bg-sky-50" : "border-slate-300 bg-white"}">
+        <span class="be-host-icon shrink-0 flex items-center pl-2.5 text-sm ${isDocker ? "" : "hidden"}">🐳</span>
+        <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent ${isDocker ? "text-sky-700 cursor-pointer" : ""}"
+          placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" ${isDocker ? "readonly title='Docker container — click to change'" : ""} />
+        <span class="be-host-sep w-px shrink-0 ${isDocker ? "bg-sky-200" : "bg-slate-300"}"></span>
         <input class="be-port w-20 shrink-0 px-3 py-2 text-sm font-mono outline-none bg-transparent text-center"
           placeholder="443" inputmode="numeric" value="${escapeHtml(port)}" />
       </div>
-      <button type="button" class="be-docker-toggle px-2 text-slate-400 hover:text-sky-600" title="Pick a Docker container">🐳</button>
+      <button type="button" class="${dockerToggleCls}" title="Pick a Docker container">🐳</button>
       <button type="button" class="be-cog px-2 text-slate-400 hover:text-slate-700" title="Per-server options">⚙</button>
       <button type="button" class="rm-backend px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
     </div>
@@ -778,8 +781,9 @@ function addBackendRow(b) {
   wrap.querySelector(".be-port").addEventListener("input", renderFailoverPreview);
   // Docker container picker — lets ANY row (not just ones already Docker-
   // backed) pick a container as its backend, so adding more containers to a
-  // pool doesn't require going back to the Docker page. Toggle button and
-  // clicking the badge (to swap/detach) both open the same panel.
+  // pool doesn't require going back to the Docker page. The 🐳 toggle button
+  // and clicking the selector field itself (once it's Docker-bound and
+  // read-only) both open the same panel.
   const toggleDockerPicker = async () => {
     const panel = wrap.querySelector(".be-docker-list");
     const opening = panel.classList.contains("hidden");
@@ -791,10 +795,45 @@ function addBackendRow(b) {
     }
   };
   wrap.querySelector(".be-docker-toggle").addEventListener("click", toggleDockerPicker);
-  wrap.querySelector(".be-docker-badge").addEventListener("click", toggleDockerPicker);
+  wrap.querySelector(".be-host").addEventListener("click", (e) => {
+    if (e.target.readOnly) toggleDockerPicker();
+  });
   $("#backends").appendChild(wrap);
   syncLbAuto();   // auto-open LB settings once there are 2+ backends
   syncFailoverUI();   // reveal the failover role picker if failover is on
+}
+
+// Restyles one backend row's selector field + toggle button between
+// "Docker container" and "manual address" mode — the single place that
+// applies the visual state addBackendRow()'s template computes inline for a
+// freshly-created row, so picking/detaching via the picker stays visually
+// identical to a row that started out Docker-bound. Pass a container name to
+// lock the row to it (optionally with its port); pass null to detach.
+function setBackendRowDockerState(wrap, name, port) {
+  const hostInput = wrap.querySelector(".be-host");
+  const portInput = wrap.querySelector(".be-port");
+  const hostport = wrap.querySelector(".be-hostport");
+  const icon = wrap.querySelector(".be-host-icon");
+  const sep = wrap.querySelector(".be-host-sep");
+  const toggle = wrap.querySelector(".be-docker-toggle");
+  const isDocker = name != null;
+  hostInput.value = isDocker ? name : "";
+  hostInput.readOnly = isDocker;
+  hostInput.classList.toggle("text-sky-700", isDocker);
+  hostInput.classList.toggle("cursor-pointer", isDocker);
+  if (isDocker) hostInput.title = "Docker container — click to change";
+  else hostInput.removeAttribute("title");
+  if (port) portInput.value = port;
+  icon.classList.toggle("hidden", !isDocker);
+  hostport.classList.toggle("border-sky-200", isDocker);
+  hostport.classList.toggle("bg-sky-50", isDocker);
+  hostport.classList.toggle("border-slate-300", !isDocker);
+  hostport.classList.toggle("bg-white", !isDocker);
+  sep.classList.toggle("bg-sky-200", isDocker);
+  sep.classList.toggle("bg-slate-300", !isDocker);
+  toggle.classList.toggle("bg-sky-100", isDocker);
+  toggle.classList.toggle("text-sky-600", isDocker);
+  toggle.classList.toggle("text-slate-400", !isDocker);
 }
 
 // Populates one backend row's expanded Docker container list (see
@@ -820,25 +859,13 @@ function renderBackendDockerPicker(wrap) {
   panel.innerHTML = detachRow + options;
   panel.querySelectorAll(".be-docker-opt").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const hostInput = wrap.querySelector(".be-host");
-      const portInput = wrap.querySelector(".be-port");
-      const badge = wrap.querySelector(".be-docker-badge");
       if (btn.dataset.detach) {
         delete wrap.dataset.dockerContainer;
-        hostInput.value = "";
-        hostInput.readOnly = false;
-        hostInput.classList.remove("text-sky-700");
-        hostInput.removeAttribute("title");
-        badge.classList.add("hidden");
+        setBackendRowDockerState(wrap, null);
       } else {
         const { name, port } = btn.dataset;
         wrap.dataset.dockerContainer = name;
-        hostInput.value = name;
-        hostInput.readOnly = true;
-        hostInput.classList.add("text-sky-700");
-        hostInput.title = "Docker container name (managed on the Docker page)";
-        if (port) portInput.value = port;
-        badge.classList.remove("hidden");
+        setBackendRowDockerState(wrap, name, port);
       }
       panel.classList.add("hidden");
       renderFailoverPreview();
