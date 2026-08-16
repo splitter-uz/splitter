@@ -567,6 +567,7 @@ async function loadDocker() {
     if (!j.ok) throw new Error(j.error || "Docker query failed");
     unavail.classList.add("hidden");
     DOCKER_CONTAINERS = DOCKER_SWARM ? (j.services || []) : (j.containers || []);
+    _dockerListLoaded = true;
     const hdr = $("#docker-mode-note");
     if (hdr) hdr.textContent = DOCKER_SWARM
       ? "Swarm manager — showing services (routing-mesh published port; the swarm load-balances replicas)."
@@ -580,6 +581,25 @@ async function loadDocker() {
     empty.classList.add("hidden");
     unavail.classList.remove("hidden");
   }
+}
+
+// Lazily populate DOCKER_CONTAINERS for the per-backend-row Docker picker
+// (see addBackendRow()) when it's opened from a context that never visited
+// the Docker page — the mapping form is shared with Map, which doesn't fetch
+// this on its own. A no-op once already loaded; doesn't touch any
+// Docker-page-specific UI (unlike loadDocker()), since it may run from Map.
+let _dockerListLoaded = false;
+async function ensureDockerContainersLoaded() {
+  if (_dockerListLoaded) return;
+  try {
+    const st = await (await fetch("/api/docker/status")).json();
+    if (!st.available) { DOCKER_CONTAINERS = []; return; }
+    DOCKER_SWARM = !!st.swarm;
+    const url = DOCKER_SWARM ? "/api/docker/services" : "/api/docker/containers";
+    const j = await (await fetch(url)).json();
+    if (j.ok) DOCKER_CONTAINERS = DOCKER_SWARM ? (j.services || []) : (j.containers || []);
+    _dockerListLoaded = true;
+  } catch (_e) { /* leave empty */ }
 }
 
 function renderDockerCards() {
@@ -715,7 +735,7 @@ function addBackendRow(b) {
   if (isDocker) wrap.dataset.dockerContainer = b.docker_container;
   wrap.innerHTML = `
     <div class="flex gap-2 items-center">
-      ${isDocker ? '<span class="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-100 text-sky-700" title="Docker container backend — Splitter stores the name and keeps its IP current on restart">🐳 docker</span>' : ''}
+      <span class="be-docker-badge shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 cursor-pointer ${isDocker ? "" : "hidden"}" title="Docker container backend — Splitter stores the name and keeps its IP current on restart. Click to change or detach.">🐳 docker</span>
       <div class="be-hostport flex flex-1 items-stretch rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-emerald-500">
         <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent ${isDocker ? "text-sky-700" : ""}"
           placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" ${isDocker ? "readonly title='Docker container name (managed on the Docker page)'" : ""} />
@@ -723,9 +743,11 @@ function addBackendRow(b) {
         <input class="be-port w-20 shrink-0 px-3 py-2 text-sm font-mono outline-none bg-transparent text-center"
           placeholder="443" inputmode="numeric" value="${escapeHtml(port)}" />
       </div>
+      <button type="button" class="be-docker-toggle px-2 text-slate-400 hover:text-sky-600" title="Pick a Docker container">🐳</button>
       <button type="button" class="be-cog px-2 text-slate-400 hover:text-slate-700" title="Per-server options">⚙</button>
       <button type="button" class="rm-backend px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
     </div>
+    <div class="be-docker-list hidden mt-2 rounded-lg border border-slate-200 bg-slate-50 p-1.5 max-h-40 overflow-y-auto space-y-0.5"></div>
     <div class="be-prio-row hidden mt-2 flex items-center gap-2">
       <label class="text-[11px] font-medium text-slate-500 shrink-0">Failover role</label>
       <select class="be-prio flex-1 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500"
@@ -754,9 +776,74 @@ function addBackendRow(b) {
   wrap.querySelector(".be-prio").addEventListener("change", renderFailoverPreview);
   wrap.querySelector(".be-host").addEventListener("input", renderFailoverPreview);
   wrap.querySelector(".be-port").addEventListener("input", renderFailoverPreview);
+  // Docker container picker — lets ANY row (not just ones already Docker-
+  // backed) pick a container as its backend, so adding more containers to a
+  // pool doesn't require going back to the Docker page. Toggle button and
+  // clicking the badge (to swap/detach) both open the same panel.
+  const toggleDockerPicker = async () => {
+    const panel = wrap.querySelector(".be-docker-list");
+    const opening = panel.classList.contains("hidden");
+    panel.classList.toggle("hidden");
+    if (opening) {
+      panel.innerHTML = '<div class="text-xs text-slate-400 px-2 py-1">Loading…</div>';
+      await ensureDockerContainersLoaded();
+      renderBackendDockerPicker(wrap);
+    }
+  };
+  wrap.querySelector(".be-docker-toggle").addEventListener("click", toggleDockerPicker);
+  wrap.querySelector(".be-docker-badge").addEventListener("click", toggleDockerPicker);
   $("#backends").appendChild(wrap);
   syncLbAuto();   // auto-open LB settings once there are 2+ backends
   syncFailoverUI();   // reveal the failover role picker if failover is on
+}
+
+// Populates one backend row's expanded Docker container list (see
+// addBackendRow()'s .be-docker-toggle) and wires each option to convert
+// that row into a Docker-backed one — or, for a row that's already
+// Docker-backed, detach it back to a plain manual host:port.
+function renderBackendDockerPicker(wrap) {
+  const panel = wrap.querySelector(".be-docker-list");
+  if (!panel) return;
+  const selectable = DOCKER_CONTAINERS.filter((c) =>
+    DOCKER_SWARM ? !!c.reachable : c.state === "running");
+  const detachRow = wrap.dataset.dockerContainer
+    ? `<button type="button" class="be-docker-opt w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-white text-left text-slate-500" data-detach="1">
+         <span>✕ Use a manual address instead</span></button>` : "";
+  const options = selectable.length
+    ? selectable.map((c) => `
+        <button type="button" data-name="${escapeHtml(c.name)}" data-port="${escapeHtml(String(dockerFirstPort(c.name)))}"
+          class="be-docker-opt w-full flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-white text-left">
+          <span class="font-mono font-medium text-slate-700 truncate">${escapeHtml(c.name)}</span>
+          <span class="text-slate-400 truncate">${escapeHtml(c.image || "")}</span>
+        </button>`).join("")
+    : '<div class="text-xs text-slate-400 px-2 py-1">No running containers found.</div>';
+  panel.innerHTML = detachRow + options;
+  panel.querySelectorAll(".be-docker-opt").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const hostInput = wrap.querySelector(".be-host");
+      const portInput = wrap.querySelector(".be-port");
+      const badge = wrap.querySelector(".be-docker-badge");
+      if (btn.dataset.detach) {
+        delete wrap.dataset.dockerContainer;
+        hostInput.value = "";
+        hostInput.readOnly = false;
+        hostInput.classList.remove("text-sky-700");
+        hostInput.removeAttribute("title");
+        badge.classList.add("hidden");
+      } else {
+        const { name, port } = btn.dataset;
+        wrap.dataset.dockerContainer = name;
+        hostInput.value = name;
+        hostInput.readOnly = true;
+        hostInput.classList.add("text-sky-700");
+        hostInput.title = "Docker container name (managed on the Docker page)";
+        if (port) portInput.value = port;
+        badge.classList.remove("hidden");
+      }
+      panel.classList.add("hidden");
+      renderFailoverPreview();
+    });
+  });
 }
 
 // Rebuild every backend's "Failover role" dropdown. Options run Tier 1 (Primary)
