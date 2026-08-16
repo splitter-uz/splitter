@@ -1,4 +1,4 @@
-# Splitter — Layer-4 Stream Proxy Manager, containerized.
+# Splitter, containerized.
 #
 # This image bundles nginx (with the stream module) and the Splitter Flask app.
 # It is meant to run in the HOST network namespace with kernel privileges

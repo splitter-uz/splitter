@@ -299,7 +299,7 @@ install_service() {
   local unit=/etc/systemd/system/splitter.service
   cat > "$unit" <<EOF
 [Unit]
-Description=Splitter - L4 Stream Proxy Manager
+Description=Splitter
 After=network-online.target nginx.service
 Wants=network-online.target
 

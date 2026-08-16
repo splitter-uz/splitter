@@ -5,10 +5,8 @@
   </picture>
 </p>
 
-<p align="center"><strong>Layer‑4 Stream Proxy Manager</strong></p>
-
 <p align="center">
-  Turn a Linux box into a multi‑IP TCP/UDP reverse proxy you drive from your browser.
+  Turn a Linux box into a multi‑IP TCP/UDP + HTTP reverse proxy you drive from your browser.
 </p>
 
 <p align="center">
