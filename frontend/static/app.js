@@ -144,15 +144,51 @@ function showMapTab(name) {
 // form, in place — never a separate page. Editing keeps you on whichever tab
 // you were browsing (FORM_INTENT_MODE tracks where a *new* mapping should
 // land; it does not move you off the tab you clicked Edit from).
+//
+// The Docker page's "Configure mapping" flow reuses this SAME form element —
+// rather than a second copy of it — by relocating it in the DOM into the
+// Docker page's own slot instead of navigating to Map (see
+// dockerShowMappingForm()). MAPPING_FORM_SOURCE remembers which page it's
+// currently parked in, so hideMappingForm()/apply()'s post-save navigation
+// return it to the right place either way.
+let MAPPING_FORM_SOURCE = "map";   // "map" | "docker"
+
 function showMappingForm() {
+  MAPPING_FORM_SOURCE = "map";
+  const home = $("#mappanel-mappings"), form = $("#mapping-form-view");
+  if (home && form && form.parentElement !== home) home.appendChild(form);
+  const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
   $("#mapping-list-view").classList.add("hidden");
   $("#mapping-form-view").classList.remove("hidden");
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function hideMappingForm() {
+  if (MAPPING_FORM_SOURCE === "docker") { dockerHideMappingForm(); return; }
   $("#mapping-form-view").classList.add("hidden");
   $("#mapping-list-view").classList.remove("hidden");
+}
+
+// Docker-page equivalent of showMappingForm()/hideMappingForm() — same shared
+// #mapping-form-view element, relocated into the Docker page's own slot so
+// selecting containers and configuring the mapping never leaves that page.
+function dockerShowMappingForm() {
+  MAPPING_FORM_SOURCE = "docker";
+  const slot = $("#docker-form-slot"), form = $("#mapping-form-view");
+  if (slot && form) slot.appendChild(form);
+  $("#docker-containers").classList.add("hidden");
+  $("#docker-empty").classList.add("hidden");
+  $("#docker-pool-bar").classList.add("hidden");
+  if (slot) slot.classList.remove("hidden");
+  if (form) form.classList.remove("hidden");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function dockerHideMappingForm() {
+  const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
+  $("#docker-containers").classList.remove("hidden");
+  MAPPING_FORM_SOURCE = "map";
+  loadDocker();   // fresh container list + reset selection state
 }
 
 function toast(message, ok = true) {
@@ -566,9 +602,7 @@ function dockerCreateMapping(e) {
   DOCKER_SEL.clear();
   Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
 
-  showPage("map");
-  showMapTab(DOCKER_TAB);
-  showMappingForm();
+  dockerShowMappingForm();
   toast(`${backends.length} container(s) added — finish configuring the mapping below.`);
 }
 
@@ -1408,10 +1442,15 @@ async function apply(e) {
       showStatus("success", editing ? "Mapping updated" : "Mapping applied",
                  `${j.mapping.domain} is live.`);
       resetForm();
+      const fromDocker = MAPPING_FORM_SOURCE === "docker";
       let finalMode = editing ? FORM_INTENT_MODE : "stream";
       if (wantsProxy) finalMode = (await tryBindWaf(j.mapping.domain)) ? "proxy" : "stream";
       await loadMappings();
-      showPage(finalMode);
+      // A mapping created from the Docker page stays there — Map's Stream/
+      // Reverse Proxy tabs are just where it shows up afterward, not where
+      // this flow navigates to.
+      if (fromDocker) dockerHideMappingForm();
+      else showPage(finalMode);
     } else {
       showStatus("error", "Couldn't apply mapping",
                  j.error || "The host rejected the request. Check the step log for the failing command.");

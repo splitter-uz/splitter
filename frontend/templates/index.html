@@ -1142,6 +1142,11 @@
             <button type="button" data-dockertab="proxy" class="docker-tab rounded-lg px-3 py-1.5 text-sm font-medium border">Reverse Proxy</button>
           </div>
 
+          <!-- The shared mapping form (same one Map uses) relocates in here
+               once "Configure mapping" is clicked — see dockerShowMappingForm()
+               in app.js — so configuring it never leaves this page. -->
+          <div id="docker-form-slot" class="hidden"></div>
+
           <!-- Pool builder: appears once containers are selected -->
           <div id="docker-pool-bar" class="hidden sticky top-2 z-10 card bg-white/90 backdrop-blur rounded-2xl border border-emerald-200 shadow-sm p-4 mb-5">
             <form id="docker-create-form" class="space-y-3">
