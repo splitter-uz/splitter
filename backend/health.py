@@ -23,14 +23,41 @@ import ssl
 import threading
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as _wait_futures
 
 import config
 import storage
 
 CONNECT_TIMEOUT = 2.0      # seconds to wait for a TCP connect
 HTTP_TIMEOUT = 3.0         # seconds for an HTTP health-check request
-CACHE_TTL = 8.0            # seconds a probe result is reused before re-probing
+CACHE_TTL = 20.0           # seconds a probe result is reused before re-probing.
+# Must outlive both the frontend's poll interval (15s — otherwise every poll
+# treats the cache as expired and re-probes for no benefit) and the slowest
+# probe actually seen here (an unresolvable/slow-DNS host can take ~12s to
+# naturally fail, per CHECK_ALL_DEADLINE's comment) — otherwise that probe's
+# result goes stale again before the next poll ever gets to use it, and it
+# ends up re-probed (slowly, in the background — CHECK_ALL_DEADLINE still
+# keeps the response itself fast) on literally every single poll forever
+# instead of settling into the cache like every faster backend does.
+# Outer safety net for check_all() as a whole. socket.create_connection()'s
+# own `timeout` only bounds the TCP handshake — the getaddrinfo() DNS lookup
+# it does first is NOT covered by it, so an unresolvable/slow-DNS backend can
+# block far longer than CONNECT_TIMEOUT regardless (confirmed directly: one
+# real case here took a full 12s despite a 2.0s connect timeout, apparently
+# an IPv6 attempt hanging before falling back to IPv4). Without this, one
+# such backend stalls the whole /api/health response — and by extension
+# every page that waits on it — even though every other probe finished in
+# milliseconds.
+CHECK_ALL_DEADLINE = CONNECT_TIMEOUT + 1.5
+
+# Probes slower than CHECK_ALL_DEADLINE (see above) don't finish in time to
+# get cached by the request that started them — so without tracking them,
+# every poll before they finally resolve submits ANOTHER redundant duplicate
+# probe against the same slow-to-fail host, and a backend slow enough never
+# gets a chance to warm the cache at all. Track in-flight probes by cache key
+# so concurrent/rapid check_all() calls share one real probe instead of each
+# starting their own.
+_inflight = {}   # cache_key -> Future
 _MAX_WORKERS = 16
 
 _lock = threading.Lock()
@@ -205,9 +232,37 @@ def check_all(force=False):
     probed = {}
     if jobs:
         keys = list(jobs)
-        with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(keys))) as pool:
-            for k, state in zip(keys, pool.map(lambda k: _check(jobs[k][0], force, jobs[k][1]), keys)):
-                probed[k] = state
+        pool = ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(keys)))
+        futures = {}
+        with _lock:
+            for k in keys:
+                fut = _inflight.get(k)
+                if fut is None or fut.done():
+                    server, hc = jobs[k]
+                    fut = pool.submit(_check, server, force, hc)
+                    _inflight[k] = fut
+                futures[fut] = k
+        done, pending = _wait_futures(futures, timeout=CHECK_ALL_DEADLINE)
+        for fut in done:
+            probed[futures[fut]] = fut.result()
+        for fut in pending:
+            # Blew the deadline (see CHECK_ALL_DEADLINE) — don't make the
+            # whole request wait on it. Fall back to whatever the cache last
+            # had for this job (probably will have settled by the next poll,
+            # since the probe keeps running in the background) rather than
+            # stalling the response for everyone else's already-known state.
+            k = futures[fut]
+            server, hc = jobs[k]
+            with _lock:
+                prev = _state.get(_cache_key(server, hc))
+            probed[k] = ({kk: vv for kk, vv in prev.items() if not kk.startswith("_")}
+                         if prev else {"server": server, "up": None, "since": None,
+                                       "checked": None, "latency_ms": None, "error": "probe pending"})
+        # Not pool.shutdown() via `with` (which blocks until every submitted
+        # task finishes) — let any still-running probe finish on its own time
+        # in the background so it's ready in cache for the next poll, instead
+        # of holding this response hostage to it.
+        pool.shutdown(wait=False)
 
     out_mappings = {}
     summary = {"green": 0, "yellow": 0, "red": 0, "gray": 0, "total": 0}
