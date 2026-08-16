@@ -178,46 +178,32 @@ function hideMappingForm() {
 // Docker-page equivalent of showMappingForm()/hideMappingForm() — same shared
 // #mapping-form-view element, relocated into the Docker page's own slot so
 // selecting containers and configuring the mapping never leaves that page.
-// Which of the Docker page's three mutually-exclusive views is showing:
-// its "Managed mappings" list (default), the backend-container picker (only
-// while actively creating a mapping — see showDockerPicker()), or the
-// mapping form (tracked separately via MAPPING_FORM_SOURCE, since the form
-// is shared with Map). dockerSyncView() is the one place that decides
-// visibility from this state, so every entry point (tab switch, New/Cancel
-// buttons, form open/close) stays consistent instead of each toggling
+// Which of the Docker page's two mutually-exclusive views is showing: its
+// "Managed mappings" list (default), or the mapping form (tracked separately
+// via MAPPING_FORM_SOURCE, since the form is shared with Map — "New
+// Stream"/"New Proxy" opens it directly; there's no separate container-picker
+// step, see dockerNewMapping()). dockerSyncView() is the one place that
+// decides visibility from this state, so every entry point (tab switch,
+// New button, form open/close) stays consistent instead of each toggling
 // classes on its own.
-let DOCKER_VIEW = "list";   // "list" | "picker"
-
 function dockerSyncView() {
   const isForm = MAPPING_FORM_SOURCE === "docker";
-  const showPicker = !isForm && DOCKER_VIEW === "picker";
-  const showList = !isForm && DOCKER_VIEW === "list";
   const hasMappings = MAPPINGS.filter(isDockerMapping)
     .some((m) => !!m.waf_bound === (DOCKER_TAB === "proxy"));
 
   const slot = $("#docker-form-slot"); if (slot) slot.classList.toggle("hidden", !isForm);
-  const picker = $("#docker-picker-section"); if (picker) picker.classList.toggle("hidden", !showPicker);
-  const card = $("#docker-mappings-card"); if (card) card.classList.toggle("hidden", !(showList && hasMappings));
-  const emptyCta = $("#docker-new-empty"); if (emptyCta) emptyCta.classList.toggle("hidden", !(showList && !hasMappings));
+  const card = $("#docker-mappings-card"); if (card) card.classList.toggle("hidden", !(!isForm && hasMappings));
+  const emptyCta = $("#docker-new-empty"); if (emptyCta) emptyCta.classList.toggle("hidden", !(!isForm && !hasMappings));
 }
 
-// The container picker only has anything to do with the page while actively
-// creating a mapping — hidden the rest of the time (see dockerSyncView()).
-function showDockerPicker() {
-  DOCKER_VIEW = "picker";
-  DOCKER_SEL.clear();
-  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
-  renderDockerCards();
-  syncDockerPoolBar();
-  dockerSyncView();
-  window.scrollTo({ top: 0, behavior: "smooth" });
-}
-
-function hideDockerPicker() {
-  DOCKER_VIEW = "list";
-  DOCKER_SEL.clear();
-  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
-  dockerSyncView();
+// "+ New Stream"/"+ New Proxy" open the real mapping form directly — no
+// standalone container-discovery step in between. Docker containers are
+// picked from within the form's own Backends section instead (see
+// renderBackendDockerGrid() / the per-row picker in addBackendRow()).
+function dockerNewMapping() {
+  FORM_INTENT_MODE = DOCKER_TAB;
+  resetForm();
+  dockerShowMappingForm();
 }
 
 function dockerShowMappingForm() {
@@ -231,8 +217,7 @@ function dockerShowMappingForm() {
 
 function dockerHideMappingForm() {
   MAPPING_FORM_SOURCE = "map";
-  DOCKER_VIEW = "list";
-  loadDocker();   // fresh container list + reset selection state
+  loadDocker();   // fresh container list + managed-mappings list
 }
 
 // The Docker page's own list of mappings it created — kept out of Map's
@@ -497,8 +482,6 @@ function splitHostPort(server) {
 // ==========================================================================
 let DOCKER_CONTAINERS = [];       // containers (standalone) OR services (swarm)
 let DOCKER_SWARM = false;         // swarm-manager mode?
-const DOCKER_SEL = new Set();     // selected container/service names -> pool
-const DOCKER_PORTS = {};          // name -> chosen backend port (editable)
 let DOCKER_TAB = "stream";        // which mapping kind selected containers become
 
 // First usable port for a container (exposed port) or service (published port).
@@ -548,14 +531,8 @@ function showDockerTab(name) {
 }
 
 async function loadDocker() {
-  const wrap = $("#docker-containers");
   const unavail = $("#docker-unavailable");
-  const empty = $("#docker-empty");
-  DOCKER_VIEW = "list";
-  DOCKER_SEL.clear();
-  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
-  renderDockerMappingsList();   // also syncs the view (list/picker/form) via dockerSyncView()
-  syncDockerPoolBar();
+  renderDockerMappingsList();   // also syncs the view (list/form) via dockerSyncView()
   try {
     const st = await (await fetch("/api/docker/status")).json();
     if (!st.available) throw new Error("Docker unavailable");
@@ -573,12 +550,8 @@ async function loadDocker() {
       ? "Swarm manager — showing services (routing-mesh published port; the swarm load-balances replicas)."
       : "Standalone Docker — showing running containers.";
     const c = $("#nav-docker-count"); if (c) c.textContent = DOCKER_CONTAINERS.length;
-    empty.classList.toggle("hidden", DOCKER_CONTAINERS.length > 0);
-    renderDockerCards();
   } catch (e) {
     DOCKER_CONTAINERS = [];
-    wrap.innerHTML = "";
-    empty.classList.add("hidden");
     unavail.classList.remove("hidden");
   }
 }
@@ -602,123 +575,93 @@ async function ensureDockerContainersLoaded() {
   } catch (_e) { /* leave empty */ }
 }
 
-function renderDockerCards() {
-  const wrap = $("#docker-containers");
-  wrap.innerHTML = DOCKER_CONTAINERS.map((c) => {
-    const sel = DOCKER_SEL.has(c.name);
-    // Port chips: container exposed ports, or service published ports.
-    const portVals = DOCKER_SWARM
-      ? (c.ports || []).map((p) => p.published)
-      : (c.ports || []);
-    const chips = portVals.map((p) =>
-      `<button type="button" data-port="${p}" class="docker-port text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-slate-600">${p}</button>`).join(" ")
-      || `<span class="text-xs text-slate-400">${DOCKER_SWARM ? "no published port" : "none exposed"}</span>`;
-    // Selectable when: container running, or service has a reachable published port.
-    const ok = DOCKER_SWARM ? !!c.reachable : (c.state === "running");
-    let meta, badge;
-    if (DOCKER_SWARM) {
-      const rep = c.replicas === "global" ? "global" : (c.replicas != null ? c.replicas + " replica(s)" : "");
-      meta = `<div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">swarm service</span> ${escapeHtml(rep)}${c.reachable ? "" : ' · <span class="text-amber-600">unreachable (no published port)</span>'}</div>`;
-      badge = `<span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">service</span>`;
-    } else {
-      const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
-      const net = (c.ips && c.ips[0] && c.ips[0].network) || "";
-      meta = `<div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">IP</span> <span class="font-mono">${escapeHtml(ip)}</span> ${net ? `<span class="text-slate-400">· ${escapeHtml(net)}</span>` : ""}</div>`;
-      badge = `<span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${ok ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}">${escapeHtml(c.state || "?")}</span>`;
-    }
+// Inline "Add from Docker" grid, embedded directly in the mapping form's
+// Backends section (toggled by #add-backend-docker). Replaces the old
+// standalone container-discovery step — checking a card here immediately
+// adds/removes a backend row in the pool below, so Docker containers and
+// manually-typed host:port rows live side by side in the same list. Which
+// containers are "selected" is derived straight from the current backend
+// rows (dataset.dockerContainer) rather than tracked separately, so it can
+// never drift from what's actually in the pool.
+let BACKEND_GRID_OPEN = false;
+
+function backendPoolDockerNames() {
+  return new Set($$("#backends .be-row").map((r) => r.dataset.dockerContainer).filter(Boolean));
+}
+
+function toggleBackendDockerGrid() {
+  BACKEND_GRID_OPEN = !BACKEND_GRID_OPEN;
+  const wrap = $("#backend-docker-grid-wrap");
+  if (wrap) wrap.classList.toggle("hidden", !BACKEND_GRID_OPEN);
+  if (BACKEND_GRID_OPEN) renderBackendDockerGrid();
+}
+
+function closeBackendDockerGrid() {
+  BACKEND_GRID_OPEN = false;
+  const wrap = $("#backend-docker-grid-wrap");
+  if (wrap) wrap.classList.add("hidden");
+}
+
+// A brand-new mapping's form starts with one blank manual row (see
+// resetForm()) so there's always something to fill in by hand — but once
+// real backends are picked from the Docker grid, that stray empty row would
+// otherwise get submitted alongside them. Drop it (but never the pool's last
+// row, and never a row someone actually typed into).
+function pruneEmptyManualRow() {
+  const rows = $$("#backends .be-row");
+  if (rows.length <= 1) return;
+  rows.forEach((r) => {
+    if (r.dataset.dockerContainer) return;
+    const host = r.querySelector(".be-host"), port = r.querySelector(".be-port");
+    if (host && !host.value.trim() && port && !port.value.trim()) r.remove();
+  });
+  syncLbAuto();
+  syncFailoverUI();
+}
+
+async function renderBackendDockerGrid() {
+  const grid = $("#backend-docker-grid"), emptyEl = $("#backend-docker-grid-empty");
+  if (!grid) return;
+  grid.innerHTML = '<div class="text-xs text-slate-400 px-1 py-2 col-span-full">Loading…</div>';
+  await ensureDockerContainersLoaded();
+  const selectable = DOCKER_CONTAINERS.filter((c) => DOCKER_SWARM ? !!c.reachable : c.state === "running");
+  if (emptyEl) emptyEl.classList.toggle("hidden", selectable.length > 0);
+  const selected = backendPoolDockerNames();
+  grid.innerHTML = selectable.map((c) => {
+    const sel = selected.has(c.name);
+    const portVals = DOCKER_SWARM ? (c.ports || []).map((p) => p.published) : (c.ports || []);
+    const portLabel = portVals.length ? portVals.join(", ") : (DOCKER_SWARM ? "no published port" : "none exposed");
+    const meta = DOCKER_SWARM
+      ? (c.replicas === "global" ? "global" : (c.replicas != null ? c.replicas + " replica(s)" : ""))
+      : ((c.ips && c.ips[0] && c.ips[0].ip) || "");
     return `
-      <div class="card bg-white/80 rounded-2xl border ${sel ? "border-emerald-400 ring-1 ring-emerald-300" : "border-slate-200/70"} shadow-sm p-4" data-cname="${escapeHtml(c.name)}">
-        <div class="flex items-start justify-between gap-2">
-          <label class="flex items-center gap-2 min-w-0">
-            <input type="checkbox" class="docker-check accent-emerald-600" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""} ${ok ? "" : "disabled"}>
-            <span class="font-semibold text-slate-800 truncate">${escapeHtml(c.name)}</span>
-          </label>
-          ${badge}
-        </div>
-        <div class="mt-2 text-xs text-slate-500 truncate" title="${escapeHtml(c.image || "")}">${escapeHtml(c.image || "")}</div>
-        ${meta}
-        <div class="mt-1 text-xs text-slate-600 flex items-center gap-1 flex-wrap"><span class="text-slate-400">ports</span> ${chips}</div>
-      </div>`;
+      <label class="flex items-start gap-2 rounded-lg border ${sel ? "border-sky-400 bg-white ring-1 ring-sky-300" : "border-slate-200 bg-white"} px-3 py-2 cursor-pointer">
+        <input type="checkbox" class="backend-docker-check accent-sky-600 mt-0.5" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""}>
+        <span class="min-w-0 flex-1">
+          <span class="block text-sm font-medium text-slate-800 truncate">${escapeHtml(c.name)}</span>
+          <span class="block text-xs text-slate-400 truncate" title="${escapeHtml(c.image || "")}">${escapeHtml(c.image || "")}${meta ? " · " + escapeHtml(meta) : ""}</span>
+          <span class="block text-xs text-slate-500 font-mono truncate">ports: ${escapeHtml(String(portLabel))}</span>
+        </span>
+      </label>`;
   }).join("");
-  // Wire checkboxes: selecting seeds a default port from the container's first
-  // exposed port; a port chip sets that container's backend port.
-  $$("#docker-containers .docker-check").forEach((cb) => cb.addEventListener("change", () => {
+  $$("#backend-docker-grid .backend-docker-check").forEach((cb) => cb.addEventListener("change", () => {
     const name = cb.dataset.name;
-    if (cb.checked) { DOCKER_SEL.add(name); if (!DOCKER_PORTS[name]) DOCKER_PORTS[name] = dockerFirstPort(name); }
-    else { DOCKER_SEL.delete(name); delete DOCKER_PORTS[name]; }
-    renderDockerCards();
-    syncDockerPoolBar();
+    if (cb.checked) {
+      if (!backendPoolDockerNames().has(name)) {
+        addBackendRow({ docker_container: name, docker_port: dockerFirstPort(name) });
+        pruneEmptyManualRow();
+      }
+    } else {
+      const row = $$("#backends .be-row").find((r) => r.dataset.dockerContainer === name);
+      if (row) {
+        if ($$("#backends .be-row").length > 1) row.remove();
+        else { delete row.dataset.dockerContainer; setBackendRowDockerState(row, null); }
+        syncLbAuto();
+        syncFailoverUI();
+      }
+    }
+    renderBackendDockerGrid();
   }));
-  $$("#docker-containers .docker-port").forEach((b) => b.addEventListener("click", () => {
-    const name = b.closest("[data-cname]").dataset.cname;
-    DOCKER_SEL.add(name);
-    DOCKER_PORTS[name] = b.dataset.port;
-    renderDockerCards();
-    syncDockerPoolBar();
-  }));
-}
-
-// One editable backend row per selected container (name + IP + its own port).
-function renderDockerPoolList() {
-  const list = $("#docker-pool-list");
-  if (!list) return;
-  const names = [...DOCKER_SEL];
-  if (names.length === 0) { list.innerHTML = '<div class="text-xs text-slate-400">Select containers below to add them as backends.</div>'; return; }
-  list.innerHTML = names.map((name) => {
-    const c = DOCKER_CONTAINERS.find((x) => x.name === name) || {};
-    const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
-    return `
-      <div class="be-docker-row flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2" data-name="${escapeHtml(name)}">
-        <span class="font-semibold text-sm text-slate-800 truncate flex-1">${escapeHtml(name)}</span>
-        <span class="text-xs text-slate-400 font-mono hidden sm:inline">${escapeHtml(ip)}</span>
-        <span class="text-slate-300">:</span>
-        <input type="number" min="1" max="65535" value="${escapeHtml(String(DOCKER_PORTS[name] || ""))}" placeholder="port"
-               class="be-docker-port w-24 rounded-lg border border-slate-200 px-2 py-1 text-sm" data-name="${escapeHtml(name)}">
-        <button type="button" class="be-docker-del text-slate-400 hover:text-red-500 text-lg leading-none px-1" data-name="${escapeHtml(name)}" title="Remove">&times;</button>
-      </div>`;
-  }).join("");
-  $$("#docker-pool-list .be-docker-port").forEach((inp) => inp.addEventListener("input", () => {
-    DOCKER_PORTS[inp.dataset.name] = inp.value.trim();
-  }));
-  $$("#docker-pool-list .be-docker-del").forEach((btn) => btn.addEventListener("click", () => {
-    DOCKER_SEL.delete(btn.dataset.name); delete DOCKER_PORTS[btn.dataset.name];
-    renderDockerCards(); syncDockerPoolBar();
-  }));
-}
-
-function syncDockerPoolBar() {
-  const bar = $("#docker-pool-bar");
-  if (bar) bar.classList.toggle("hidden", DOCKER_SEL.size === 0);
-  const n = $("#docker-pool-count"); if (n) n.textContent = DOCKER_SEL.size;
-  renderDockerPoolList();
-}
-
-// Hands the selected containers off to the real mapping form (same one Map
-// uses) as a pre-filled Docker-backed backend pool, rather than creating the
-// mapping directly from a second, separate, stripped-down form — domain,
-// bind target, transport, SSL, load balancing etc. are all just the normal
-// mapping form fields from here on, with these rows locked to their
-// container names (server IP is re-resolved and kept current automatically;
-// see serializeBackends()/addBackendRow()'s docker_container handling).
-function dockerCreateMapping(e) {
-  e.preventDefault();
-  if (DOCKER_SEL.size === 0) { toast("Select at least one container first.", false); return; }
-  const missing = [...DOCKER_SEL].filter((n) => !String(DOCKER_PORTS[n] || "").trim());
-  if (missing.length) { toast(`Set a port for: ${missing.join(", ")}`, false); return; }
-  const backends = [...DOCKER_SEL].map((name) => ({
-    docker_container: name,
-    docker_port: Number(DOCKER_PORTS[name]),
-  }));
-
-  FORM_INTENT_MODE = DOCKER_TAB;
-  resetForm();
-  $("#backends").innerHTML = "";
-  backends.forEach((b) => addBackendRow(b));
-  DOCKER_SEL.clear();
-  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
-
-  dockerShowMappingForm();
-  toast(`${backends.length} container(s) added — finish configuring the mapping below.`);
 }
 
 function addBackendRow(b) {
@@ -1847,6 +1790,7 @@ function applyTransportRules() {
 function resetForm() {
   EDITING = null;
   EDIT_HAS_CERT = false;
+  closeBackendDockerGrid();
   $("#map-form").reset();
   setVal("orig_domain", "");   // clear edit identity so a save is treated as a create
   setVal("orig_port", "");
@@ -1880,6 +1824,7 @@ function editMapping(domain, port) {
   const m = MAPPINGS.find((x) => x.domain === domain &&
     (p == null || String(x.listen_port || 443) === p));
   if (!m) return;
+  closeBackendDockerGrid();
   EDITING = mkey(m);
   FORM_INTENT_MODE = m.waf_bound ? "proxy" : "stream";   // return here on save
   // Remember the exact mapping being edited so the backend overwrites it (and
@@ -5027,16 +4972,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.target.value = "";   // allow re-importing the same file
   });
   $("#add-backend").addEventListener("click", () => addBackendRow());
+  const abd = $("#add-backend-docker"); if (abd) abd.addEventListener("click", toggleBackendDockerGrid);
+  const bdgc = $("#backend-docker-grid-close"); if (bdgc) bdgc.addEventListener("click", closeBackendDockerGrid);
   $("#add-location").addEventListener("click", () => addLocationRow());
   $("#ssl_forced").addEventListener("change", syncHstsUI);
   $("#hsts_enabled").addEventListener("change", syncHstsUI);
   // Docker page
-  const dcf = $("#docker-create-form"); if (dcf) dcf.addEventListener("submit", dockerCreateMapping);
   const dr = $("#docker-refresh"); if (dr) dr.addEventListener("click", loadDocker);
   $$(".docker-tab").forEach((b) => b.addEventListener("click", () => showDockerTab(b.dataset.dockertab)));
-  const dnb = $("#docker-new-btn"); if (dnb) dnb.addEventListener("click", showDockerPicker);
-  const dnbe = $("#docker-new-btn-empty"); if (dnbe) dnbe.addEventListener("click", showDockerPicker);
-  const dpc = $("#docker-picker-cancel"); if (dpc) dpc.addEventListener("click", hideDockerPicker);
+  const dnb = $("#docker-new-btn"); if (dnb) dnb.addEventListener("click", dockerNewMapping);
+  const dnbe = $("#docker-new-btn-empty"); if (dnbe) dnbe.addEventListener("click", dockerNewMapping);
   showDockerTab("stream");
   refreshDockerNav();
   $("#protocol").addEventListener("change", onProtocolChange);

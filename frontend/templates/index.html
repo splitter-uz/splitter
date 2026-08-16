@@ -467,9 +467,27 @@
                   <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
                     <div class="flex items-center justify-between mb-2">
                       <label class="block text-sm font-semibold">Backend Pool <span class="font-normal text-slate-400">load balanced</span></label>
-                      <button type="button" id="add-backend" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add Backend</button>
+                      <div class="flex items-center gap-3">
+                        <button type="button" id="add-backend-docker" class="text-xs font-medium text-sky-700 hover:text-sky-900">🐳 Add from Docker</button>
+                        <button type="button" id="add-backend" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add Backend</button>
+                      </div>
                     </div>
                     <div id="backends" class="space-y-2"></div>
+
+                    <!-- Inline Docker container grid — toggled by "Add from Docker"
+                         above. Multi-select: checking a card adds it as a backend
+                         row immediately (see renderBackendDockerGrid() in app.js);
+                         unchecking removes that row. Backend source is simply
+                         "which affordance you used" — manual rows and Docker rows
+                         live side by side in the same pool. -->
+                    <div id="backend-docker-grid-wrap" class="hidden mt-3 rounded-lg border border-sky-200 bg-sky-50/60 p-3">
+                      <div class="flex items-center justify-between mb-2">
+                        <p class="text-xs font-medium text-sky-700">Select container(s) to add as backends</p>
+                        <button type="button" id="backend-docker-grid-close" class="text-xs font-medium text-slate-500 hover:text-slate-800">✕ Close</button>
+                      </div>
+                      <div id="backend-docker-grid-empty" class="hidden text-xs text-slate-400 px-1 py-2">No running containers found.</div>
+                      <div id="backend-docker-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-2"></div>
+                    </div>
                   </div>
 
                   <!-- Load balancing (auto-opens with 2+ backends) -->
@@ -1202,36 +1220,11 @@
           </div>
 
           <!-- The shared mapping form (same one Map uses) relocates in here
-               once "Configure mapping" is clicked — see dockerShowMappingForm()
-               in app.js — so configuring it never leaves this page. -->
+               once "New Stream"/"New Proxy" is clicked — see
+               dockerShowMappingForm() in app.js — so configuring it (including
+               picking Docker containers as backends, inline in the form's own
+               Backends section) never leaves this page. -->
           <div id="docker-form-slot" class="hidden"></div>
-
-          <!-- Backend picker — only visible while actively creating a new
-               mapping (see showDockerPicker()/hideDockerPicker() in app.js);
-               the container list has nothing to do with the page otherwise. -->
-          <div id="docker-picker-section" class="hidden">
-            <div class="flex items-center justify-between mb-3">
-              <p class="text-sm font-medium text-slate-600">Select backend container(s)</p>
-              <button id="docker-picker-cancel" type="button" class="text-xs font-medium text-slate-500 hover:text-slate-800">✕ Cancel</button>
-            </div>
-
-            <!-- Pool builder: appears once containers are selected -->
-            <div id="docker-pool-bar" class="hidden sticky top-2 z-10 card bg-white/90 backdrop-blur rounded-2xl border border-emerald-200 shadow-sm p-4 mb-5">
-              <form id="docker-create-form" class="space-y-3">
-                <div>
-                  <div class="text-[11px] font-medium text-slate-500 mb-1">Backend pool — one line per selected container, set each port. Splitter stores the <b>container name</b> and keeps its IP current on restart.</div>
-                  <div id="docker-pool-list" class="space-y-2"></div>
-                </div>
-                <div class="flex items-center justify-between">
-                  <p class="text-xs text-slate-500"><span id="docker-pool-count">0</span> container(s) selected — load‑balanced pool.</p>
-                  <button type="submit" class="btn-primary inline-flex items-center gap-2 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 shadow-lg shadow-emerald-600/25">Configure mapping →</button>
-                </div>
-              </form>
-            </div>
-
-            <div id="docker-empty" class="hidden card bg-white/70 rounded-2xl border border-slate-200/70 p-8 text-center text-sm text-slate-500">No running containers found.</div>
-            <div id="docker-containers" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
-          </div>
         </section>
 
         <!-- ====== PAGE: Tools ====== -->
