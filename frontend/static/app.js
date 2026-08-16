@@ -1787,6 +1787,26 @@ function applyTransportRules() {
   updateSniAvailability();
 }
 
+// A plain L4 Stream mapping is rendered by nginx_manager.py's render_conf(),
+// which never reads websocket_upgrade/http2/proxy_http11/locations/
+// advanced_config/ssl_forced/hsts_* — those only take effect through
+// render_http_conf(), which only runs for a Reverse-Proxy (waf_bound)
+// mapping. Hiding them for Stream keeps the two panels from looking
+// identical, and stops anyone filling in a field that's silently a no-op.
+function applyIntentModeUI() {
+  const isProxy = FORM_INTENT_MODE === "proxy";
+  const l7 = $("#l7-advanced-details");
+  if (l7) l7.classList.toggle("hidden", !isProxy);
+  const forceHttpsRow = $("#ssl_forced") && $("#ssl_forced").closest("label");
+  if (forceHttpsRow) forceHttpsRow.classList.toggle("hidden", !isProxy);
+  if (!isProxy) {
+    const hstsBlock = $("#hsts-block");
+    if (hstsBlock) hstsBlock.classList.add("hidden");
+  } else {
+    syncHstsUI();
+  }
+}
+
 function resetForm() {
   EDITING = null;
   EDIT_HAS_CERT = false;
@@ -1803,6 +1823,7 @@ function resetForm() {
   toggleRateSection();   // collapse rate-limit panel (reset() unchecked the toggle)
   syncHealthUI();        // collapse health-check panel
   syncHstsUI();          // collapse force-SSL/HSTS panel (reset() unchecked the toggles)
+  applyIntentModeUI();   // hide L7-only fields (locations, WS, HTTP/2, Force-HTTPS…) for Stream
   $("#bind_prefix").value = CFG.bind_prefix || "24";
   setTransport("tcp");
   filterProtocols();
@@ -1922,6 +1943,7 @@ function editMapping(domain, port) {
   $("#hsts_enabled").checked = !!m.hsts_enabled;
   $("#hsts_subdomains").checked = !!m.hsts_subdomains;
   syncHstsUI();
+  applyIntentModeUI();   // hide L7-only fields entirely for a Stream mapping
   setVal("advanced_config", m.advanced_config || "");
   $("#locations").innerHTML = "";
   (m.locations || []).forEach(addLocationRow);
