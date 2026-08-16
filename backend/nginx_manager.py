@@ -20,6 +20,7 @@ import tempfile
 import time
 
 import config
+import storage
 
 
 # --------------------------------------------------------------------------
@@ -1435,7 +1436,31 @@ def ensure_nonlocal_bind(steps):
         allow_fail=True))
 
 
+def _heal_missing_log_dirs():
+    """nginx -t validates the WHOLE config, not just whatever the current
+    operation is touching — one mapping's access_log/error_log directory
+    going missing (observed in practice; root cause unclear, but plausibly
+    a container restart racing a just-created mapping, or a partial cleanup
+    left behind by a failed delete) fails `nginx -t` for every OTHER
+    mapping too, with an error that names the broken one rather than
+    whatever the admin is actually trying to change — very confusing to
+    debug from the UI. Recreate every currently-known mapping's and
+    forward-proxy's log directory before validating, so a stale reference
+    can't block an unrelated change. Best-effort: never let this healing
+    step itself break test_config()."""
+    if config.SIMULATE:
+        return
+    try:
+        for m in storage.list_mappings():
+            ensure_log_dir(m["domain"], _mapping_port(m))
+        for f in storage.fwdproxy_list():
+            ensure_fwdproxy_log_dir(f["name"])
+    except Exception:
+        pass
+
+
 def test_config():
+    _heal_missing_log_dirs()
     return run_cmd("Validate Nginx config (nginx -t)",
                    _privileged([config.NGINX_BIN, "-t"]))
 
