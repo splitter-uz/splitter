@@ -299,7 +299,7 @@ install_service() {
   local unit=/etc/systemd/system/splitter.service
   cat > "$unit" <<EOF
 [Unit]
-Description=Splitter - L4 Stream Proxy Manager
+Description=Splitter
 After=network-online.target nginx.service
 Wants=network-online.target
 
@@ -396,10 +396,28 @@ install_waf() {
 
   # --- OWASP Core Rule Set -------------------------------------------------
   if [ ! -f "$MODSEC_DIR/crs/crs-setup.conf" ]; then
-    command -v git >/dev/null 2>&1 || \
-      { [ "$PM" = "apt-get" ] && apt-get install -y --no-install-recommends git >/dev/null 2>&1; }
-    git clone -q --depth 1 https://github.com/coreruleset/coreruleset.git "$MODSEC_DIR/crs" \
-      || { c_r "  CRS clone failed (need git + network)"; return 1; }
+    if command -v git >/dev/null 2>&1; then
+      git clone -q --depth 1 https://github.com/coreruleset/coreruleset.git "$MODSEC_DIR/crs" \
+        || { c_r "  CRS clone failed (need git + network)"; return 1; }
+    else
+      # Prefer a plain tarball over installing git just for this one-time
+      # checkout — on Debian, git pulls in the full `perl` package (this box
+      # otherwise only needs the much smaller perl-base), a meaningfully
+      # bigger attack surface to carry in a WAF appliance's image for a
+      # single repo snapshot it never needs to update in place.
+      command -v curl >/dev/null 2>&1 || \
+        { [ "$PM" = "apt-get" ] && apt-get install -y --no-install-recommends curl >/dev/null 2>&1; }
+      local crs_tar; crs_tar="$(mktemp)"
+      if curl -fsSL https://github.com/coreruleset/coreruleset/archive/refs/heads/main.tar.gz -o "$crs_tar" \
+          && mkdir -p "$MODSEC_DIR/crs" \
+          && tar -xzf "$crs_tar" -C "$MODSEC_DIR/crs" --strip-components=1; then
+        :
+      else
+        rm -f "$crs_tar"
+        c_r "  CRS download failed (need curl + network)"; return 1
+      fi
+      rm -f "$crs_tar"
+    fi
     cp "$MODSEC_DIR/crs/crs-setup.conf.example" "$MODSEC_DIR/crs/crs-setup.conf"
   fi
   # Some CRS versions define their own SecDefaultAction in crs-setup.conf, which

@@ -20,6 +20,7 @@ import tempfile
 import time
 
 import config
+import storage
 
 
 # --------------------------------------------------------------------------
@@ -359,7 +360,7 @@ def provision_ip(mapping, steps):
         steps.append(StepResult(
             f"Bind to sub-interface {mapping.get('subiface')} "
             f"({mapping.get('bind_ip')})", True,
-            "using a sub-interface managed on the Interfaces page"))
+            "using a sub-interface managed on the Sub-interfaces page"))
         return True
     if mapping["alloc_method"] == "dhcp":
         return _provision_dhcp(mapping, steps)
@@ -375,7 +376,7 @@ def deprovision_ip(mapping, delete_vlan=False):
     steps = []
     dev = mapping.get("subiface")
     # Mappings never own their device: a direct bind has none, and a managed
-    # sub-interface is torn down from the Interfaces page, not on mapping delete.
+    # sub-interface is torn down from the Sub-interfaces page, not on mapping delete.
     if not dev or mapping.get("subiface_kind") in ("direct", "managed"):
         return steps
     if mapping.get("alloc_method") == "dhcp":
@@ -889,8 +890,59 @@ def _legacy_http_conf_path(domain):
     return os.path.join(config.WAF_APP_CONF_DIR, f"splitter-app-{domain}.conf")
 
 
+def _proxy_headers(client_scheme, hsts_line=None, indent="        "):
+    """The standard proxied-request header set (mirrors nginx-proxy-manager's
+    conf.d/include/proxy.conf), emitted into every location block this
+    renderer generates so a custom location behaves consistently with the
+    default one.
+
+    hsts_line is threaded in here (rather than only added once at server
+    level) because nginx's `add_header` has a sharp edge: a location that sets
+    its OWN add_header (X-Served-By, right below) stops inheriting add_header
+    directives from its parent server block entirely — so a server-level-only
+    HSTS header would silently vanish on every actual response. nginx-proxy-
+    manager works around the exact same gotcha by re-emitting its HSTS
+    add_header inside `location /` too; this does the same for every location.
+
+    client_scheme is the scheme the CLIENT used to reach nginx (https iff this
+    server block terminates TLS) — distinct from the scheme nginx uses to
+    reach the backend (proxy_ssl), which is what proxy_pass's own URL scheme
+    encodes. X-Forwarded-Proto must reflect the former: it's how the backend
+    app learns whether the original request was secure, so getting it from
+    the wrong variable causes force-HTTPS backends to redirect-loop and
+    secure-cookie logic to misfire whenever the two schemes differ (the
+    common case: TLS terminated at nginx, plain HTTP to the backend).
+    """
+    lines = [f"{indent}add_header       X-Served-By $host;"]
+    if hsts_line:
+        lines.append(f"{indent}{hsts_line}")
+    lines += [
+        f"{indent}proxy_set_header Host $host;",
+        f"{indent}proxy_set_header X-Forwarded-Proto {client_scheme};",
+        f"{indent}proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;",
+        f"{indent}proxy_set_header X-Real-IP         $remote_addr;",
+    ]
+    return lines
+
+
+def _websocket_headers(indent="        "):
+    return [
+        f"{indent}proxy_set_header Upgrade $http_upgrade;",
+        f"{indent}proxy_set_header Connection $http_connection;",
+        f"{indent}proxy_http_version 1.1;",
+    ]
+
+
 def render_http_conf(mapping):
-    """Render the L7 HTTP reverse-proxy + ModSecurity server block."""
+    """Render the L7 HTTP reverse-proxy + ModSecurity server block.
+
+    Reverse-proxy (L7) options mirror the subset of nginx-proxy-manager's
+    proxy_host template that maps cleanly onto Splitter's one-mapping/one-port,
+    load-balanced-pool model: WebSocket upgrade, HTTP/2, force-HTTPS + HSTS,
+    per-path custom locations and an advanced-config passthrough. All of them
+    only apply once `has_cert` is set (TLS termination) except WebSocket/HTTP2/
+    custom-locations/advanced-config, which apply regardless.
+    """
     backends = _apply_failover(mapping, _normalize_backends(mapping))
     name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT) + "_http"
     port = mapping.get("listen_port") or config.LISTEN_PORT
@@ -898,8 +950,16 @@ def render_http_conf(mapping):
     cert_domain = mapping.get("cert_domain") or mapping["domain"]
     cert_path = os.path.join(config.SSL_DIR, f"{cert_domain}.crt")
     key_path = os.path.join(config.SSL_DIR, f"{cert_domain}.key")
-    scheme = "https" if mapping.get("proxy_ssl") else "http"
+    scheme = "https" if mapping.get("proxy_ssl") else "http"   # nginx -> backend
     terminate = bool(mapping.get("has_cert"))   # HTTPS front vs plain HTTP front
+    client_scheme = "https" if terminate else "http"            # client -> nginx
+    websocket = bool(mapping.get("websocket_upgrade"))
+    # WebSocket already forces 1.1 via _websocket_headers(); this only adds a
+    # standalone line when 1.1-to-backend is wanted without WebSocket.
+    http11_only = bool(mapping.get("proxy_http11")) and not websocket
+    ssl_forced = terminate and bool(mapping.get("ssl_forced"))
+    hsts = ssl_forced and bool(mapping.get("hsts_enabled"))
+    locations = mapping.get("locations") or []
 
     lines = [
         "# Automatically generated HTTP reverse proxy + WAF (ModSecurity/CRS)",
@@ -926,11 +986,35 @@ def render_http_conf(mapping):
         "",
     ]
 
+    # Force-HTTPS redirect: a companion server{} in the SAME file, on :80, for
+    # this domain only. Safe to coexist with other mappings on the same
+    # bind_ip:80 (nginx virtual-hosts by server_name); if another mapping
+    # already owns this exact domain on :80, nginx keeps whichever server
+    # block it parsed first and logs a harmless "conflicting server name"
+    # warning — never a hard `nginx -t` failure.
+    if ssl_forced:
+        lines += [
+            "server {",
+            f"    listen {bind_ip}:80;",
+            f"    server_name {mapping['domain']};",
+            "    location / {",
+            "        return 301 https://$host$request_uri;",
+            "    }",
+            "}",
+            "",
+        ]
+
     lines.append("server {")
     lines.append(f"    access_log {log_paths['access']} {name}_fmt;")
     lines.append(f"    error_log  {log_paths['error']} warn;")
     if terminate:
-        lines.append(f"    listen {bind_ip}:{port} ssl;")
+        # The `listen ... http2;` parameter (rather than the newer standalone
+        # `http2 on;` directive, which needs nginx 1.25.1+) works unchanged on
+        # every nginx from 1.9.5 through current — including the 1.22.x that
+        # ships on Debian bookworm, where the modern directive is an unknown-
+        # directive `nginx -t` failure.
+        http2_flag = " http2" if mapping.get("http2", True) else ""
+        lines.append(f"    listen {bind_ip}:{port} ssl{http2_flag};")
         lines.append(f"    server_name {mapping['domain']};")
         if cert_domain != mapping["domain"]:
             lines.append(f"    # certificate shared from {cert_domain}")
@@ -947,12 +1031,42 @@ def render_http_conf(mapping):
     acl_include = _acl_include_line(mapping)   # allow/deny is valid in http too
     if acl_include:
         lines.append(acl_include)
+
+    hsts_line = None
+    if hsts:
+        hsts_value = "max-age=63072000;" + (" includeSubDomains;" if mapping.get("hsts_subdomains") else "") + " preload"
+        hsts_line = f'add_header Strict-Transport-Security "{hsts_value}" always;'
+
+    # Custom locations are evaluated before the default `location /` (nginx
+    # matches the most specific/first-defined prefix location). Each gets the
+    # admin's raw config PLUS the same standard proxy_pass + headers the
+    # default location uses — the custom body adds path-specific behaviour
+    # (headers, rewrites, timeouts…) rather than redefining the backend.
+    for loc in locations:
+        lines.append(f"    location {loc['path']} {{")
+        for raw_line in loc["config"].splitlines():
+            lines.append(f"        {raw_line}")
+        if websocket:
+            lines += _websocket_headers()
+        elif http11_only:
+            lines.append("        proxy_http_version 1.1;")
+        lines += _proxy_headers(client_scheme, hsts_line)
+        lines.append(f"        proxy_pass {scheme}://{name};")
+        lines.append("    }")
+
+    if mapping.get("advanced_config"):
+        lines.append("")
+        lines.append("    # --- Advanced config (raw) ---")
+        lines.append(mapping["advanced_config"])
+        lines.append("")
+
     lines.append("    location / {")
+    if websocket:
+        lines += _websocket_headers()
+    elif http11_only:
+        lines.append("        proxy_http_version 1.1;")
+    lines += _proxy_headers(client_scheme, hsts_line)
     lines.append(f"        proxy_pass {scheme}://{name};")
-    lines.append("        proxy_set_header Host              $host;")
-    lines.append("        proxy_set_header X-Real-IP         $remote_addr;")
-    lines.append("        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;")
-    lines.append("        proxy_set_header X-Forwarded-Proto $scheme;")
     lines.append("    }")
     lines += ["}", ""]
     return "\n".join(lines)
@@ -1030,6 +1144,176 @@ def unbind_waf(mapping):
         return False, steps
     steps.append(reload_nginx())
     return True, steps
+
+
+# --------------------------------------------------------------------------
+# Forward Proxy — SNI-based transparent HTTPS relay
+# --------------------------------------------------------------------------
+# Unlike a mapping (fixed domain -> fixed backend pool), a forward proxy has no
+# backend of its own: it reads the hostname out of each TLS ClientHello
+# (ssl_preread) and relays the still-encrypted connection to that same
+# hostname on 443, unmodified. This is the standard "SNI proxy" nginx
+# technique — no CONNECT method, no certificate, no decryption, works for any
+# HTTPS destination. Two independent gates bound what it'll do:
+#   - access_list (existing ACL infra): which CLIENT IPs may connect at all.
+#   - allowed_domains: which DESTINATION hostnames it'll relay to (skipped
+#     entirely when allow_all is set — an open relay, used deliberately).
+def fwdproxy_conf_path_for(name):
+    return os.path.join(config.STREAM_CONF_DIR, f"fwdproxy-{name}.conf")
+
+
+def fwdproxy_log_dir_for(name):
+    return os.path.join(config.LOG_DIR, f"fwdproxy.{name}")
+
+
+def fwdproxy_log_paths_for(name):
+    base = os.path.join(fwdproxy_log_dir_for(name), name)
+    return {"access": base + "-access.log", "error": base + "-error.log"}
+
+
+def ensure_fwdproxy_log_dir(name):
+    if config.SIMULATE:
+        return
+    os.makedirs(fwdproxy_log_dir_for(name), exist_ok=True)
+
+
+def remove_fwdproxy_log_dir(name):
+    d = fwdproxy_log_dir_for(name)
+    if config.SIMULATE:
+        return StepResult("Remove traffic logs", True,
+                          f"[simulated] would remove {d}", simulated=True)
+    try:
+        if os.path.isdir(d):
+            shutil.rmtree(d)
+            return StepResult("Remove traffic logs", True, f"removed {d}")
+        return StepResult("Remove traffic logs", True, f"{d} not present")
+    except OSError as exc:
+        return StepResult("Remove traffic logs", False, str(exc))
+
+
+def render_forward_proxy_conf(fp):
+    name = fp["name"]
+    bind_ip = fp.get("bind_ip") or "<bind-ip>"
+    port = fp.get("listen_port")
+    allow_all = bool(fp.get("allow_all"))
+    patterns = fp.get("allowed_domains") or []
+    # nginx variable names allow only [A-Za-z0-9_] — but forward-proxy names
+    # allow '-' (clean_fwdproxy_name), so a hyphenated name like "fwd-relay"
+    # would otherwise render "$fwdtarget_fwd-relay", which nginx parses as
+    # the variable "$fwdtarget_fwd" followed by literal "-relay" and rejects
+    # with "unknown variable" on every non-allow-all proxy using one. Hash it
+    # (same approach as upstream_name()) rather than just swapping '-' for
+    # '_', which would let two differently-named proxies collide on one var.
+    target_var = "fwdtarget_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
+
+    lines = [
+        "# Automatically generated SNI-based Forward Proxy relay",
+        f"# Managed by Splitter — name: {name}",
+        f"# Generated: {_now()}",
+        "# Do not edit by hand; changes are overwritten on the next Apply.",
+    ]
+
+    if not allow_all:
+        lines.append(f"map $ssl_preread_server_name ${target_var} {{")
+        lines.append("    hostnames;")
+        lines.append('    default "";   # not on the allow-list -> connection dropped')
+        for pat in patterns:
+            lines.append(f"    {pat}  $ssl_preread_server_name;")
+        lines += ["}", ""]
+
+    log_paths = fwdproxy_log_paths_for(name)
+    lines += [
+        f"log_format {name}_fwdfmt '$remote_addr [$time_local] $protocol $status "
+        "sni=\"$ssl_preread_server_name\" sent=$bytes_sent rcvd=$bytes_received "
+        "time=$session_time upstream=\"$upstream_addr\"';",
+        "",
+    ]
+
+    lines.append("server {")
+    acl_include = _acl_include_line(fp)   # who may connect to this relay at all
+    if acl_include:
+        lines.append(acl_include)
+    lines.append(f"    listen {bind_ip}:{port};")
+    lines.append("    ssl_preread on;")
+    lines.append(f"    resolver {config.FWDPROXY_RESOLVER} valid=300s;")
+    lines.append("    proxy_pass $ssl_preread_server_name:443;" if allow_all
+                 else f"    proxy_pass ${target_var}:443;")
+    lines += [
+        f"    access_log {log_paths['access']} {name}_fwdfmt;",
+        f"    error_log  {log_paths['error']} warn;",
+        f"    proxy_timeout {fp.get('proxy_timeout') or config.PROXY_TIMEOUT};",
+        f"    proxy_connect_timeout {fp.get('proxy_connect_timeout') or config.PROXY_CONNECT_TIMEOUT};",
+    ]
+    lines += ["}", ""]
+    return "\n".join(lines)
+
+
+def write_forward_proxy_conf(fp):
+    path = fwdproxy_conf_path_for(fp["name"])
+    content = render_forward_proxy_conf(fp)
+    if config.SIMULATE:
+        return path, StepResult(
+            "Generate Forward Proxy config", True,
+            f"[simulated] would write {path}\n\n{content}", simulated=True)
+    try:
+        os.makedirs(config.STREAM_CONF_DIR, exist_ok=True)
+        ensure_fwdproxy_log_dir(fp["name"])
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.chmod(path, 0o644)
+    except OSError as exc:
+        return path, StepResult("Generate Forward Proxy config", False, str(exc))
+    return path, StepResult("Generate Forward Proxy config", True, f"wrote {path}")
+
+
+def remove_forward_proxy_conf(name):
+    path = fwdproxy_conf_path_for(name)
+    if config.SIMULATE:
+        return StepResult("Remove Forward Proxy config", True,
+                          f"[simulated] would remove {path}", simulated=True)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            detail = f"removed {path}"
+        else:
+            detail = f"{path} not present"
+    except OSError as exc:
+        return StepResult("Remove Forward Proxy config", False, str(exc))
+    return StepResult("Remove Forward Proxy config", True, detail)
+
+
+def apply_forward_proxy(fp):
+    """Write the config, validate, reload. No IP provisioning — a forward
+    proxy always binds an address that already exists (physical interface or
+    a managed sub-interface)."""
+    steps = []
+    conf_path, res = write_forward_proxy_conf(fp)
+    steps.append(res)
+    fp["conf_path"] = conf_path
+    if not res["ok"]:
+        raise ProvisionError("Failed to write Forward Proxy config", steps)
+
+    res = test_config()
+    steps.append(res)
+    if not res["ok"]:
+        steps.append(remove_forward_proxy_conf(fp["name"]))
+        raise ProvisionError("nginx -t failed; configuration rolled back", steps)
+
+    res = reload_nginx()
+    steps.append(res)
+    if not res["ok"]:
+        raise ProvisionError("Failed to reload Nginx", steps)
+    return steps
+
+
+def deprovision_forward_proxy(fp, remove_logs=False):
+    steps = [remove_forward_proxy_conf(fp["name"])]
+    if remove_logs:
+        steps.append(remove_fwdproxy_log_dir(fp["name"]))
+    steps.append(test_config())
+    if steps[-1]["ok"]:
+        steps.append(reload_nginx())
+    return steps
 
 
 # --------------------------------------------------------------------------
@@ -1152,7 +1436,31 @@ def ensure_nonlocal_bind(steps):
         allow_fail=True))
 
 
+def _heal_missing_log_dirs():
+    """nginx -t validates the WHOLE config, not just whatever the current
+    operation is touching — one mapping's access_log/error_log directory
+    going missing (observed in practice; root cause unclear, but plausibly
+    a container restart racing a just-created mapping, or a partial cleanup
+    left behind by a failed delete) fails `nginx -t` for every OTHER
+    mapping too, with an error that names the broken one rather than
+    whatever the admin is actually trying to change — very confusing to
+    debug from the UI. Recreate every currently-known mapping's and
+    forward-proxy's log directory before validating, so a stale reference
+    can't block an unrelated change. Best-effort: never let this healing
+    step itself break test_config()."""
+    if config.SIMULATE:
+        return
+    try:
+        for m in storage.list_mappings():
+            ensure_log_dir(m["domain"], _mapping_port(m))
+        for f in storage.fwdproxy_list():
+            ensure_fwdproxy_log_dir(f["name"])
+    except Exception:
+        pass
+
+
 def test_config():
+    _heal_missing_log_dirs()
     return run_cmd("Validate Nginx config (nginx -t)",
                    _privileged([config.NGINX_BIN, "-t"]))
 

@@ -48,6 +48,7 @@ from validators import (
     clean_fw_direction,
     clean_fw_protocol,
     clean_fw_source,
+    clean_fwdproxy_name,
     clean_hash_key,
     clean_health_url,
     clean_interface,
@@ -58,6 +59,7 @@ from validators import (
     clean_port_range,
     clean_prefix,
     clean_rate,
+    clean_sni_list,
     clean_time,
     clean_transport,
     clean_uint,
@@ -152,6 +154,65 @@ def _parse_health(form):
         "health_scheme": clean_scheme(form.get("health_scheme")),
         "health_expect": clean_uint(form.get("health_expect"),
                                     "expected status", lo=100, hi=599),
+    }
+
+
+# Advanced config is raw nginx text an admin/creator writes directly into the
+# generated server block — capped generously but not unbounded (this ends up
+# on disk and re-parsed by nginx -t on every apply).
+_ADVANCED_CONFIG_MAX = 20_000
+_LOCATION_CONFIG_MAX = 10_000
+
+
+def _parse_http_opts(form):
+    """Reverse-proxy (L7) options: WebSocket upgrade, HTTP/2, force-HTTPS +
+    HSTS, per-path custom locations and a raw advanced-config passthrough.
+    Stored on every mapping (so they survive a Stream <-> Reverse Proxy
+    toggle) but only rendered by nginx_manager.render_http_conf, i.e. once
+    the mapping is WAF-bound. Raises ValidationError."""
+    ssl_forced = _truthy(form.get("ssl_forced"))
+    hsts_enabled = ssl_forced and _truthy(form.get("hsts_enabled"))
+    hsts_subdomains = hsts_enabled and _truthy(form.get("hsts_subdomains"))
+
+    raw = form.get("locations_json")
+    locations = []
+    if raw:
+        try:
+            items = json.loads(raw)
+        except (ValueError, TypeError):
+            raise ValidationError("Malformed custom-locations data.")
+        if not isinstance(items, list):
+            raise ValidationError("Malformed custom-locations data.")
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            path = (it.get("path") or "").strip()
+            cfg = (it.get("config") or "").strip()
+            if not path or not cfg:
+                continue
+            if not path.startswith("/") and not path.startswith("="):
+                raise ValidationError(f"Custom location path must start with '/' (got {path!r}).")
+            if "\0" in path or "{" in path or "}" in path:
+                raise ValidationError(f"Invalid character in location path: {path!r}")
+            locations.append({"path": path, "config": cfg[:_LOCATION_CONFIG_MAX]})
+
+    return {
+        "websocket_upgrade": _truthy(form.get("websocket_upgrade")),
+        # Absent field (unchecked box) still means "on" for a BLANK/new form —
+        # the checkbox defaults checked in the UI — but for an explicit off we
+        # rely on the browser simply not sending it, same as every other
+        # checkbox on this form.
+        "http2": _truthy(form.get("http2")),
+        # Backend-facing HTTP version (independent of the client-facing HTTP/2
+        # toggle above): nginx defaults proxy_http_version to 1.0, which some
+        # backends need bumped to 1.1 for keep-alive/chunked responses.
+        # WebSocket already forces 1.1 on its own regardless of this flag.
+        "proxy_http11": _truthy(form.get("proxy_http11")),
+        "ssl_forced": ssl_forced,
+        "hsts_enabled": hsts_enabled,
+        "hsts_subdomains": hsts_subdomains,
+        "advanced_config": (form.get("advanced_config") or "").strip()[:_ADVANCED_CONFIG_MAX],
+        "locations": locations,
     }
 
 
@@ -666,6 +727,129 @@ def waf_update_settings():
 
 
 # --------------------------------------------------------------------------
+# Forward Proxy — SNI-based transparent HTTPS relay (its own resource type,
+# no backend of its own — see nginx_manager.render_forward_proxy_conf)
+# --------------------------------------------------------------------------
+@app.get("/api/forward-proxies")
+@require_role("admin", "creator")
+def fwdproxy_index():
+    return jsonify({"ok": True, "proxies": storage.fwdproxy_list()})
+
+
+def _build_fwdproxy(form, existing=None):
+    name = clean_fwdproxy_name(form.get("name"))
+    bind_ip = clean_ip(form.get("bind_ip"), "Bind IP")
+    listen_port = clean_port(form.get("listen_port"), 443)
+    allow_all = _truthy(form.get("allow_all"))
+    allowed_domains = [] if allow_all else clean_sni_list(form.get("allowed_domains"))
+    if not allow_all and not allowed_domains:
+        raise ValidationError(
+            "Add at least one allowed destination domain, or turn on "
+            "'allow all destinations' (open relay).")
+    access_list_sel = (form.get("access_list") or "").strip()
+    if access_list_sel and access_list_sel != "__default__" and not storage.access_get(access_list_sel):
+        raise ValidationError(f"No such access list: {access_list_sel}")
+    return {
+        "name": name,
+        "label": (form.get("label") or "").strip() or name,
+        "bind_ip": bind_ip,
+        "listen_port": listen_port,
+        "allow_all": allow_all,
+        "allowed_domains": allowed_domains,
+        "access_list": access_list_sel,
+        "enabled": (existing or {}).get("enabled", True),
+        "conf_path": (existing or {}).get("conf_path"),
+        "created": (existing or {}).get("created", _now()),
+        "updated": _now(),
+    }
+
+
+@app.post("/api/forward-proxies")
+@require_role("admin", "creator")
+def fwdproxy_create():
+    try:
+        fp = _build_fwdproxy(request.form)
+    except ValidationError as exc:
+        return _err(str(exc))
+    if storage.fwdproxy_get(fp["name"]):
+        return _err(f"A forward proxy named {fp['name']} already exists.")
+    conflict = storage.fwdproxy_endpoint_conflict(fp["bind_ip"], fp["listen_port"])
+    if conflict:
+        return _err(f"{fp['bind_ip']}:{fp['listen_port']} is already used by "
+                    f"forward proxy {conflict!r}.")
+
+    try:
+        steps = nm.apply_forward_proxy(fp)
+    except nm.ProvisionError as exc:
+        return _err(str(exc), code=500, steps=exc.steps)
+    storage.fwdproxy_add(fp)
+    _audit("fwdproxy.create", target=fp["name"],
+           detail="allow-all" if fp["allow_all"] else f"{len(fp['allowed_domains'])} domain(s)")
+    return jsonify({"ok": True, "proxy": fp, "steps": steps})
+
+
+@app.post("/api/forward-proxies/<name>")
+@require_role("admin", "creator")
+def fwdproxy_update(name):
+    existing = storage.fwdproxy_get(name)
+    if not existing:
+        return _err("No such forward proxy.", code=404)
+    try:
+        fp = _build_fwdproxy(request.form, existing=existing)
+    except ValidationError as exc:
+        return _err(str(exc))
+    if fp["name"] != name:
+        return _err("Renaming a forward proxy isn't supported — delete and recreate it.")
+    conflict = storage.fwdproxy_endpoint_conflict(fp["bind_ip"], fp["listen_port"], exclude_name=name)
+    if conflict:
+        return _err(f"{fp['bind_ip']}:{fp['listen_port']} is already used by "
+                    f"forward proxy {conflict!r}.")
+
+    steps = []
+    if fp.get("enabled", True):
+        try:
+            steps = nm.apply_forward_proxy(fp)
+        except nm.ProvisionError as exc:
+            return _err(str(exc), code=500, steps=exc.steps)
+    storage.fwdproxy_add(fp)
+    _audit("fwdproxy.update", target=name)
+    return jsonify({"ok": True, "proxy": fp, "steps": steps})
+
+
+@app.post("/api/forward-proxies/<name>/toggle")
+@require_role("admin")
+def fwdproxy_toggle(name):
+    fp = storage.fwdproxy_get(name)
+    if not fp:
+        return _err("No such forward proxy.", code=404)
+    fp["enabled"] = not fp.get("enabled", True)
+    fp["updated"] = _now()
+    if fp["enabled"]:
+        try:
+            steps = nm.apply_forward_proxy(fp)
+        except nm.ProvisionError as exc:
+            fp["enabled"] = False
+            return _err(str(exc), code=500, steps=exc.steps)
+    else:
+        steps = nm.deprovision_forward_proxy(fp)
+    storage.fwdproxy_add(fp)
+    _audit("fwdproxy.toggle", target=name, detail=f"enabled={fp['enabled']}")
+    return jsonify({"ok": True, "proxy": fp, "steps": steps})
+
+
+@app.delete("/api/forward-proxies/<name>")
+@require_role("admin", "creator")
+def fwdproxy_delete(name):
+    fp = storage.fwdproxy_get(name)
+    if not fp:
+        return _err("No such forward proxy.", code=404)
+    steps = nm.deprovision_forward_proxy(fp, remove_logs=True)
+    storage.fwdproxy_remove(name)
+    _audit("fwdproxy.delete", target=name)
+    return jsonify({"ok": True, "steps": steps})
+
+
+# --------------------------------------------------------------------------
 # Managed sub-interfaces — create / list / edit / delete (admin)
 # A sub-interface owns a REAL macvlan device; mappings later select one to bind.
 # --------------------------------------------------------------------------
@@ -1087,7 +1271,7 @@ def host_metrics():
 @require_role("admin", "creator")
 def interfaces_traffic():
     """Live upload/download per interface (physical at top, sub-interfaces
-    nested) for the Interfaces page throughput tree."""
+    nested) for the Monitoring page throughput tree."""
     return jsonify({"ok": True, **metrics.per_interface()})
 
 
@@ -1437,6 +1621,7 @@ def create_mapping():
         lb = _parse_lb(form)               # backend pool + LB method/options/timeouts
         rate = _parse_rate(form)           # optional rate limiting
         healthcfg = _parse_health(form)    # optional HTTP health check
+        http_opts = _parse_http_opts(form) # reverse-proxy (L7): websocket/HSTS/locations/…
         alloc_method = (form.get("alloc_method") or "static").strip().lower()
         if alloc_method not in ("static", "dhcp"):
             raise ValidationError(f"Unknown allocation method: {alloc_method!r}")
@@ -1470,7 +1655,7 @@ def create_mapping():
 
     # Resolve where this mapping binds — a mapping never creates a device now.
     # bind_kind drives provisioning: "direct" = an existing interface IP,
-    # "managed" = an IP owned by a sub-interface from the Interfaces page.
+    # "managed" = an IP owned by a sub-interface from the Sub-interfaces page.
     bind_subiface = None
     bind_kind = "direct"
     if not subiface_enabled:
@@ -1494,7 +1679,7 @@ def create_mapping():
         if rec:
             if not rec.get("bind_ip"):
                 return _err(f"Sub-interface {selected} has no IP yet — "
-                            "re-provision it on the Interfaces page.")
+                            "re-provision it on the Sub-interfaces page.")
             bind_kind, bind_subiface = "managed", selected
             interface = rec["interface"]
             bind_ip = rec["bind_ip"]
@@ -1505,7 +1690,7 @@ def create_mapping():
             sel = net_detect.find(selected) if selected else None
             if not sel:
                 return _err("Select a sub-interface or interface to bind to — "
-                            "create a sub-interface on the Interfaces page first.")
+                            "create a sub-interface on the Sub-interfaces page first.")
             addrs = sel.get("addresses") or []
             if not addrs:
                 return _err(f"{selected} has no IPv4 address to bind to — assign "
@@ -1657,6 +1842,7 @@ def create_mapping():
     mapping.update(lb)   # backends, lb_method, hash_*, random_two, proxy_* timeouts
     mapping.update(rate)  # rate_limit, limit_conn, proxy_download_rate, proxy_upload_rate
     mapping.update(healthcfg)  # health_check, health_path, health_scheme, health_expect
+    mapping.update(http_opts)  # websocket_upgrade, http2, ssl_forced, hsts_*, locations, advanced_config
 
     # nginx resolves backend hostnames at config load; an unresolvable one makes
     # `nginx -t` fail ("host not found in upstream") and rolls the mapping back.
@@ -2174,7 +2360,9 @@ def preview_conf():
 # Network diagnostic tools
 # ==========================================================================
 import socket as _socket
+import ssl as _ssl
 import subprocess as _subprocess
+import tempfile as _tempfile
 import time as _time
 
 
@@ -2370,6 +2558,193 @@ def tools_routes():
     if not result["ok"]:
         result = _run_cmd(["ip", "route"], timeout=15)
     return jsonify(result)
+
+
+def _parse_cert_pem(pem_text):
+    """Subject/issuer/validity/serial/fingerprint/SAN out of a PEM cert, via
+    openssl (already a hard dependency — see nginx_manager.generate_self_signed)."""
+    fd, path = _tempfile.mkstemp(suffix=".pem")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(pem_text)
+
+        def _run(*args):
+            try:
+                r = _subprocess.run(["openssl", "x509", "-in", path, "-noout", *args],
+                                    capture_output=True, text=True, timeout=10)
+                return (r.stdout or "").strip()
+            except Exception:
+                return ""
+
+        dates = _run("-dates")
+        not_before = not_after = None
+        for line in dates.splitlines():
+            if line.startswith("notBefore="):
+                not_before = line.split("=", 1)[1].strip()
+            elif line.startswith("notAfter="):
+                not_after = line.split("=", 1)[1].strip()
+
+        san = _run("-ext", "subjectAltName")
+        san = san.replace("X509v3 Subject Alternative Name:", "").strip()
+
+        return {
+            "subject": _run("-subject").removeprefix("subject=").strip(),
+            "issuer": _run("-issuer").removeprefix("issuer=").strip(),
+            "not_before": not_before,
+            "not_after": not_after,
+            "serial": _run("-serial").removeprefix("serial=").strip(),
+            "fingerprint_sha256": _run("-fingerprint", "-sha256")
+                .removeprefix("SHA256 Fingerprint=").strip(),
+            "san": san,
+        }
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _days_until(openssl_date):
+    """'MMM DD HH:MM:SS YYYY GMT' -> days remaining (negative once expired), or
+    None if unparseable."""
+    if not openssl_date:
+        return None
+    try:
+        dt = datetime.datetime.strptime(openssl_date, "%b %d %H:%M:%S %Y %Z")
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return (dt - datetime.datetime.now(datetime.timezone.utc)).days
+    except ValueError:
+        return None
+
+
+def _format_cert_report(info):
+    lines = [
+        f"Subject:            {info.get('subject') or '(unknown)'}",
+        f"Issuer:             {info.get('issuer') or '(unknown)'}",
+    ]
+    days = _days_until(info.get("not_after"))
+    expiry_note = ""
+    if days is not None:
+        expiry_note = f"   ({days} day(s) left)" if days >= 0 else f"   (EXPIRED {-days} day(s) ago)"
+    lines.append(f"Valid from:         {info.get('not_before') or '(unknown)'}")
+    lines.append(f"Valid until:        {info.get('not_after') or '(unknown)'}{expiry_note}")
+    if info.get("serial"):
+        lines.append(f"Serial:             {info['serial']}")
+    if info.get("fingerprint_sha256"):
+        lines.append(f"SHA-256 fingerprint: {info['fingerprint_sha256']}")
+    if info.get("san"):
+        lines.append(f"Subject Alt Names:  {info['san']}")
+    return lines
+
+
+@app.post("/api/tools/sslcheck")
+@require_role("admin", "creator")
+def tools_sslcheck():
+    """Check a certificate either live (connect out over TLS and inspect what
+    the server actually presents — the same way a browser would) or from one
+    already managed on the SSL page (read straight off disk, no network)."""
+    mode = (request.form.get("mode") or "external").strip().lower()
+
+    if mode == "own":
+        name = (request.form.get("cert_name") or "").strip()
+        rec = storage.cert_get(name)
+        if not rec:
+            return _err("No such managed certificate.")
+        if config.SIMULATE:
+            return jsonify({"ok": True, "output": (
+                f"SSL Checker — managed certificate {name!r} (simulated)\n\n"
+                f"Source:             {rec.get('source', '?')}\n"
+                f"Subject:            CN={name}\n"
+                f"Issuer:             CN={name} (self-signed)\n"
+                f"Valid from:         Jan  1 00:00:00 2026 GMT\n"
+                f"Valid until:        Jan  1 00:00:00 2028 GMT   (~700 day(s) left)\n"
+            )})
+        cert_path = os.path.join(config.SSL_DIR, f"{name}.crt")
+        if not os.path.exists(cert_path):
+            return _err(f"Certificate file not found on disk: {cert_path}")
+        with open(cert_path, "r", encoding="utf-8", errors="replace") as fh:
+            pem = fh.read()
+        info = _parse_cert_pem(pem)
+        lines = [f"SSL Checker — managed certificate: {name}",
+                 f"Source:             {rec.get('source', '?')}", ""]
+        lines += _format_cert_report(info)
+        return jsonify({"ok": True, "output": "\n".join(lines)})
+
+    # --- external website mode: connect out and inspect the live cert -------
+    host = (request.form.get("host") or "").strip()
+    try:
+        port = int(request.form.get("port") or 443)
+    except (TypeError, ValueError):
+        port = 443
+    if not _valid_host(host):
+        return _err("Invalid host")
+    if not (1 <= port <= 65535):
+        return _err("Invalid port")
+
+    if config.SIMULATE:
+        return jsonify({"ok": True, "output": (
+            f"SSL Checker — {host}:{port} (simulated)\n\n"
+            f"Connection:         OK — TLSv1.3, TLS_AES_256_GCM_SHA384\n"
+            f"Trust:              Trusted (verified against system CA store, hostname matches)\n\n"
+            f"Subject:            CN={host}\n"
+            f"Issuer:             C=US, O=Let's Encrypt, CN=R3\n"
+            f"Valid from:         Jan  1 00:00:00 2026 GMT\n"
+            f"Valid until:        Apr  1 00:00:00 2026 GMT   (46 day(s) left)\n"
+            f"Subject Alt Names:  DNS:{host}\n"
+        )})
+
+    timeout = 8
+    try:
+        raw = _socket.create_connection((host, port), timeout=timeout)
+    except Exception as exc:
+        return jsonify({"ok": False, "output": f"Could not connect to {host}:{port} — {exc}"})
+
+    # Try a fully-verified handshake first (real CA chain + hostname check —
+    # exactly what a browser does). Only on failure do we fall back to an
+    # unverified one, purely so we can still show what the server presented
+    # and explain *why* it isn't trusted (self-signed, expired, wrong host…).
+    trusted, verify_error = True, None
+    ssock = None
+    try:
+        try:
+            ctx = _ssl.create_default_context()
+            ssock = ctx.wrap_socket(raw, server_hostname=host)
+        except _ssl.SSLCertVerificationError as exc:
+            trusted, verify_error = False, str(exc)
+            try:
+                raw.close()
+            except OSError:
+                pass
+            raw = _socket.create_connection((host, port), timeout=timeout)
+            ctx2 = _ssl.create_default_context()
+            ctx2.check_hostname = False
+            ctx2.verify_mode = _ssl.CERT_NONE
+            ssock = ctx2.wrap_socket(raw, server_hostname=host)
+        protocol = ssock.version()
+        cipher_info = ssock.cipher()
+        cipher = cipher_info[0] if cipher_info else "(unknown)"
+        cert_bin = ssock.getpeercert(binary_form=True)
+    except Exception as exc:
+        return jsonify({"ok": False, "output": f"TLS handshake with {host}:{port} failed — {exc}"})
+    finally:
+        try:
+            (ssock or raw).close()
+        except OSError:
+            pass
+
+    if not cert_bin:
+        return jsonify({"ok": False, "output": f"{host}:{port} completed a TLS handshake but presented no certificate."})
+
+    pem = _ssl.DER_cert_to_PEM_cert(cert_bin)
+    info = _parse_cert_pem(pem)
+
+    lines = [f"SSL Checker — {host}:{port}", "",
+             f"Connection:         OK — {protocol}, {cipher}"]
+    lines.append("Trust:              Trusted (verified against system CA store, hostname matches)"
+                 if trusted else f"Trust:              NOT trusted — {verify_error}")
+    lines.append("")
+    lines += _format_cert_report(info)
+    return jsonify({"ok": True, "output": "\n".join(lines)})
 
 
 if __name__ == "__main__":

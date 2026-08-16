@@ -5,3 +5,5 @@ venv/
 data/
 *.log
 .claude/
+frontend/build/node_modules/
+.DS_Store

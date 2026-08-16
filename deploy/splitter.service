@@ -1,7 +1,7 @@
 # systemd unit for Splitter — install to /etc/systemd/system/splitter.service
 # Then:  systemctl daemon-reload && systemctl enable --now splitter
 [Unit]
-Description=Splitter - L4 Stream Proxy Manager
+Description=Splitter
 After=network-online.target nginx.service
 Wants=network-online.target
 

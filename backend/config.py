@@ -42,7 +42,7 @@ MONITOR_DISK_PATH = os.environ.get("SPLITTER_MONITOR_DISK_PATH", "/")
 # <domain>.<port>-error.log, written by nginx and browsed from the Logs page.
 LOG_DIR = os.environ.get("SPLITTER_LOG_DIR", "/var/log/splitter")
 
-# Host network-settings files editable from the Interfaces page.
+# Host network-settings files editable from the Network page.
 RESOLV_CONF = os.environ.get("SPLITTER_RESOLV_CONF", "/etc/resolv.conf")
 HOSTS_FILE = os.environ.get("SPLITTER_HOSTS_FILE", "/etc/hosts")
 
@@ -100,6 +100,11 @@ LISTEN_PORT = int(os.environ.get("SPLITTER_LISTEN_PORT", "443"))
 # overridable from the UI).
 PROXY_TIMEOUT = os.environ.get("SPLITTER_PROXY_TIMEOUT", "10m")
 PROXY_CONNECT_TIMEOUT = os.environ.get("SPLITTER_PROXY_CONNECT_TIMEOUT", "5s")
+
+# DNS resolver a forward proxy uses to look up its dynamic (SNI-decided) relay
+# targets — required by nginx whenever `proxy_pass` is given a variable rather
+# than a literal address/upstream.
+FWDPROXY_RESOLVER = os.environ.get("SPLITTER_FWDPROXY_RESOLVER", "8.8.8.8 1.1.1.1")
 
 # --- Behaviour ------------------------------------------------------------
 # When a bind IP is removed, also tear it down from the interface.

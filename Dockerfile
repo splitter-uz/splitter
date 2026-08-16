@@ -1,9 +1,26 @@
-# Splitter — Layer-4 Stream Proxy Manager, containerized.
+# Splitter, containerized.
 #
 # This image bundles nginx (with the stream module) and the Splitter Flask app.
 # It is meant to run in the HOST network namespace with kernel privileges
 # (see docker-compose.yml), so the macvlan/VLAN interfaces and IPs it creates
 # are REAL and reachable on the LAN — exactly like running setup.sh on the host.
+
+# --- Frontend CSS build stage ----------------------------------------------
+# Compiles a static Tailwind stylesheet from frontend/build/. Deliberately NOT
+# the cdn.tailwindcss.com Play CDN: that script JIT-compiles every utility
+# class at runtime via eval()/new Function(), so it produces ZERO styles under
+# any CSP that blocks 'unsafe-eval' (a common browser/security-extension
+# policy) — the page still renders its DOM, just completely unstyled, which
+# looks like a blank/broken page. This stage never ships in the final image;
+# only its compiled output (frontend/static/tailwind.css) does.
+FROM node:20-alpine AS cssbuild
+WORKDIR /src/frontend/build
+COPY frontend/build/package.json frontend/build/tailwind.config.js frontend/build/input.css ./
+RUN npm install --no-audit --no-fund
+COPY frontend/templates /src/frontend/templates
+COPY frontend/static/app.js /src/frontend/static/app.js
+RUN npx tailwindcss -i ./input.css -o ../static/tailwind.css --minify
+
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -33,6 +50,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /opt/splitter
 COPY backend/ /opt/splitter/backend/
 COPY frontend/ /opt/splitter/frontend/
+# Always ship the freshly-built stylesheet, even if a locally-generated
+# frontend/static/tailwind.css happened to be present (and possibly stale) in
+# the build context above.
+COPY --from=cssbuild /src/frontend/static/tailwind.css /opt/splitter/frontend/static/tailwind.css
 COPY setup.sh /opt/splitter/setup.sh
 COPY docker/entrypoint.sh /opt/splitter/entrypoint.sh
 RUN chmod +x /opt/splitter/entrypoint.sh /opt/splitter/setup.sh

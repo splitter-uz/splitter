@@ -16,6 +16,13 @@ let SETTINGS = { subinterface_enabled: false };  // tool-wide settings
 let ME = null;        // current user {username, role}
 let EDITING = null;   // domain currently being edited, or null
 let EDIT_HAS_CERT = false;   // does the mapping being edited terminate TLS?
+// Stream, Reverse Proxy and Forward Proxy are three tabs on one "Map" nav
+// page. Stream/Proxy share the mappings table (split by waf_bound: "stream" =
+// plain L4, "proxy" = WAF-bound L7 HTTP); Forward Proxy is its own resource
+// with its own table+form, shown/hidden as a sibling panel.
+const MAP_TABS = ["stream", "proxy", "fwdproxy"];
+let MAP_MODE = "stream";        // which map tab is active
+let FORM_INTENT_MODE = "stream"; // which mode a fresh "New …" should create into
 
 const isAdmin = () => ME && ME.role === "admin";
 
@@ -24,18 +31,28 @@ const isAdmin = () => ME && ME.role === "admin";
 // address a specific mapping in the API.
 const mkey = (m) => `${m.domain}:${m.listen_port || 443}`;
 
+// A mapping is "Docker-managed" once any backend in its pool is a
+// docker_container reference (the only way one gets tagged that way is
+// through the Docker page's own container picker) — these live on the
+// Docker page's own list, not Map's Stream/Reverse Proxy tables.
+const isDockerMapping = (m) => (m.backends || []).some((b) => b && typeof b === "object" && b.docker_container);
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["mappings", "form", "users", "activity", "logs", "monitoring", "livemap", "interfaces", "docker", "access", "tools", "ssl", "backup", "waf", "firewall"];
+const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall"];
 // Pages whose data is loaded lazily on first visit (see showPage).
 const PAGE_LOADED = new Set();
 function showPage(name) {
-  if (!PAGES.includes(name)) name = "mappings";
-  history.replaceState(null, "", "#" + name);
+  // Old bookmarks/links to a bare tab hash (#stream, #proxy, #fwdproxy) land
+  // on the Map page with that tab selected, rather than 404-ing to the default.
+  let requestedTab = null;
+  if (MAP_TABS.includes(name)) { requestedTab = name; name = "map"; }
+  if (!PAGES.includes(name)) name = "map";
+  history.replaceState(null, "", "#" + (name === "map" ? MAP_MODE : name));
   PAGES.forEach((p) => {
     const sec = $("#page-" + p);
     if (sec) sec.classList.toggle("hidden", p !== name);
@@ -47,39 +64,201 @@ function showPage(name) {
   if (name === "backup") loadBackups();
   if (name === "waf") loadWaf();
   if (name === "ssl") loadSslCerts();
-  if (name === "access") loadAccessLists();
   if (name === "firewall") loadFirewall();
   if (name === "docker") loadDocker();
-  // Heavy list pages: load their data on first access (not eagerly on refresh),
-  // then keep it fresh via the pollers / the page's Refresh button.
-  if (name === "mappings" && !PAGE_LOADED.has("mappings")) {
-    PAGE_LOADED.add("mappings");
-    loadMappings();
-    startHealthPolling();
-  }
-  if (name === "users" && !PAGE_LOADED.has("users")) {
-    PAGE_LOADED.add("users");
-    loadUsers();
-  }
+  if (name === "map") startMapPage(requestedTab || MAP_MODE);
+  else stopTrafficPolling();
+  // Always reload on every visit (not just the first) — if anything ever
+  // went wrong on an earlier render, re-entering this tab should retry
+  // rather than stay stuck showing whatever (or nothing) rendered before.
+  if (name === "users") loadUsers();
   // Poll host metrics + per-interface throughput only while Monitoring is open.
   if (name === "monitoring") startMonitoring();
   else stopMonitoring();
   // Live routing map only while the Live Map page is open.
   if (name === "livemap") startLivemap();
   else stopLivemap();
-  // The Interfaces page renders its sub-interface overview.
-  if (name === "interfaces") startInterfaces();
-  else stopInterfaces();
+  // Network page (General / Sub-interfaces / Access Lists tabs) renders on entry.
+  if (name === "network") startNetwork();
+  else stopNetwork();
   // Tools page: initialise tab strip on first visit.
   if (name === "tools") startTools();
-  // Live traffic sparklines only matter while the mappings table is visible.
-  if (name === "mappings") startTrafficPolling();
-  else stopTrafficPolling();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
-  // restart the fade-in animation on the now-visible page
+  // Replay the page-enter transition: add .page-enter (opacity:0, the
+  // transition's starting point), force a reflow so the browser commits that
+  // as a real rendered frame, then remove it — .page's own resting state
+  // (opacity:1, see index.html) takes back over either by transitioning
+  // there smoothly, or — if the transition doesn't fire for any reason —
+  // immediately, since that resting state is the element's actual base
+  // style, not something only the animation could reach.
   const active = $("#page-" + name);
-  if (active) { active.classList.remove("page"); void active.offsetWidth; active.classList.add("page"); }
+  if (active) { active.classList.add("page-enter"); void active.offsetWidth; active.classList.remove("page-enter"); }
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// --- Map page: Stream / Reverse Proxy / Forward Proxy tabs ------------------
+let _mapTabsReady = false;
+
+function startMapPage(tab) {
+  if (!_mapTabsReady) {
+    _mapTabsReady = true;
+    $$(".map-tab").forEach((btn) => btn.addEventListener("click", () => showMapTab(btn.dataset.maptab)));
+  }
+  showMapTab(tab || MAP_MODE);
+}
+
+function showMapTab(name) {
+  if (!MAP_TABS.includes(name)) name = "stream";
+  MAP_MODE = name;
+  history.replaceState(null, "", "#" + name);
+  $$(".map-tab").forEach((btn) => {
+    const active = btn.dataset.maptab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  const isFwd = name === "fwdproxy";
+  $("#mappanel-mappings").classList.toggle("hidden", isFwd);
+  $("#mappanel-fwdproxy").classList.toggle("hidden", !isFwd);
+
+  if (isFwd) {
+    stopTrafficPolling();
+    if (!PAGE_LOADED.has("fwdproxy")) {
+      PAGE_LOADED.add("fwdproxy");
+      loadFwdProxies();
+    }
+  } else {
+    // Switching tabs always lands on the list — the add/edit form (if left
+    // open on the previously active tab) doesn't carry over.
+    hideMappingForm();
+    // Header text + table must follow MAP_MODE even before data has loaded
+    // (e.g. landing directly on #proxy on a cold page load).
+    applyMappingsMode();
+    if (!PAGE_LOADED.has("mappings")) {
+      PAGE_LOADED.add("mappings");
+      loadMappings();
+      startHealthPolling();
+    }
+    startTrafficPolling();
+  }
+}
+
+// The Stream/Reverse Proxy tab shows either its mapping list or its add/edit
+// form, in place — never a separate page. Editing keeps you on whichever tab
+// you were browsing (FORM_INTENT_MODE tracks where a *new* mapping should
+// land; it does not move you off the tab you clicked Edit from).
+//
+// The Docker page's "Configure mapping" flow reuses this SAME form element —
+// rather than a second copy of it — by relocating it in the DOM into the
+// Docker page's own slot instead of navigating to Map (see
+// dockerShowMappingForm()). MAPPING_FORM_SOURCE remembers which page it's
+// currently parked in, so hideMappingForm()/apply()'s post-save navigation
+// return it to the right place either way.
+let MAPPING_FORM_SOURCE = "map";   // "map" | "docker"
+
+function showMappingForm() {
+  MAPPING_FORM_SOURCE = "map";
+  const home = $("#mappanel-mappings"), form = $("#mapping-form-view");
+  if (home && form && form.parentElement !== home) home.appendChild(form);
+  const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
+  $("#mapping-list-view").classList.add("hidden");
+  $("#mapping-form-view").classList.remove("hidden");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function hideMappingForm() {
+  if (MAPPING_FORM_SOURCE === "docker") { dockerHideMappingForm(); return; }
+  $("#mapping-form-view").classList.add("hidden");
+  $("#mapping-list-view").classList.remove("hidden");
+}
+
+// Docker-page equivalent of showMappingForm()/hideMappingForm() — same shared
+// #mapping-form-view element, relocated into the Docker page's own slot so
+// selecting containers and configuring the mapping never leaves that page.
+// Which of the Docker page's two mutually-exclusive views is showing: its
+// "Managed mappings" list (default), or the mapping form (tracked separately
+// via MAPPING_FORM_SOURCE, since the form is shared with Map — "New
+// Stream"/"New Proxy" opens it directly; there's no separate container-picker
+// step, see dockerNewMapping()). dockerSyncView() is the one place that
+// decides visibility from this state, so every entry point (tab switch,
+// New button, form open/close) stays consistent instead of each toggling
+// classes on its own.
+function dockerSyncView() {
+  const isForm = MAPPING_FORM_SOURCE === "docker";
+  const hasMappings = MAPPINGS.filter(isDockerMapping)
+    .some((m) => !!m.waf_bound === (DOCKER_TAB === "proxy"));
+
+  const slot = $("#docker-form-slot"); if (slot) slot.classList.toggle("hidden", !isForm);
+  const card = $("#docker-mappings-card"); if (card) card.classList.toggle("hidden", !(!isForm && hasMappings));
+  const emptyCta = $("#docker-new-empty"); if (emptyCta) emptyCta.classList.toggle("hidden", !(!isForm && !hasMappings));
+}
+
+// "+ New Stream"/"+ New Proxy" open the real mapping form directly — no
+// standalone container-discovery step in between. Docker containers are
+// picked from within the form's own Backends section instead (see
+// renderBackendDockerGrid() / the per-row picker in addBackendRow()).
+function dockerNewMapping() {
+  FORM_INTENT_MODE = DOCKER_TAB;
+  resetForm();
+  dockerShowMappingForm();
+}
+
+function dockerShowMappingForm() {
+  MAPPING_FORM_SOURCE = "docker";
+  const slot = $("#docker-form-slot"), form = $("#mapping-form-view");
+  if (slot && form) slot.appendChild(form);
+  if (form) form.classList.remove("hidden");
+  dockerSyncView();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function dockerHideMappingForm() {
+  MAPPING_FORM_SOURCE = "map";
+  loadDocker();   // fresh container list + managed-mappings list
+}
+
+// The Docker page's own list of mappings it created — kept out of Map's
+// Stream/Reverse Proxy tables entirely (see isDockerMapping()), and further
+// split by kind (Stream vs Reverse Proxy) to match whichever tab is active,
+// same as Map's own table does for MAP_MODE. Re-rendered whenever the
+// mapping list reloads (loadMappings()), whether or not the Docker page
+// happens to be the visible one right now — same pattern renderMappings()
+// already uses for Map's own table.
+function renderDockerMappingsList() {
+  const rows = $("#docker-mapping-rows");
+  if (!rows) return;
+  const all = MAPPINGS.filter(isDockerMapping);
+  const setText = (id, v) => { const e = $("#" + id); if (e) e.textContent = v; };
+  setText("docker-tab-count-stream", all.filter((m) => !m.waf_bound).length);
+  setText("docker-tab-count-proxy", all.filter((m) => !!m.waf_bound).length);
+
+  const list = all.filter((m) => !!m.waf_bound === (DOCKER_TAB === "proxy"));
+  setText("docker-stat-total", list.length);
+  setText("docker-stat-backends", list.reduce((n, m) => n + (m.backends || []).length, 0));
+
+  rows.innerHTML = list.map((m) => {
+    const names = (m.backends || []).map((b) => (b && b.docker_container) || backendLabel(b)).join(", ");
+    const port = m.listen_port || 443;
+    return `
+      <tr class="hover:bg-slate-50">
+        <td class="px-6 py-3 font-mono">${escapeHtml(m.domain)}${m.enabled === false ? ' <span class="inline-block px-2 py-0.5 rounded-full bg-slate-200 text-slate-500 text-[10px] font-sans align-middle uppercase tracking-wide">disabled</span>' : ""}
+          <div class="text-xs text-slate-400 font-sans">:${escapeHtml(port)}</div></td>
+        <td class="px-6 py-3 font-mono text-xs text-slate-600">🐳 ${escapeHtml(names)}</td>
+        <td class="px-6 py-3 font-mono text-xs text-slate-500">${escapeHtml(m.bind_ip || "(dhcp)")}</td>
+        <td class="px-6 py-3 text-right whitespace-nowrap">
+          <button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="docker-map-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+          ${isAdmin() ? `<button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="docker-map-del text-xs font-medium text-red-600 hover:text-red-800">Delete</button>` : ""}
+        </td>
+      </tr>`;
+  }).join("");
+  rows.querySelectorAll(".docker-map-edit").forEach((b) =>
+    b.addEventListener("click", () => editMapping(b.dataset.domain, b.dataset.port)));
+  rows.querySelectorAll(".docker-map-del").forEach((b) =>
+    b.addEventListener("click", () => del(b.dataset.domain, b.dataset.port)));
+  dockerSyncView();
 }
 
 function toast(message, ok = true) {
@@ -303,8 +482,7 @@ function splitHostPort(server) {
 // ==========================================================================
 let DOCKER_CONTAINERS = [];       // containers (standalone) OR services (swarm)
 let DOCKER_SWARM = false;         // swarm-manager mode?
-const DOCKER_SEL = new Set();     // selected container/service names -> pool
-const DOCKER_PORTS = {};          // name -> chosen backend port (editable)
+let DOCKER_TAB = "stream";        // which mapping kind selected containers become
 
 // First usable port for a container (exposed port) or service (published port).
 function dockerFirstPort(name) {
@@ -328,15 +506,33 @@ async function refreshDockerNav() {
   }
 }
 
+// Which kind of mapping ("Configure mapping →") hands the selected
+// containers off as — mirrors the Map page's own Stream/Reverse Proxy tabs.
+function showDockerTab(name) {
+  if (name !== "stream" && name !== "proxy") name = "stream";
+  DOCKER_TAB = name;
+  $$(".docker-tab").forEach((btn) => {
+    const active = btn.dataset.dockertab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  const isProxy = name === "proxy";
+  const kindLabel = isProxy ? "Reverse Proxy" : "Stream";
+  const setText = (id, v) => { const e = $("#" + id); if (e) e.textContent = v; };
+  setText("docker-mappings-title", kindLabel + " mappings");
+  setText("docker-new-btn-label", "New " + kindLabel);
+  setText("docker-new-btn-empty-label", "+ New " + kindLabel);
+  setText("docker-new-empty-text", `No ${kindLabel} mappings created from Docker yet.`);
+  renderDockerMappingsList();
+}
+
 async function loadDocker() {
-  const wrap = $("#docker-containers");
   const unavail = $("#docker-unavailable");
-  const empty = $("#docker-empty");
-  DOCKER_SEL.clear();
-  Object.keys(DOCKER_PORTS).forEach((k) => delete DOCKER_PORTS[k]);
-  syncDockerPoolBar();
-  // Populate the bind-target dropdown to match the current mode.
-  await populateDockerBind();
+  renderDockerMappingsList();   // also syncs the view (list/form) via dockerSyncView()
   try {
     const st = await (await fetch("/api/docker/status")).json();
     if (!st.available) throw new Error("Docker unavailable");
@@ -348,166 +544,124 @@ async function loadDocker() {
     if (!j.ok) throw new Error(j.error || "Docker query failed");
     unavail.classList.add("hidden");
     DOCKER_CONTAINERS = DOCKER_SWARM ? (j.services || []) : (j.containers || []);
+    _dockerListLoaded = true;
     const hdr = $("#docker-mode-note");
     if (hdr) hdr.textContent = DOCKER_SWARM
       ? "Swarm manager — showing services (routing-mesh published port; the swarm load-balances replicas)."
       : "Standalone Docker — showing running containers.";
     const c = $("#nav-docker-count"); if (c) c.textContent = DOCKER_CONTAINERS.length;
-    empty.classList.toggle("hidden", DOCKER_CONTAINERS.length > 0);
-    renderDockerCards();
   } catch (e) {
     DOCKER_CONTAINERS = [];
-    wrap.innerHTML = "";
-    empty.classList.add("hidden");
     unavail.classList.remove("hidden");
   }
 }
 
-async function populateDockerBind() {
-  const sel = $("#docker-bind");
-  if (!sel) return;
-  let opts = "";
+// Lazily populate DOCKER_CONTAINERS for the per-backend-row Docker picker
+// (see addBackendRow()) when it's opened from a context that never visited
+// the Docker page — the mapping form is shared with Map, which doesn't fetch
+// this on its own. A no-op once already loaded; doesn't touch any
+// Docker-page-specific UI (unlike loadDocker()), since it may run from Map.
+let _dockerListLoaded = false;
+async function ensureDockerContainersLoaded() {
+  if (_dockerListLoaded) return;
   try {
-    if (SETTINGS.subinterface_enabled) {
-      const j = await (await fetch("/api/subinterfaces")).json();
-      (j.subinterfaces || []).forEach((s) => {
-        opts += `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} · ${escapeHtml(s.bind_ip || "")}</option>`;
-      });
-    } else {
-      const j = await (await fetch("/api/interfaces")).json();
-      (j.interfaces || []).forEach((i) => {
-        const ip = (i.addresses && i.addresses[0] && i.addresses[0].ip) || "";
-        if (ip) opts += `<option value="${escapeHtml(i.name)}">${escapeHtml(i.name)} · ${escapeHtml(ip)}</option>`;
-      });
-    }
+    const st = await (await fetch("/api/docker/status")).json();
+    if (!st.available) { DOCKER_CONTAINERS = []; return; }
+    DOCKER_SWARM = !!st.swarm;
+    const url = DOCKER_SWARM ? "/api/docker/services" : "/api/docker/containers";
+    const j = await (await fetch(url)).json();
+    if (j.ok) DOCKER_CONTAINERS = DOCKER_SWARM ? (j.services || []) : (j.containers || []);
+    _dockerListLoaded = true;
   } catch (_e) { /* leave empty */ }
-  sel.innerHTML = opts || `<option value="">(no bind target found)</option>`;
 }
 
-function renderDockerCards() {
-  const wrap = $("#docker-containers");
-  wrap.innerHTML = DOCKER_CONTAINERS.map((c) => {
-    const sel = DOCKER_SEL.has(c.name);
-    // Port chips: container exposed ports, or service published ports.
-    const portVals = DOCKER_SWARM
-      ? (c.ports || []).map((p) => p.published)
-      : (c.ports || []);
-    const chips = portVals.map((p) =>
-      `<button type="button" data-port="${p}" class="docker-port text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-slate-600">${p}</button>`).join(" ")
-      || `<span class="text-xs text-slate-400">${DOCKER_SWARM ? "no published port" : "none exposed"}</span>`;
-    // Selectable when: container running, or service has a reachable published port.
-    const ok = DOCKER_SWARM ? !!c.reachable : (c.state === "running");
-    let meta, badge;
-    if (DOCKER_SWARM) {
-      const rep = c.replicas === "global" ? "global" : (c.replicas != null ? c.replicas + " replica(s)" : "");
-      meta = `<div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">swarm service</span> ${escapeHtml(rep)}${c.reachable ? "" : ' · <span class="text-amber-600">unreachable (no published port)</span>'}</div>`;
-      badge = `<span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">service</span>`;
-    } else {
-      const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
-      const net = (c.ips && c.ips[0] && c.ips[0].network) || "";
-      meta = `<div class="mt-2 text-xs text-slate-600"><span class="text-slate-400">IP</span> <span class="font-mono">${escapeHtml(ip)}</span> ${net ? `<span class="text-slate-400">· ${escapeHtml(net)}</span>` : ""}</div>`;
-      badge = `<span class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${ok ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}">${escapeHtml(c.state || "?")}</span>`;
-    }
+// Inline "Add from Docker" grid, embedded directly in the mapping form's
+// Backends section (toggled by #add-backend-docker). Replaces the old
+// standalone container-discovery step — checking a card here immediately
+// adds/removes a backend row in the pool below, so Docker containers and
+// manually-typed host:port rows live side by side in the same list. Which
+// containers are "selected" is derived straight from the current backend
+// rows (dataset.dockerContainer) rather than tracked separately, so it can
+// never drift from what's actually in the pool.
+let BACKEND_GRID_OPEN = false;
+
+function backendPoolDockerNames() {
+  return new Set($$("#backends .be-row").map((r) => r.dataset.dockerContainer).filter(Boolean));
+}
+
+function toggleBackendDockerGrid() {
+  BACKEND_GRID_OPEN = !BACKEND_GRID_OPEN;
+  const wrap = $("#backend-docker-grid-wrap");
+  if (wrap) wrap.classList.toggle("hidden", !BACKEND_GRID_OPEN);
+  if (BACKEND_GRID_OPEN) renderBackendDockerGrid();
+}
+
+function closeBackendDockerGrid() {
+  BACKEND_GRID_OPEN = false;
+  const wrap = $("#backend-docker-grid-wrap");
+  if (wrap) wrap.classList.add("hidden");
+}
+
+// A brand-new mapping's form starts with one blank manual row (see
+// resetForm()) so there's always something to fill in by hand — but once
+// real backends are picked from the Docker grid, that stray empty row would
+// otherwise get submitted alongside them. Drop it (but never the pool's last
+// row, and never a row someone actually typed into).
+function pruneEmptyManualRow() {
+  const rows = $$("#backends .be-row");
+  if (rows.length <= 1) return;
+  rows.forEach((r) => {
+    if (r.dataset.dockerContainer) return;
+    const host = r.querySelector(".be-host"), port = r.querySelector(".be-port");
+    if (host && !host.value.trim() && port && !port.value.trim()) r.remove();
+  });
+  syncLbAuto();
+  syncFailoverUI();
+}
+
+async function renderBackendDockerGrid() {
+  const grid = $("#backend-docker-grid"), emptyEl = $("#backend-docker-grid-empty");
+  if (!grid) return;
+  grid.innerHTML = '<div class="text-xs text-slate-400 px-1 py-2 col-span-full">Loading…</div>';
+  await ensureDockerContainersLoaded();
+  const selectable = DOCKER_CONTAINERS.filter((c) => DOCKER_SWARM ? !!c.reachable : c.state === "running");
+  if (emptyEl) emptyEl.classList.toggle("hidden", selectable.length > 0);
+  const selected = backendPoolDockerNames();
+  grid.innerHTML = selectable.map((c) => {
+    const sel = selected.has(c.name);
+    const portVals = DOCKER_SWARM ? (c.ports || []).map((p) => p.published) : (c.ports || []);
+    const portLabel = portVals.length ? portVals.join(", ") : (DOCKER_SWARM ? "no published port" : "none exposed");
+    const meta = DOCKER_SWARM
+      ? (c.replicas === "global" ? "global" : (c.replicas != null ? c.replicas + " replica(s)" : ""))
+      : ((c.ips && c.ips[0] && c.ips[0].ip) || "");
     return `
-      <div class="card bg-white/80 rounded-2xl border ${sel ? "border-emerald-400 ring-1 ring-emerald-300" : "border-slate-200/70"} shadow-sm p-4" data-cname="${escapeHtml(c.name)}">
-        <div class="flex items-start justify-between gap-2">
-          <label class="flex items-center gap-2 min-w-0">
-            <input type="checkbox" class="docker-check accent-emerald-600" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""} ${ok ? "" : "disabled"}>
-            <span class="font-semibold text-slate-800 truncate">${escapeHtml(c.name)}</span>
-          </label>
-          ${badge}
-        </div>
-        <div class="mt-2 text-xs text-slate-500 truncate" title="${escapeHtml(c.image || "")}">${escapeHtml(c.image || "")}</div>
-        ${meta}
-        <div class="mt-1 text-xs text-slate-600 flex items-center gap-1 flex-wrap"><span class="text-slate-400">ports</span> ${chips}</div>
-      </div>`;
+      <label class="flex items-start gap-2 rounded-lg border ${sel ? "border-sky-400 bg-white ring-1 ring-sky-300" : "border-slate-200 bg-white"} px-3 py-2 cursor-pointer">
+        <input type="checkbox" class="backend-docker-check accent-sky-600 mt-0.5" data-name="${escapeHtml(c.name)}" ${sel ? "checked" : ""}>
+        <span class="min-w-0 flex-1">
+          <span class="block text-sm font-medium text-slate-800 truncate">${escapeHtml(c.name)}</span>
+          <span class="block text-xs text-slate-400 truncate" title="${escapeHtml(c.image || "")}">${escapeHtml(c.image || "")}${meta ? " · " + escapeHtml(meta) : ""}</span>
+          <span class="block text-xs text-slate-500 font-mono truncate">ports: ${escapeHtml(String(portLabel))}</span>
+        </span>
+      </label>`;
   }).join("");
-  // Wire checkboxes: selecting seeds a default port from the container's first
-  // exposed port; a port chip sets that container's backend port.
-  $$("#docker-containers .docker-check").forEach((cb) => cb.addEventListener("change", () => {
+  $$("#backend-docker-grid .backend-docker-check").forEach((cb) => cb.addEventListener("change", () => {
     const name = cb.dataset.name;
-    if (cb.checked) { DOCKER_SEL.add(name); if (!DOCKER_PORTS[name]) DOCKER_PORTS[name] = dockerFirstPort(name); }
-    else { DOCKER_SEL.delete(name); delete DOCKER_PORTS[name]; }
-    renderDockerCards();
-    syncDockerPoolBar();
+    if (cb.checked) {
+      if (!backendPoolDockerNames().has(name)) {
+        addBackendRow({ docker_container: name, docker_port: dockerFirstPort(name) });
+        pruneEmptyManualRow();
+      }
+    } else {
+      const row = $$("#backends .be-row").find((r) => r.dataset.dockerContainer === name);
+      if (row) {
+        if ($$("#backends .be-row").length > 1) row.remove();
+        else { delete row.dataset.dockerContainer; setBackendRowDockerState(row, null); }
+        syncLbAuto();
+        syncFailoverUI();
+      }
+    }
+    renderBackendDockerGrid();
   }));
-  $$("#docker-containers .docker-port").forEach((b) => b.addEventListener("click", () => {
-    const name = b.closest("[data-cname]").dataset.cname;
-    DOCKER_SEL.add(name);
-    DOCKER_PORTS[name] = b.dataset.port;
-    renderDockerCards();
-    syncDockerPoolBar();
-  }));
-}
-
-// One editable backend row per selected container (name + IP + its own port).
-function renderDockerPoolList() {
-  const list = $("#docker-pool-list");
-  if (!list) return;
-  const names = [...DOCKER_SEL];
-  if (names.length === 0) { list.innerHTML = '<div class="text-xs text-slate-400">Select containers below to add them as backends.</div>'; return; }
-  list.innerHTML = names.map((name) => {
-    const c = DOCKER_CONTAINERS.find((x) => x.name === name) || {};
-    const ip = (c.ips && c.ips[0] && c.ips[0].ip) || "—";
-    return `
-      <div class="be-docker-row flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2" data-name="${escapeHtml(name)}">
-        <span class="font-semibold text-sm text-slate-800 truncate flex-1">${escapeHtml(name)}</span>
-        <span class="text-xs text-slate-400 font-mono hidden sm:inline">${escapeHtml(ip)}</span>
-        <span class="text-slate-300">:</span>
-        <input type="number" min="1" max="65535" value="${escapeHtml(String(DOCKER_PORTS[name] || ""))}" placeholder="port"
-               class="be-docker-port w-24 rounded-lg border border-slate-200 px-2 py-1 text-sm" data-name="${escapeHtml(name)}">
-        <button type="button" class="be-docker-del text-slate-400 hover:text-red-500 text-lg leading-none px-1" data-name="${escapeHtml(name)}" title="Remove">&times;</button>
-      </div>`;
-  }).join("");
-  $$("#docker-pool-list .be-docker-port").forEach((inp) => inp.addEventListener("input", () => {
-    DOCKER_PORTS[inp.dataset.name] = inp.value.trim();
-  }));
-  $$("#docker-pool-list .be-docker-del").forEach((btn) => btn.addEventListener("click", () => {
-    DOCKER_SEL.delete(btn.dataset.name); delete DOCKER_PORTS[btn.dataset.name];
-    renderDockerCards(); syncDockerPoolBar();
-  }));
-}
-
-function syncDockerPoolBar() {
-  const bar = $("#docker-pool-bar");
-  if (bar) bar.classList.toggle("hidden", DOCKER_SEL.size === 0);
-  const n = $("#docker-pool-count"); if (n) n.textContent = DOCKER_SEL.size;
-  renderDockerPoolList();
-}
-
-async function dockerCreateMapping(e) {
-  e.preventDefault();
-  if (DOCKER_SEL.size === 0) { toast("Select at least one container first.", false); return; }
-  const f = e.target;
-  const domain = f.domain.value.trim();
-  const bind = f.bind.value;
-  if (!domain) { toast("Enter a domain.", false); return; }
-  if (!bind) { toast("No bind target available.", false); return; }
-  const missing = [...DOCKER_SEL].filter((n) => !String(DOCKER_PORTS[n] || "").trim());
-  if (missing.length) { toast(`Set a port for: ${missing.join(", ")}`, false); return; }
-  const backends = [...DOCKER_SEL].map((name) => ({
-    docker_container: name,
-    docker_port: Number(DOCKER_PORTS[name]),
-  }));
-  const fd = new FormData();
-  fd.append("domain", domain);
-  fd.append("listen_port", f.listen_port.value || "443");
-  fd.append("transport", (f.transport && f.transport.value) || "tcp");
-  fd.append("ssl_mode", "none");
-  fd.append("lb_method", "round_robin");
-  fd.append(SETTINGS.subinterface_enabled ? "subiface" : "interface", bind);
-  fd.append("backends_json", JSON.stringify(backends));
-  try {
-    const r = await fetch("/api/mappings", { method: "POST", body: fd });
-    const j = await r.json();
-    if (!r.ok || !j.ok) { toast(j.error || "Create failed.", false); return; }
-    toast(`Mapping ${domain} created from ${backends.length} container(s).`);
-    DOCKER_SEL.clear();
-    await loadMappings();
-    showPage("mappings");
-  } catch (err) {
-    toast(String(err.message || err), false);
-  }
 }
 
 function addBackendRow(b) {
@@ -522,19 +676,24 @@ function addBackendRow(b) {
   const wrap = document.createElement("div");
   wrap.className = "be-row rounded-lg border border-slate-200 p-2";
   if (isDocker) wrap.dataset.dockerContainer = b.docker_container;
+  const dockerToggleCls = isDocker
+    ? "be-docker-toggle px-2 rounded-md bg-sky-100 text-sky-600"
+    : "be-docker-toggle px-2 rounded-md text-slate-400 hover:text-sky-600";
   wrap.innerHTML = `
     <div class="flex gap-2 items-center">
-      ${isDocker ? '<span class="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-100 text-sky-700" title="Docker container backend — Splitter stores the name and keeps its IP current on restart">🐳 docker</span>' : ''}
-      <div class="be-hostport flex flex-1 items-stretch rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-emerald-500">
-        <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent ${isDocker ? "text-sky-700" : ""}"
-          placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" ${isDocker ? "readonly title='Docker container name (managed on the Docker page)'" : ""} />
-        <span class="w-px bg-slate-300 shrink-0"></span>
+      <div class="be-hostport flex flex-1 items-stretch rounded-lg border overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-emerald-500 ${isDocker ? "border-sky-200 bg-sky-50" : "border-slate-300 bg-white"}">
+        <span class="be-host-icon shrink-0 flex items-center pl-2.5 text-sm ${isDocker ? "" : "hidden"}">🐳</span>
+        <input class="be-host flex-1 min-w-0 px-3 py-2 text-sm font-mono outline-none bg-transparent ${isDocker ? "text-sky-700 cursor-pointer" : ""}"
+          placeholder="192.168.10.10 or host.example.com" value="${escapeHtml(host)}" ${isDocker ? "readonly title='Docker container — click to change'" : ""} />
+        <span class="be-host-sep w-px shrink-0 ${isDocker ? "bg-sky-200" : "bg-slate-300"}"></span>
         <input class="be-port w-20 shrink-0 px-3 py-2 text-sm font-mono outline-none bg-transparent text-center"
           placeholder="443" inputmode="numeric" value="${escapeHtml(port)}" />
       </div>
+      <button type="button" class="${dockerToggleCls}" title="Pick a Docker container">🐳</button>
       <button type="button" class="be-cog px-2 text-slate-400 hover:text-slate-700" title="Per-server options">⚙</button>
       <button type="button" class="rm-backend px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
     </div>
+    <div class="be-docker-list hidden mt-2 rounded-lg border border-slate-200 bg-slate-50 p-1.5 max-h-40 overflow-y-auto space-y-0.5"></div>
     <div class="be-prio-row hidden mt-2 flex items-center gap-2">
       <label class="text-[11px] font-medium text-slate-500 shrink-0">Failover role</label>
       <select class="be-prio flex-1 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500"
@@ -563,9 +722,98 @@ function addBackendRow(b) {
   wrap.querySelector(".be-prio").addEventListener("change", renderFailoverPreview);
   wrap.querySelector(".be-host").addEventListener("input", renderFailoverPreview);
   wrap.querySelector(".be-port").addEventListener("input", renderFailoverPreview);
+  // Docker container picker — lets ANY row (not just ones already Docker-
+  // backed) pick a container as its backend, so adding more containers to a
+  // pool doesn't require going back to the Docker page. The 🐳 toggle button
+  // and clicking the selector field itself (once it's Docker-bound and
+  // read-only) both open the same panel.
+  const toggleDockerPicker = async () => {
+    const panel = wrap.querySelector(".be-docker-list");
+    const opening = panel.classList.contains("hidden");
+    panel.classList.toggle("hidden");
+    if (opening) {
+      panel.innerHTML = '<div class="text-xs text-slate-400 px-2 py-1">Loading…</div>';
+      await ensureDockerContainersLoaded();
+      renderBackendDockerPicker(wrap);
+    }
+  };
+  wrap.querySelector(".be-docker-toggle").addEventListener("click", toggleDockerPicker);
+  wrap.querySelector(".be-host").addEventListener("click", (e) => {
+    if (e.target.readOnly) toggleDockerPicker();
+  });
   $("#backends").appendChild(wrap);
   syncLbAuto();   // auto-open LB settings once there are 2+ backends
   syncFailoverUI();   // reveal the failover role picker if failover is on
+}
+
+// Restyles one backend row's selector field + toggle button between
+// "Docker container" and "manual address" mode — the single place that
+// applies the visual state addBackendRow()'s template computes inline for a
+// freshly-created row, so picking/detaching via the picker stays visually
+// identical to a row that started out Docker-bound. Pass a container name to
+// lock the row to it (optionally with its port); pass null to detach.
+function setBackendRowDockerState(wrap, name, port) {
+  const hostInput = wrap.querySelector(".be-host");
+  const portInput = wrap.querySelector(".be-port");
+  const hostport = wrap.querySelector(".be-hostport");
+  const icon = wrap.querySelector(".be-host-icon");
+  const sep = wrap.querySelector(".be-host-sep");
+  const toggle = wrap.querySelector(".be-docker-toggle");
+  const isDocker = name != null;
+  hostInput.value = isDocker ? name : "";
+  hostInput.readOnly = isDocker;
+  hostInput.classList.toggle("text-sky-700", isDocker);
+  hostInput.classList.toggle("cursor-pointer", isDocker);
+  if (isDocker) hostInput.title = "Docker container — click to change";
+  else hostInput.removeAttribute("title");
+  if (port) portInput.value = port;
+  icon.classList.toggle("hidden", !isDocker);
+  hostport.classList.toggle("border-sky-200", isDocker);
+  hostport.classList.toggle("bg-sky-50", isDocker);
+  hostport.classList.toggle("border-slate-300", !isDocker);
+  hostport.classList.toggle("bg-white", !isDocker);
+  sep.classList.toggle("bg-sky-200", isDocker);
+  sep.classList.toggle("bg-slate-300", !isDocker);
+  toggle.classList.toggle("bg-sky-100", isDocker);
+  toggle.classList.toggle("text-sky-600", isDocker);
+  toggle.classList.toggle("text-slate-400", !isDocker);
+}
+
+// Populates one backend row's expanded Docker container list (see
+// addBackendRow()'s .be-docker-toggle) and wires each option to convert
+// that row into a Docker-backed one — or, for a row that's already
+// Docker-backed, detach it back to a plain manual host:port.
+function renderBackendDockerPicker(wrap) {
+  const panel = wrap.querySelector(".be-docker-list");
+  if (!panel) return;
+  const selectable = DOCKER_CONTAINERS.filter((c) =>
+    DOCKER_SWARM ? !!c.reachable : c.state === "running");
+  const detachRow = wrap.dataset.dockerContainer
+    ? `<button type="button" class="be-docker-opt w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-white text-left text-slate-500" data-detach="1">
+         <span>✕ Use a manual address instead</span></button>` : "";
+  const options = selectable.length
+    ? selectable.map((c) => `
+        <button type="button" data-name="${escapeHtml(c.name)}" data-port="${escapeHtml(String(dockerFirstPort(c.name)))}"
+          class="be-docker-opt w-full flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-white text-left">
+          <span class="font-mono font-medium text-slate-700 truncate">${escapeHtml(c.name)}</span>
+          <span class="text-slate-400 truncate">${escapeHtml(c.image || "")}</span>
+        </button>`).join("")
+    : '<div class="text-xs text-slate-400 px-2 py-1">No running containers found.</div>';
+  panel.innerHTML = detachRow + options;
+  panel.querySelectorAll(".be-docker-opt").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.detach) {
+        delete wrap.dataset.dockerContainer;
+        setBackendRowDockerState(wrap, null);
+      } else {
+        const { name, port } = btn.dataset;
+        wrap.dataset.dockerContainer = name;
+        setBackendRowDockerState(wrap, name, port);
+      }
+      panel.classList.add("hidden");
+      renderFailoverPreview();
+    });
+  });
 }
 
 // Rebuild every backend's "Failover role" dropdown. Options run Tier 1 (Primary)
@@ -639,6 +887,18 @@ function syncHealthUI() {
   if (sec) sec.classList.toggle("hidden", !on);
 }
 
+// HSTS only makes sense once Force HTTPS is on (mirrors nginx-proxy-manager's
+// own dependency: HSTS is only emitted when ssl_forced is also set), and the
+// subdomains flag only matters once HSTS itself is on — nest both reveals.
+function syncHstsUI() {
+  const forced = $("#ssl_forced") && $("#ssl_forced").checked;
+  const block = $("#hsts-block");
+  if (block) block.classList.toggle("hidden", !forced);
+  const hstsOn = forced && $("#hsts_enabled") && $("#hsts_enabled").checked;
+  const sub = $("#hsts-subdomains-row");
+  if (sub) sub.classList.toggle("hidden", !hstsOn);
+}
+
 function serializeBackends() {
   // Priority tiers only mean something under failover; skip them otherwise so a
   // plain load-balanced pool doesn't accumulate stray priority=1 on every server.
@@ -668,6 +928,30 @@ function serializeBackends() {
     }
     return e;
   }).filter((e) => e.server || e.docker_container);
+}
+
+// --- custom locations (Reverse Proxy / L7 only) -----------------------------
+function addLocationRow(loc) {
+  loc = loc || {};
+  const wrap = document.createElement("div");
+  wrap.className = "loc-row rounded-lg border border-slate-200 p-2 space-y-1.5";
+  wrap.innerHTML = `
+    <div class="flex gap-2 items-center">
+      <input class="loc-path flex-1 min-w-0 rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+        placeholder="/api" value="${escapeHtml(loc.path || "")}" />
+      <button type="button" class="rm-location px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
+    </div>
+    <textarea class="loc-config w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" rows="3"
+      placeholder="proxy_set_header X-Api-Key mykey;">${escapeHtml(loc.config || "")}</textarea>`;
+  wrap.querySelector(".rm-location").addEventListener("click", () => wrap.remove());
+  $("#locations").appendChild(wrap);
+}
+
+function serializeLocations() {
+  return $$("#locations .loc-row").map((row) => ({
+    path: row.querySelector(".loc-path").value.trim(),
+    config: row.querySelector(".loc-config").value,
+  })).filter((l) => l.path && l.config.trim());
 }
 
 // --- load-balancing method panels -----------------------------------------
@@ -968,6 +1252,7 @@ async function loadMappings() {
   updateStats(MAPPINGS);
   loadSslCount();   // TLS Certs stat comes from the cert registry, not mappings
   renderMappings();
+  renderDockerMappingsList();
   if (livemapVisible()) renderRouteMap();   // keep the routing map in sync
   loadHealth();   // fill in the health column (non-blocking)
 }
@@ -989,12 +1274,46 @@ function animateCount(el, to) {
 }
 
 function updateStats(list) {
-  const backends = list.reduce((n, m) =>
+  // Docker-managed mappings live entirely on the Docker page's own list now —
+  // never counted or shown in Map's Stream/Reverse Proxy tables.
+  list = list.filter((m) => !isDockerMapping(m));
+  const modeList = list.filter((m) => !!m.waf_bound === (MAP_MODE === "proxy"));
+  const backends = modeList.reduce((n, m) =>
     n + (m.backends || (m.backend ? [m.backend] : [])).length, 0);
   const set = (id, v) => { const e = $("#" + id); if (e) animateCount(e, v); };
-  set("stat-total", list.length);
+  set("stat-total", modeList.length);
   set("stat-backends", backends);
-  set("nav-count", list.length);
+  set("maptab-count-stream", list.filter((m) => !m.waf_bound).length);
+  set("maptab-count-proxy", list.filter((m) => !!m.waf_bound).length);
+  updateMapNavBadge();
+}
+
+// The sidebar "Map" badge is the combined count across all three tabs —
+// refreshed whenever either the mappings list or the forward-proxy list
+// changes. Excludes Docker-managed mappings, which aren't part of Map anymore.
+function updateMapNavBadge() {
+  const e = $("#nav-count-map");
+  if (e) animateCount(e, MAPPINGS.filter((m) => !isDockerMapping(m)).length + FWDPROXIES.length);
+}
+
+// Re-apply the Stream/Proxy header text + button labels for the current
+// MAP_MODE, and re-render the (mode-filtered) table. Called on nav switch and
+// whenever the underlying data changes.
+function applyMappingsMode() {
+  const isProxy = MAP_MODE === "proxy";
+  const title = $("#mappings-title");
+  if (title) title.textContent = isProxy ? "Reverse Proxy" : "Stream";
+  const sub = $("#mappings-subtitle");
+  if (sub) sub.textContent = isProxy
+    ? "Layer-7 HTTP reverse proxies with ModSecurity/WAF inspection."
+    : "Layer-4 stream proxies provisioned on this host.";
+  const newLabel = $("#mappings-new-label");
+  if (newLabel) newLabel.textContent = isProxy ? "New Proxy" : "New Stream";
+  const emptyText = $("#mappings-empty-text");
+  if (emptyText) emptyText.textContent = isProxy ? "No proxy mappings yet." : "No stream mappings yet.";
+  MAP_PAGE = 1;
+  updateStats(MAPPINGS);
+  renderMappings();
 }
 
 // The TLS Certs stat reflects the managed certificate registry (the SSL page),
@@ -1043,7 +1362,8 @@ let MAP_PAGE = 1;
 
 function renderMappings() {
   const q = ($("#search")?.value || "").trim().toLowerCase();
-  const full = q ? MAPPINGS.filter((m) => (m.domain || "").toLowerCase().includes(q)) : MAPPINGS;
+  const modeList = MAPPINGS.filter((m) => !isDockerMapping(m) && !!m.waf_bound === (MAP_MODE === "proxy"));
+  const full = q ? modeList.filter((m) => (m.domain || "").toLowerCase().includes(q)) : modeList;
   // Clamp the current page to the available range (e.g. after deletes/filtering).
   const pages = Math.max(1, Math.ceil(full.length / MAP_PAGE_SIZE));
   if (MAP_PAGE > pages) MAP_PAGE = pages;
@@ -1213,13 +1533,60 @@ function renderSteps(steps) {
 function formData() {
   const fd = new FormData($("#map-form"));
   fd.set("backends_json", JSON.stringify(serializeBackends()));
+  fd.set("locations_json", JSON.stringify(serializeLocations()));
   return fd;
+}
+
+// A fresh "New Proxy" save should land in the WAF-bound Proxy list, not Stream.
+// The mapping API itself has no notion of "proxy" — binding is a separate call
+// (see /api/waf/bind) — so chain it right after a successful create.
+async function tryBindWaf(domain) {
+  try {
+    const fd = new FormData();
+    fd.append("domain", domain);
+    const j = await (await fetch("/api/waf/bind", { method: "POST", body: fd })).json();
+    if (j.ok) { toast(`${domain} is live as a Proxy (WAF-bound).`); return true; }
+    toast(`${domain} was saved as a Stream mapping — could not switch to Proxy: ${j.error || "bind failed"}`, false);
+    return false;
+  } catch (err) {
+    toast(`${domain} was saved as a Stream mapping — could not switch to Proxy: ${err.message || err}`, false);
+    return false;
+  }
+}
+
+// Mirrors the backend's nm.waf_eligible() so a "New Proxy" save can't run
+// straight into the same rejection AFTER already creating the mapping — the
+// default fresh-form state (protocol "https" @ 443, no cert picked yet) is
+// TLS passthrough, which is exactly the case that's never eligible, so
+// without this check a first-time "Add Proxy" click silently lands in the
+// Stream list with only an easy-to-miss toast explaining why.
+function proxyEligibilityError() {
+  if (currentTransport() === "udp") {
+    return "UDP is Layer-4 only — a WAF can't inspect it. Switch Transport to TCP, or save this as a Stream mapping instead.";
+  }
+  const hasCert = $("#ssl_mode").value !== "none";
+  const protocol = $("#protocol").value;
+  if (hasCert || protocol === "http") return null;
+  if (protocol === "https") {
+    return "This is set up as TLS passthrough (HTTPS with no certificate selected), which a WAF can't inspect. " +
+      "Pick a certificate on the SSL tab to terminate TLS here, or set Protocol to HTTP.";
+  }
+  return "Reverse Proxy needs HTTP, or HTTPS with TLS terminated here. " +
+    "Set Protocol to HTTP, or pick a certificate on the SSL tab.";
 }
 
 async function apply(e) {
   e.preventDefault();
   const btn = $("#apply-btn");
   const editing = EDITING;
+  const wantsProxy = !editing && FORM_INTENT_MODE === "proxy";
+  if (wantsProxy) {
+    const problem = proxyEligibilityError();
+    if (problem) {
+      showStatus("error", "Can't save as a Reverse Proxy yet", problem);
+      return;
+    }
+  }
   setBtnLoading(btn, true, editing ? "Updating…" : "Applying…");
   showStatus("loading", editing ? "Updating mapping…" : "Applying mapping…",
              "Provisioning the bind IP, writing the Nginx config and reloading.");
@@ -1232,8 +1599,15 @@ async function apply(e) {
       showStatus("success", editing ? "Mapping updated" : "Mapping applied",
                  `${j.mapping.domain} is live.`);
       resetForm();
+      const fromDocker = MAPPING_FORM_SOURCE === "docker";
+      let finalMode = editing ? FORM_INTENT_MODE : "stream";
+      if (wantsProxy) finalMode = (await tryBindWaf(j.mapping.domain)) ? "proxy" : "stream";
       await loadMappings();
-      showPage("mappings");
+      // A mapping created from the Docker page stays there — Map's Stream/
+      // Reverse Proxy tabs are just where it shows up afterward, not where
+      // this flow navigates to.
+      if (fromDocker) dockerHideMappingForm();
+      else showPage(finalMode);
     } else {
       showStatus("error", "Couldn't apply mapping",
                  j.error || "The host rejected the request. Check the step log for the failing command.");
@@ -1413,19 +1787,43 @@ function applyTransportRules() {
   updateSniAvailability();
 }
 
+// A plain L4 Stream mapping is rendered by nginx_manager.py's render_conf(),
+// which never reads websocket_upgrade/http2/proxy_http11/locations/
+// advanced_config/ssl_forced/hsts_* — those only take effect through
+// render_http_conf(), which only runs for a Reverse-Proxy (waf_bound)
+// mapping. Hiding them for Stream keeps the two panels from looking
+// identical, and stops anyone filling in a field that's silently a no-op.
+function applyIntentModeUI() {
+  const isProxy = FORM_INTENT_MODE === "proxy";
+  const l7 = $("#l7-advanced-details");
+  if (l7) l7.classList.toggle("hidden", !isProxy);
+  const forceHttpsRow = $("#ssl_forced") && $("#ssl_forced").closest("label");
+  if (forceHttpsRow) forceHttpsRow.classList.toggle("hidden", !isProxy);
+  if (!isProxy) {
+    const hstsBlock = $("#hsts-block");
+    if (hstsBlock) hstsBlock.classList.add("hidden");
+  } else {
+    syncHstsUI();
+  }
+}
+
 function resetForm() {
   EDITING = null;
   EDIT_HAS_CERT = false;
+  closeBackendDockerGrid();
   $("#map-form").reset();
   setVal("orig_domain", "");   // clear edit identity so a save is treated as a create
   setVal("orig_port", "");
   $("#backends").innerHTML = "";
   addBackendRow();   // empty — placeholder shows the example address (also syncs LB)
+  $("#locations").innerHTML = "";
   selectSsl("none");
   onMethodChange();
   onLbChange();
   toggleRateSection();   // collapse rate-limit panel (reset() unchecked the toggle)
   syncHealthUI();        // collapse health-check panel
+  syncHstsUI();          // collapse force-SSL/HSTS panel (reset() unchecked the toggles)
+  applyIntentModeUI();   // hide L7-only fields (locations, WS, HTTP/2, Force-HTTPS…) for Stream
   $("#bind_prefix").value = CFG.bind_prefix || "24";
   setTransport("tcp");
   filterProtocols();
@@ -1435,8 +1833,8 @@ function resetForm() {
   $("#domain").classList.remove("bg-slate-100");
   $("#edit-banner").classList.add("hidden");
   $("#apply-btn").textContent = "Save / Apply";
-  const ft = $("#form-title"); if (ft) ft.textContent = "Add Mapping";
-  const fl = $("#nav-form-label"); if (fl) fl.textContent = "Add Mapping";
+  const addTitle = FORM_INTENT_MODE === "proxy" ? "Add Proxy" : "Add Stream";
+  const ft = $("#form-title"); if (ft) ft.textContent = addTitle;
 }
 
 // --- edit an existing mapping ---------------------------------------------
@@ -1447,7 +1845,9 @@ function editMapping(domain, port) {
   const m = MAPPINGS.find((x) => x.domain === domain &&
     (p == null || String(x.listen_port || 443) === p));
   if (!m) return;
+  closeBackendDockerGrid();
   EDITING = mkey(m);
+  FORM_INTENT_MODE = m.waf_bound ? "proxy" : "stream";   // return here on save
   // Remember the exact mapping being edited so the backend overwrites it (and
   // detects a rename if the domain/port changes on save).
   setVal("orig_domain", m.domain);
@@ -1533,6 +1933,24 @@ function editMapping(domain, port) {
 
   $("#sni_guard").checked = !!m.sni_guard;
 
+  // Reverse Proxy (L7) options — websocket/HTTP2/force-SSL/HSTS/custom locations/
+  // advanced config. Stored on every mapping (preserved across Stream <-> Reverse
+  // Proxy toggles) but only rendered once the mapping is WAF-bound.
+  $("#websocket_upgrade").checked = !!m.websocket_upgrade;
+  $("#http2").checked = m.http2 !== false;   // absent (pre-feature mapping) => on
+  $("#proxy_http11").checked = !!m.proxy_http11;
+  $("#ssl_forced").checked = !!m.ssl_forced;
+  $("#hsts_enabled").checked = !!m.hsts_enabled;
+  $("#hsts_subdomains").checked = !!m.hsts_subdomains;
+  syncHstsUI();
+  applyIntentModeUI();   // hide L7-only fields entirely for a Stream mapping
+  setVal("advanced_config", m.advanced_config || "");
+  $("#locations").innerHTML = "";
+  (m.locations || []).forEach(addLocationRow);
+  if (m.websocket_upgrade || !m.http2 || m.proxy_http11 || m.ssl_forced || m.advanced_config || (m.locations || []).length) {
+    const l7d = $("#l7-advanced-details"); if (l7d) l7d.open = true;
+  }
+
   // Access list — fall back to the global default for pre-feature mappings.
   populateAccessDropdown();
   $("#access_list").value = (m.access_list !== undefined && m.access_list !== null)
@@ -1557,8 +1975,7 @@ function editMapping(domain, port) {
   $("#edit-banner").classList.remove("hidden");
   $("#apply-btn").textContent = "Update";
   const ft = $("#form-title"); if (ft) ft.textContent = "Update Mapping";
-  const fl = $("#nav-form-label"); if (fl) fl.textContent = "Edit Mapping";
-  showPage("form");
+  if (isDockerMapping(m)) { DOCKER_TAB = FORM_INTENT_MODE; dockerShowMappingForm(); } else showMappingForm();
 }
 
 // --- auth / current user ---------------------------------------------------
@@ -1599,7 +2016,7 @@ function startMonitoring() {
   loadIfaceTraffic();
   renderIfaceTree();
   clearInterval(MON_TIMER);
-  MON_TIMER = setInterval(() => { loadMetrics(); loadIfaceTraffic(); }, 2000);
+  MON_TIMER = setInterval(() => { if (!document.hidden) { loadMetrics(); loadIfaceTraffic(); } }, 2000);
 }
 function stopMonitoring() { clearInterval(MON_TIMER); MON_TIMER = null; }
 
@@ -2071,13 +2488,51 @@ function applyRouteZoom() {
 
 // Centre the scroll window on the actual content, leaving the big margins to
 // pan into on every side.
+// Absolute floor for the auto-fit calculation below — lower than the manual
+// zoom controls' own 0.6 floor (see setRouteZoom) because with many mappings
+// the alternative is "the diagram is bigger than the window, go scroll for
+// it", which is the exact complaint auto-fit exists to fix. Once the user
+// touches the wheel/zoom buttons, the normal 0.6 floor takes back over.
+const ROUTE_FIT_MIN_ZOOM = 0.25;
+
 function centerRouteOnContent(ox, oy, cw, ch) {
   const box = $("#route-scroll");
   if (!box) return;
-  requestAnimationFrame(() => {
+  // Double rAF: the SVG's full node/link markup was just written via
+  // innerHTML this same tick, and the page section may still be mid-way
+  // through its own fadeUp entrance animation. A single rAF can still land
+  // before the browser has committed layout for that brand-new content, so
+  // clientWidth/scrollWidth read stale (pre-content) values and the fit/
+  // center math below silently computes against the wrong box — the visible
+  // symptom is the diagram sitting pinned near the scroll origin (top-left)
+  // with the zoom label showing a fit percentage that never actually got
+  // applied to the scroll position. A second rAF guarantees a layout has
+  // already happened by the time we measure.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    // Auto-fit: with several mappings the diagram (fixed-size nodes/rows) is
+    // routinely taller than the visible pane at 100%, so a plain "center on
+    // content" leaves the top and bottom rows scrolled out of view. Zoom out
+    // just enough that the whole diagram fits — but never zoom IN past 100%
+    // for a small map, and only auto-fit if the pane has already been
+    // measured (clientWidth/Height are 0 before first layout).
+    if (box.clientWidth && box.clientHeight) {
+      const margin = 40;
+      const fit = Math.min(
+        (box.clientWidth - margin) / cw,
+        (box.clientHeight - margin) / ch,
+      );
+      ROUTE_ZOOM = Math.min(1, Math.max(ROUTE_FIT_MIN_ZOOM, Math.round(fit * 100) / 100));
+      applyRouteZoom();
+      // Force a synchronous layout flush so the box's scrollWidth/Height (and
+      // therefore its scrollLeft/Top clamp range) reflect the width we just
+      // applied above, rather than the pre-resize layout — without this, the
+      // scrollLeft/Top assignment right below can get clamped against the
+      // stale, usually-much-smaller scrollable range and silently no-op.
+      void box.scrollWidth;
+    }
     box.scrollLeft = Math.max(0, (ox + cw / 2) * ROUTE_ZOOM - box.clientWidth / 2);
     box.scrollTop = Math.max(0, (oy + ch / 2) * ROUTE_ZOOM - box.clientHeight / 2);
-  });
+  }));
 }
 function setRouteZoom(z) {
   ROUTE_ZOOM = Math.min(3, Math.max(0.6, Math.round(z * 100) / 100));
@@ -2137,15 +2592,54 @@ function fmtUptime(sec) {
   return `${mn}m`;
 }
 
-// --- Interfaces page -------------------------------------------------------
+// --- Network page: General / Sub-interfaces / Access Lists tabs ------------
 let IFACE_TIMER = null;
 let IFACE_RATES = {};   // name -> {rx_rate, tx_rate, up} from /api/interfaces/traffic
 
-function startInterfaces() {
+let _networkReady = false;
+let NET_TAB = "general";
+
+function startNetwork() {
+  // Data for all three tabs loads on every visit (cheap, keeps whichever tab
+  // you land on already fresh); only the tab-strip wiring is one-time.
+  if (isAdmin()) loadNetworkSettings();
+  loadSubinterfacesTab();
+  loadAccessLists();
+
+  if (_networkReady) return;
+  _networkReady = true;
+  $$(".net-tab").forEach((btn) => btn.addEventListener("click", () => showNetTab(btn.dataset.nettab)));
+  showNetTab(NET_TAB);
+}
+function stopNetwork() {}
+
+function showNetTab(name) {
+  NET_TAB = name;
+  $$(".net-tab").forEach((btn) => {
+    const active = btn.dataset.nettab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  $$(".net-panel").forEach((p) => p.classList.add("hidden"));
+  const panel = $("#netpanel-" + name);
+  if (panel) panel.classList.remove("hidden");
+}
+
+// Refresh button dispatches to whichever tab is currently open.
+function refreshNetworkTab() {
+  if (NET_TAB === "subinterfaces") loadSubinterfacesTab();
+  else if (NET_TAB === "access") loadAccessLists();
+  else if (isAdmin()) loadNetworkSettings();
+}
+
+function loadSubinterfacesTab() {
   // Reflect the persisted toggle and render the overview immediately.
   $("#subiface-toggle").checked = !!SETTINGS.subinterface_enabled;
   applySubifaceManagerVisibility();
-  if (isAdmin()) loadNetworkSettings();
   fillSiInterfaceSelect();
   loadSubinterfaces();
 }
@@ -2156,7 +2650,6 @@ function applySubifaceManagerVisibility() {
   const card = $("#subiface-manager");
   if (card) card.classList.toggle("hidden", !show);
 }
-function stopInterfaces() {}
 
 // --- host network settings (DNS + /etc/hosts) ------------------------------
 function dnsRowHtml(ip) {
@@ -2661,6 +3154,22 @@ const SSL_SOURCE_BADGE = {
   letsencrypt: '<span class="inline-block px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 text-xs">Let\'s Encrypt</span>',
 };
 
+// The SSL page's three creation methods (Let's Encrypt / Self-signed / Upload)
+// are tabs, like the Map page's Stream/Reverse Proxy/Forward Proxy — one panel
+// visible at a time instead of three cards stacked on top of each other.
+function selectSslCreateTab(name) {
+  $$(".ssl-create-tab").forEach((btn) => {
+    const active = btn.dataset.ssltab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  $$(".ssl-create-panel").forEach((p) => p.classList.toggle("hidden", p.id !== "sslcreate-" + name));
+}
+
 async function loadSslCerts() {
   fillLeBindIpSelect();
   try {
@@ -2751,6 +3260,162 @@ async function deleteCert(name) {
   else toast(j.error || "Could not delete.", false);
 }
 
+// --- Forward Proxy (SNI-based HTTPS relay) ----------------------------------
+let FWDPROXIES = [];
+let FP_EDITING = null;   // name currently being edited, or null
+
+async function loadFwdProxies() {
+  fillFpBindIpSelect();
+  populateAccessDropdown("#fp-access-list");
+  try {
+    const j = await (await fetch("/api/forward-proxies")).json();
+    if (!j.ok) return;
+    FWDPROXIES = j.proxies || [];
+    const badge = $("#maptab-count-fwdproxy"); if (badge) animateCount(badge, FWDPROXIES.length);
+    updateMapNavBadge();
+    renderFwdProxyTable();
+  } catch (_) { /* non-fatal */ }
+}
+
+// Same IP-keyed picker the SSL page's Let's Encrypt card uses (see
+// fillLeBindIpSelect) — physical interfaces + managed sub-interfaces, by IP.
+function fillFpBindIpSelect() {
+  const sel = $("#fp-bind-ip");
+  if (!sel) return;
+  const cur = sel.value;
+  const seen = new Set();
+  const opts = [];
+  (IFACES || []).forEach((i) => (i.addresses || []).forEach((a) => {
+    if (a.ip && !seen.has(a.ip)) { seen.add(a.ip); opts.push({ ip: a.ip, label: `${a.ip} · ${i.name}` }); }
+  }));
+  (SUBIFACES || []).forEach((s) => {
+    if (s.bind_ip && !seen.has(s.bind_ip)) {
+      seen.add(s.bind_ip);
+      opts.push({ ip: s.bind_ip, label: `${s.bind_ip} · ${s.name}${s.vlan_id ? " · vlan " + s.vlan_id : ""}` });
+    }
+  });
+  sel.innerHTML = opts.length
+    ? opts.map((o) => `<option value="${escapeHtml(o.ip)}">${escapeHtml(o.label)}</option>`).join("")
+    : '<option value="">no interfaces available</option>';
+  if (opts.some((o) => o.ip === cur)) sel.value = cur;
+}
+
+function renderFwdProxyTable() {
+  const tb = $("#fp-rows");
+  if (!tb) return;
+  tb.innerHTML = "";
+  $("#fp-empty").classList.toggle("hidden", FWDPROXIES.length > 0);
+  FWDPROXIES.forEach((f, idx) => {
+    const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50 align-top" + (f.enabled === false ? " opacity-50" : "");
+    tr.style.setProperty("--i", Math.min(idx, 12));
+    const dest = f.allow_all
+      ? '<span class="inline-block px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs">allow all</span>'
+      : `<span class="text-xs text-slate-600">${(f.allowed_domains || []).length} domain(s)</span>`;
+    const domainsPreview = !f.allow_all && (f.allowed_domains || []).length
+      ? `<div class="text-xs text-slate-400 font-mono">${escapeHtml(f.allowed_domains.slice(0, 3).join(", "))}${f.allowed_domains.length > 3 ? "…" : ""}</div>` : "";
+    const acl = f.access_list
+      ? escapeHtml(f.access_list === "__default__" ? "global default" : f.access_list)
+      : '<span class="text-slate-400">open</span>';
+    tr.innerHTML = `
+      <td class="px-6 py-3 font-mono">${escapeHtml(f.label || f.name)}${f.enabled === false ? ' <span class="inline-block px-2 py-0.5 rounded-full bg-slate-200 text-slate-500 text-[10px] font-sans align-middle uppercase tracking-wide">disabled</span>' : ""}
+        ${f.label && f.label !== f.name ? `<div class="text-xs text-slate-400 font-sans">${escapeHtml(f.name)}</div>` : ""}</td>
+      <td class="px-6 py-3 font-mono text-slate-600">${escapeHtml(f.bind_ip)}<span class="text-slate-400">:${escapeHtml(f.listen_port)}</span></td>
+      <td class="px-6 py-3">${dest}${domainsPreview}</td>
+      <td class="px-6 py-3 text-xs text-slate-600">${acl}</td>
+      <td class="px-6 py-3 text-right whitespace-nowrap">
+        <button data-fp="${escapeHtml(f.name)}" class="fp-edit-btn text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+        ${isAdmin() ? `<button data-fp="${escapeHtml(f.name)}" class="fp-toggle-btn text-xs font-medium text-sky-600 hover:text-sky-800 mr-3">${f.enabled === false ? "Enable" : "Disable"}</button>` : ""}
+        ${isAdmin() ? `<button data-fp="${escapeHtml(f.name)}" class="fp-del-btn text-xs font-medium text-red-600 hover:text-red-800">Delete</button>` : ""}
+      </td>`;
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll(".fp-edit-btn").forEach((b) => b.addEventListener("click", () => editFwdProxy(b.dataset.fp)));
+  tb.querySelectorAll(".fp-toggle-btn").forEach((b) => b.addEventListener("click", () => toggleFwdProxy(b.dataset.fp)));
+  tb.querySelectorAll(".fp-del-btn").forEach((b) => b.addEventListener("click", () => deleteFwdProxy(b.dataset.fp)));
+}
+
+function toggleFpDomainsVisibility() {
+  const allowAll = $("#fp-allow-all")?.checked;
+  const block = $("#fp-domains-block");
+  if (block) block.classList.toggle("hidden", !!allowAll);
+}
+
+function resetFwdProxyForm() {
+  FP_EDITING = null;
+  $("#fp-form").reset();
+  $("#fp-edit-name").value = "";
+  $("#fp-name").readOnly = false;
+  $("#fp-name").classList.remove("bg-slate-100");
+  $("#fp-form-title").textContent = "New forward proxy";
+  $("#fp-cancel-edit").classList.add("hidden");
+  $("#fp-save-btn").textContent = "Save";
+  toggleFpDomainsVisibility();
+}
+
+function editFwdProxy(name) {
+  const f = FWDPROXIES.find((x) => x.name === name);
+  if (!f) return;
+  FP_EDITING = name;
+  $("#fp-edit-name").value = name;
+  $("#fp-name").value = name;
+  $("#fp-name").readOnly = true;
+  $("#fp-name").classList.add("bg-slate-100");
+  $("#fp-label").value = f.label && f.label !== f.name ? f.label : "";
+  fillFpBindIpSelect();
+  $("#fp-bind-ip").value = f.bind_ip;
+  $("#fp-port").value = f.listen_port;
+  populateAccessDropdown("#fp-access-list");
+  $("#fp-access-list").value = f.access_list || "";
+  $("#fp-allow-all").checked = !!f.allow_all;
+  $("#fp-domains").value = (f.allowed_domains || []).join("\n");
+  toggleFpDomainsVisibility();
+  $("#fp-form-title").textContent = `Edit ${f.label || f.name}`;
+  $("#fp-cancel-edit").classList.remove("hidden");
+  $("#fp-save-btn").textContent = "Update";
+}
+
+async function submitFwdProxy(e) {
+  e.preventDefault();
+  const editing = FP_EDITING;
+  if (!editing && $("#fp-allow-all").checked &&
+      !confirm("This forward proxy will relay to ANY HTTPS destination — an open relay. Continue?")) return;
+  const fd = new FormData($("#fp-form"));
+  const btn = $("#fp-save-btn");
+  setBtnLoading(btn, true, editing ? "Updating…" : "Saving…");
+  try {
+    const url = editing ? `/api/forward-proxies/${encodeURIComponent(editing)}` : "/api/forward-proxies";
+    const j = await (await fetch(url, { method: "POST", body: fd })).json();
+    renderSteps(j.steps);
+    if (j.ok) {
+      toast(editing ? `${j.proxy.name} updated.` : `${j.proxy.name} created.`);
+      resetFwdProxyForm();
+      await loadFwdProxies();
+    } else {
+      toast(j.error || "Could not save.", false);
+    }
+  } catch (err) {
+    toast(String(err.message || err), false);
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+async function toggleFwdProxy(name) {
+  const j = await (await fetch(`/api/forward-proxies/${encodeURIComponent(name)}/toggle`, { method: "POST" })).json();
+  renderSteps(j.steps);
+  if (j.ok) { toast(`${name} ${j.proxy.enabled ? "enabled" : "disabled"}.`); await loadFwdProxies(); }
+  else toast(j.error || "Failed to toggle.", false);
+}
+
+async function deleteFwdProxy(name) {
+  if (!confirm(`Delete forward proxy ${name}? Its listener config will be removed.`)) return;
+  const j = await (await fetch(`/api/forward-proxies/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
+  renderSteps(j.steps);
+  if (j.ok) { toast(`${name} deleted.`); await loadFwdProxies(); }
+  else toast(j.error || "Could not delete.", false);
+}
+
 // --- access lists (allow/deny) ---------------------------------------------
 let ACCESS_LISTS = [];        // cached for the mapping-form dropdown
 let ACCESS_DEFAULT = "";      // current global default list name
@@ -2764,9 +3429,10 @@ function aclTypeBadge(a) {
   return '<span class="inline-block px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs">manual</span>';
 }
 
-// Fill the mapping form's #access_list dropdown, preserving the current value.
-function populateAccessDropdown() {
-  const sel = $("#access_list");
+// Fill an access-list dropdown (mapping form's #access_list by default, but
+// reused by the Forward Proxy form too), preserving the current value.
+function populateAccessDropdown(selector = "#access_list") {
+  const sel = $(selector);
   if (!sel) return;
   const cur = sel.value || "__default__";
   sel.innerHTML = "";
@@ -2787,7 +3453,6 @@ async function loadAccessLists() {
     ACCESS_LISTS = j.lists || [];
     ACCESS_DEFAULT = j.default || "";
     if (j.acl_dir) { const l = $("#acl-dir-label"); if (l) l.textContent = j.acl_dir; }
-    const cnt = $("#nav-access-count"); if (cnt) cnt.textContent = ACCESS_LISTS.length;
 
     // global-default selector
     const dsel = $("#acl-default-select");
@@ -3708,31 +4373,42 @@ async function saveSchedule() {
   } catch (e) { toast(String(e.message || e), false); }
 }
 
+// Null-safe classList.toggle — loadMe() runs once at startup and gates the
+// rest of the boot sequence (later awaits in DOMContentLoaded, including the
+// showPage() call that loads whichever page/tab the URL hash points at); one
+// missing selector throwing here used to take the whole chain down with it,
+// so e.g. a page reload landing on an admin-only tab would silently render
+// blank with no visible error — this keeps one bad selector from cascading.
+function toggleHidden(sel, hide) {
+  const el = $(sel);
+  if (!el) { console.error(`toggleHidden: missing element ${sel}`); return; }
+  el.classList.toggle("hidden", hide);
+}
+
 async function loadMe() {
   try {
     const st = await (await fetch("/api/auth/status")).json();
     ME = st.user || null;
   } catch (_) { ME = null; }
   if (!ME) { window.location.href = "/login"; return; }
-  $("#who").textContent = `${ME.username} · ${ME.role}`;
+  const who = $("#who"); if (who) who.textContent = `${ME.username} · ${ME.role}`;
   const av = $("#avatar"); if (av) av.textContent = (ME.username[0] || "?").toUpperCase();
   // Creators can add/edit + export, but not destructive/bulk or user mgmt.
   const admin = isAdmin();
-  $("#import-btn").classList.toggle("hidden", !admin);
-  $("#reapply-btn").classList.toggle("hidden", !admin);
-  $("#users-card").classList.toggle("hidden", !admin);
-  $("#nav-users").classList.toggle("hidden", !admin);
-  $("#activity-card").classList.toggle("hidden", !admin);
-  $("#nav-activity").classList.toggle("hidden", !admin);
-  $("#nav-logs").classList.toggle("hidden", !admin);
-  $("#nav-backup").classList.toggle("hidden", !admin);
-  $("#nav-waf").classList.toggle("hidden", !admin);
-  $("#nav-access").classList.toggle("hidden", !admin);
-  $("#nav-firewall").classList.toggle("hidden", !admin);
-  // Interfaces page: only admins can change the sub-interface policy / network.
-  $("#iface-settings-card").classList.toggle("hidden", !admin);
-  $("#iface-network-card").classList.toggle("hidden", !admin);
-  $("#iface-system-card").classList.toggle("hidden", !admin);
+  toggleHidden("#import-btn", !admin);
+  toggleHidden("#reapply-btn", !admin);
+  toggleHidden("#users-card", !admin);
+  toggleHidden("#nav-users", !admin);
+  toggleHidden("#activity-card", !admin);
+  toggleHidden("#nav-activity", !admin);
+  toggleHidden("#nav-logs", !admin);
+  toggleHidden("#nav-backup", !admin);
+  toggleHidden("#nav-waf", !admin);
+  toggleHidden("#nav-firewall", !admin);
+  // Network page: only admins can change the sub-interface policy / network.
+  toggleHidden("#iface-settings-card", !admin);
+  toggleHidden("#iface-network-card", !admin);
+  toggleHidden("#iface-system-card", !admin);
 }
 
 async function logout() {
@@ -3754,11 +4430,56 @@ async function changePassword() {
 
 // --- user management (admin) -----------------------------------------------
 let USERS = [];
+// Diagnostic snapshot of everything that gates Users-page visibility, logged
+// automatically (no console command needed — some browsers/extensions block
+// pasted/typed eval, but a page's own <script> always runs) so a report of
+// "still blank" comes with real data instead of another round of guessing.
+function debugUsersPageState(label) {
+  try {
+    const card = $("#users-card");
+    const page = $("#page-users");
+    const rows = $("#user-rows");
+    const snap = {
+      label,
+      ME: ME,
+      isAdmin: isAdmin(),
+      pageUsers: page && { class: page.className, display: getComputedStyle(page).display, opacity: getComputedStyle(page).opacity },
+      usersCard: card && { class: card.className, display: getComputedStyle(card).display, opacity: getComputedStyle(card).opacity, rect: card.getBoundingClientRect() },
+      userRows: rows && { childCount: rows.children.length, html: rows.innerHTML.slice(0, 300) },
+    };
+    console.log("[splitter debug] users page state:", JSON.stringify(snap, null, 2));
+  } catch (e) {
+    console.log("[splitter debug] snapshot itself threw:", e);
+  }
+}
+
 async function loadUsers() {
-  if (!isAdmin()) return;
+  debugUsersPageState("loadUsers:start");
+  if (!isAdmin()) { debugUsersPageState("loadUsers:not-admin-bail"); return; }
+  const rows = $("#user-rows");
+  try {
+    await loadUsersInner(rows);
+    debugUsersPageState("loadUsers:success");
+    // Catch anything that changes the visible state shortly after (a stray
+    // re-render, a CSS transition settling, etc.) that the immediate
+    // snapshot above would miss.
+    setTimeout(() => debugUsersPageState("loadUsers:success+500ms"), 500);
+  } catch (err) {
+    // Surface failures visibly instead of leaving a blank table with no clue
+    // why — a network hiccup, a malformed response, etc. would otherwise fail
+    // silently here since nothing else on this page shows a loading/error
+    // state for it.
+    console.error("loadUsers failed:", err);
+    debugUsersPageState("loadUsers:error");
+    if (rows) rows.innerHTML = `<tr><td colspan="4" class="px-6 py-4 text-sm text-red-600">
+      Couldn't load users: ${escapeHtml(err.message || String(err))}. Try refreshing.</td></tr>`;
+    toast("Couldn't load users — see the table for details.", false);
+  }
+}
+
+async function loadUsersInner(rows) {
   const users = (await (await fetch("/api/users")).json()).users || [];
   USERS = users;
-  const rows = $("#user-rows");
   rows.innerHTML = "";
   for (const u of users) {
     const self = ME && u.username === ME.username;
@@ -3937,7 +4658,7 @@ function openDiagnose(domain, port) {
   $("#diag-overlay").classList.remove("hidden");
   refreshDiagnose();
   clearInterval(DIAG_TIMER);
-  DIAG_TIMER = setInterval(refreshDiagnose, 2500);   // ~live
+  DIAG_TIMER = setInterval(() => { if (!document.hidden) refreshDiagnose(); }, 2500);   // ~live
 }
 
 function closeDiagnose() {
@@ -4078,6 +4799,8 @@ async function bindApp(domain) {
   renderWafSteps(j.steps);
   toast(j.ok ? `${domain} is now behind the WAF.` : (j.error || "Bind failed."), j.ok);
   loadWafApps();
+  // Binding moves this mapping from the Stream list to the Proxy list.
+  if (j.ok && PAGE_LOADED.has("mappings")) await loadMappings();
 }
 
 async function unbindApp(domain) {
@@ -4087,6 +4810,8 @@ async function unbindApp(domain) {
   renderWafSteps(j.steps);
   toast(j.ok ? `${domain} reverted to Layer-4.` : (j.error || "Unbind failed."), j.ok);
   loadWafApps();
+  // Unbinding moves this mapping back from the Proxy list to the Stream list.
+  if (j.ok && PAGE_LOADED.has("mappings")) await loadMappings();
 }
 
 function renderWaf(s, events) {
@@ -4221,11 +4946,14 @@ function startWafInstallPoll() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
-  // correct section is visible from the first paint instead of flashing mappings.
+  // correct section is visible from the first paint instead of flashing Map/Stream.
+  // A bare tab hash (#stream / #proxy / #fwdproxy) resolves to the Map page.
   const _initHash = location.hash.slice(1);
-  if (PAGES.includes(_initHash) && _initHash !== "mappings") {
-    PAGES.forEach(p => { const el = $("#page-" + p); if (el) el.classList.toggle("hidden", p !== _initHash); });
-    $$(".nav-link").forEach(b => b.classList.toggle("active", b.dataset.page === _initHash));
+  let _initPage = _initHash;
+  if (MAP_TABS.includes(_initHash)) { MAP_MODE = _initHash; _initPage = "map"; }
+  if (PAGES.includes(_initPage) && _initPage !== "map") {
+    PAGES.forEach(p => { const el = $("#page-" + p); if (el) el.classList.toggle("hidden", p !== _initPage); });
+    $$(".nav-link").forEach(b => b.classList.toggle("active", b.dataset.page === _initPage));
   }
 
   await loadMe();
@@ -4243,7 +4971,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // sidebar nav: switch pages (preserve form state)
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
   // "New Mapping" / empty-state jumps start a fresh add
-  $$(".nav-jump").forEach((b) => b.addEventListener("click", () => { resetForm(); showPage("form"); }));
+  // "New Stream" / "New Proxy" jumps inherit the mode of the page clicked from.
+  $$(".nav-jump").forEach((b) => b.addEventListener("click", () => {
+    FORM_INTENT_MODE = MAP_MODE;
+    resetForm();
+    showMappingForm();
+  }));
   $("#search").addEventListener("input", () => { MAP_PAGE = 1; renderMappings(); });
 
   $("#map-form").addEventListener("submit", apply);
@@ -4261,14 +4994,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.target.value = "";   // allow re-importing the same file
   });
   $("#add-backend").addEventListener("click", () => addBackendRow());
+  const abd = $("#add-backend-docker"); if (abd) abd.addEventListener("click", toggleBackendDockerGrid);
+  const bdgc = $("#backend-docker-grid-close"); if (bdgc) bdgc.addEventListener("click", closeBackendDockerGrid);
+  $("#add-location").addEventListener("click", () => addLocationRow());
+  $("#ssl_forced").addEventListener("change", syncHstsUI);
+  $("#hsts_enabled").addEventListener("change", syncHstsUI);
   // Docker page
-  const dcf = $("#docker-create-form"); if (dcf) dcf.addEventListener("submit", dockerCreateMapping);
   const dr = $("#docker-refresh"); if (dr) dr.addEventListener("click", loadDocker);
+  $$(".docker-tab").forEach((b) => b.addEventListener("click", () => showDockerTab(b.dataset.dockertab)));
+  const dnb = $("#docker-new-btn"); if (dnb) dnb.addEventListener("click", dockerNewMapping);
+  const dnbe = $("#docker-new-btn-empty"); if (dnbe) dnbe.addEventListener("click", dockerNewMapping);
+  showDockerTab("stream");
   refreshDockerNav();
   $("#protocol").addEventListener("change", onProtocolChange);
   $("#listen_port").addEventListener("input", onListenPortChange);
   $$('input[name="transport"]').forEach((r) => r.addEventListener("change", onTransportChange));
-  $("#cancel-edit").addEventListener("click", resetForm);
+  $("#cancel-edit").addEventListener("click", () => { resetForm(); hideMappingForm(); });
   $("#gen-mac").addEventListener("click", generateMac);
   $("#interface").addEventListener("change", updateIfaceInfo);
   $("#lb_method").addEventListener("change", onLbChange);
@@ -4356,7 +5097,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener("mousemove", onRouteNodeMove);
   window.addEventListener("mouseup", onRouteNodeUp);
   $("#mon-refresh").addEventListener("click", () => { loadMetrics(); loadIfaceTraffic(); });
-  $("#iface-refresh").addEventListener("click", () => { loadSubinterfaces(); if (isAdmin()) loadNetworkSettings(); });
+  $("#network-refresh").addEventListener("click", refreshNetworkTab);
   $("#subiface-toggle").addEventListener("change", (e) => saveSubifaceSetting(e.target.checked));
   $("#dns-add").addEventListener("click", () => addDnsRow(""));
   $("#dns-save").addEventListener("click", saveDns);
@@ -4375,6 +5116,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#ssl-le-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("letsencrypt", e.target); });
   $("#ssl-selfsigned-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("selfsigned", e.target); });
   $("#ssl-upload-form").addEventListener("submit", (e) => { e.preventDefault(); createCert("upload", e.target); });
+  $$(".ssl-create-tab").forEach((b) => b.addEventListener("click", () => selectSslCreateTab(b.dataset.ssltab)));
+  selectSslCreateTab("letsencrypt");
+
+  // Forward Proxy
+  $("#fp-refresh").addEventListener("click", loadFwdProxies);
+  $("#fp-form").addEventListener("submit", submitFwdProxy);
+  $("#fp-cancel-edit").addEventListener("click", resetFwdProxyForm);
+  $("#fp-allow-all").addEventListener("change", toggleFpDomainsVisibility);
+  toggleFpDomainsVisibility();
 
   // Access lists
   $("#acl-form").addEventListener("submit", submitAccessList);
@@ -4415,9 +5165,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Lazy: each page's list data loads on first access (showPage), not all up
   // front — so the shell + sidebar paint immediately and only the page you open
-  // fetches its rows (mappings/health, users, …).
+  // fetches its rows (mappings/health, users, …). showPage itself resolves a
+  // bare tab hash (#stream/#proxy/#fwdproxy) to the Map page + that tab.
   const hash = location.hash.slice(1);
-  showPage(PAGES.includes(hash) ? hash : "mappings");
+  showPage(hash || "map");
 });
 
 // ==========================================================================
@@ -4439,18 +5190,49 @@ function startTools() {
   _toolsPopulateInterfaces();
 
   // Allow Enter key to submit in tool input fields
-  ["ping-host", "port-host", "port-port", "dns-host", "traceroute-host", "whois-query"].forEach((id) => {
+  ["ping-host", "port-host", "port-port", "dns-host", "traceroute-host", "whois-query", "sslcheck-host", "sslcheck-port"].forEach((id) => {
     const el = $("#" + id);
     if (el) el.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
-        const tool = id.split("-")[0];
+        const tool = id.startsWith("sslcheck") ? "sslcheck" : id.split("-")[0];
         runTool(tool);
       }
     });
   });
 
+  // SSL Checker: Website vs Managed-cert mode
+  $$(".sslcheck-mode-tab").forEach((b) => b.addEventListener("click", () => selectSslCheckMode(b.dataset.sslcheckMode)));
+  selectSslCheckMode("external");
+  fillSslCheckCertSelect();
+
   // Show first tab
   showToolTab("ping");
+}
+
+function selectSslCheckMode(mode) {
+  $$(".sslcheck-mode-tab").forEach((b) => {
+    const active = b.dataset.sslcheckMode === mode;
+    b.classList.toggle("border-sky-500", active);
+    b.classList.toggle("bg-sky-50", active);
+    b.classList.toggle("text-sky-700", active);
+  });
+  $("#sslcheck-external-fields").classList.toggle("hidden", mode !== "external");
+  $("#sslcheck-own-fields").classList.toggle("hidden", mode !== "own");
+  if (mode === "own") fillSslCheckCertSelect();
+}
+
+async function fillSslCheckCertSelect() {
+  const sel = $("#sslcheck-cert");
+  if (!sel) return;
+  try {
+    const j = await (await fetch("/api/ssl/certs")).json();
+    const certs = j.certs || [];
+    const cur = sel.value;
+    sel.innerHTML = certs.length
+      ? certs.map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)} (${escapeHtml(c.source || "?")})</option>`).join("")
+      : '<option value="">no managed certificates yet</option>';
+    if (certs.some((c) => c.name === cur)) sel.value = cur;
+  } catch (_) { /* non-fatal */ }
 }
 
 function showToolTab(name) {
@@ -4538,6 +5320,19 @@ function runTool(tool) {
     const query = ($("#whois-query").value || "").trim();
     if (!query) { out.textContent = "Error: Domain or IP is required."; return; }
     fd.set("query", query);
+  } else if (tool === "sslcheck") {
+    const mode = $(".sslcheck-mode-tab.bg-sky-50")?.dataset.sslcheckMode || "external";
+    fd.set("mode", mode);
+    if (mode === "own") {
+      const certName = $("#sslcheck-cert").value || "";
+      if (!certName) { out.textContent = "Error: Pick a managed certificate."; return; }
+      fd.set("cert_name", certName);
+    } else {
+      const host = ($("#sslcheck-host").value || "").trim();
+      if (!host) { out.textContent = "Error: Host is required."; return; }
+      fd.set("host", host);
+      fd.set("port", $("#sslcheck-port").value || "443");
+    }
   }
 
   // Show running state

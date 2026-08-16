@@ -11,6 +11,7 @@ A mapping is keyed by domain and looks like:
         "created":  "2026-06-12T10:00:00Z"
     }
 """
+import copy
 import json
 import os
 import tempfile
@@ -19,6 +20,15 @@ import threading
 import config
 
 _lock = threading.RLock()
+
+# _read_all() is on the hot path — polled endpoints (health/traffic/mappings)
+# call it, and several validation helpers (access_in_use, subiface_in_use,
+# etc.) each call it independently within a single request. Cache the parsed
+# result keyed by the file's mtime+size so an unchanged store is served from
+# memory instead of re-reading and re-parsing the JSON file every time; any
+# write (which always goes through _write_all's atomic replace) changes the
+# mtime and invalidates it on the next read.
+_cache = {"key": None, "data": None}
 
 
 def _ensure_store():
@@ -40,6 +50,14 @@ def _canonical_key(m):
 
 def _read_all():
     _ensure_store()
+    st = os.stat(config.DB_FILE)
+    key = (st.st_mtime_ns, st.st_size)
+    if _cache["key"] == key:
+        # Deep-copy out of the cache, not a shared reference — callers mutate
+        # the mapping dicts they get back in place (e.g. mapping["waf_bound"]
+        # = True) before deciding whether to upsert them, and must not see
+        # (or leak into) another caller's in-progress, not-yet-saved edits.
+        return copy.deepcopy(_cache["data"])
     with open(config.DB_FILE, "r", encoding="utf-8") as fh:
         try:
             data = json.load(fh)
@@ -52,7 +70,9 @@ def _read_all():
     for k, m in data.items():
         if isinstance(m, dict) and "domain" in m:
             norm[_canonical_key(m)] = m
-    return norm
+    _cache["key"] = key
+    _cache["data"] = norm
+    return copy.deepcopy(norm)
 
 
 def _write_all(data):
@@ -328,7 +348,7 @@ def settings_update(patch):
 
 
 # --- Managed sub-interface registry ---------------------------------------
-# Sub-interfaces are created/edited/deleted on the Interfaces page (when the
+# Sub-interfaces are created/edited/deleted on the Sub-interfaces page (when the
 # global subinterface toggle is on) and exist independently of mappings. Each
 # record is shaped like the fields nginx_manager.provision_ip/deprovision_ip
 # read (interface / vlan_id / mac / subiface / subiface_index / alloc_method /
@@ -396,6 +416,75 @@ def subiface_in_use(name, exclude_domain=None):
     return None
 
 
+# --- Forward-proxy registry -------------------------------------------------
+# A forward proxy is an SNI-based transparent HTTPS relay: it has no fixed
+# backend, just a listen endpoint (bind_ip:listen_port) and a policy for which
+# destination hostnames it'll relay to. Rendered by
+# nginx_manager.render_forward_proxy_conf into its own stream.d file. Keyed by
+# a user-chosen name (also used in the conf filename).
+_FWDPROXY_FILE = os.path.join(config.DATA_DIR, "forward_proxies.json")
+
+
+def _read_fwdproxies():
+    try:
+        with open(_FWDPROXY_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_fwdproxies(data):
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=config.DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+        os.replace(tmp, _FWDPROXY_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def fwdproxy_list():
+    with _lock:
+        return sorted(_read_fwdproxies().values(), key=lambda f: f["name"])
+
+
+def fwdproxy_get(name):
+    with _lock:
+        return _read_fwdproxies().get(name)
+
+
+def fwdproxy_add(rec):
+    with _lock:
+        data = _read_fwdproxies()
+        data[rec["name"]] = rec
+        _write_fwdproxies(data)
+        return rec
+
+
+def fwdproxy_remove(name):
+    with _lock:
+        data = _read_fwdproxies()
+        removed = data.pop(name, None)
+        _write_fwdproxies(data)
+        return removed
+
+
+def fwdproxy_endpoint_conflict(bind_ip, port, exclude_name=None):
+    """Return the name of another forward proxy already listening on
+    bind_ip:port, or None. Mapping/forward-proxy port clashes across the two
+    registries still get caught by `nginx -t` before anything reloads."""
+    with _lock:
+        for f in _read_fwdproxies().values():
+            if f["name"] == exclude_name:
+                continue
+            if f.get("bind_ip") == bind_ip and int(f.get("listen_port") or 0) == int(port):
+                return f["name"]
+    return None
+
+
 # --- Access-list registry -------------------------------------------------
 # Access lists are IP/CIDR allow lists rendered to nginx snippets (one
 # <name>.conf each) that a mapping's stream server block includes. A list may be
@@ -452,14 +541,18 @@ def access_remove(name):
 
 
 def access_in_use(name, exclude_domain=None):
-    """Return the domain of the first mapping that selected access list `name`,
-    or None. Used to block delete of an in-use list."""
+    """Return the domain (or forward-proxy name) of the first mapping/forward
+    proxy that selected access list `name`, or None. Used to block delete of
+    an in-use list."""
     with _lock:
         for m in _read_all().values():
             if m["domain"] == exclude_domain:
                 continue
             if m.get("access_list") == name:
                 return m["domain"]
+        for f in _read_fwdproxies().values():
+            if f.get("access_list") == name:
+                return f["name"]
     return None
 
 
