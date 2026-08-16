@@ -62,10 +62,10 @@ function showPage(name) {
   if (name === "docker") loadDocker();
   if (name === "map") startMapPage(requestedTab || MAP_MODE);
   else stopTrafficPolling();
-  if (name === "users" && !PAGE_LOADED.has("users")) {
-    PAGE_LOADED.add("users");
-    loadUsers();
-  }
+  // Always reload on every visit (not just the first) — if anything ever
+  // went wrong on an earlier render, re-entering this tab should retry
+  // rather than stay stuck showing whatever (or nothing) rendered before.
+  if (name === "users") loadUsers();
   // Poll host metrics + per-interface throughput only while Monitoring is open.
   if (name === "monitoring") startMonitoring();
   else stopMonitoring();
@@ -4221,17 +4221,47 @@ async function changePassword() {
 
 // --- user management (admin) -----------------------------------------------
 let USERS = [];
+// Diagnostic snapshot of everything that gates Users-page visibility, logged
+// automatically (no console command needed — some browsers/extensions block
+// pasted/typed eval, but a page's own <script> always runs) so a report of
+// "still blank" comes with real data instead of another round of guessing.
+function debugUsersPageState(label) {
+  try {
+    const card = $("#users-card");
+    const page = $("#page-users");
+    const rows = $("#user-rows");
+    const snap = {
+      label,
+      ME: ME,
+      isAdmin: isAdmin(),
+      pageUsers: page && { class: page.className, display: getComputedStyle(page).display, opacity: getComputedStyle(page).opacity },
+      usersCard: card && { class: card.className, display: getComputedStyle(card).display, opacity: getComputedStyle(card).opacity, rect: card.getBoundingClientRect() },
+      userRows: rows && { childCount: rows.children.length, html: rows.innerHTML.slice(0, 300) },
+    };
+    console.log("[splitter debug] users page state:", JSON.stringify(snap, null, 2));
+  } catch (e) {
+    console.log("[splitter debug] snapshot itself threw:", e);
+  }
+}
+
 async function loadUsers() {
-  if (!isAdmin()) return;
+  debugUsersPageState("loadUsers:start");
+  if (!isAdmin()) { debugUsersPageState("loadUsers:not-admin-bail"); return; }
   const rows = $("#user-rows");
   try {
     await loadUsersInner(rows);
+    debugUsersPageState("loadUsers:success");
+    // Catch anything that changes the visible state shortly after (a stray
+    // re-render, a CSS transition settling, etc.) that the immediate
+    // snapshot above would miss.
+    setTimeout(() => debugUsersPageState("loadUsers:success+500ms"), 500);
   } catch (err) {
     // Surface failures visibly instead of leaving a blank table with no clue
     // why — a network hiccup, a malformed response, etc. would otherwise fail
     // silently here since nothing else on this page shows a loading/error
     // state for it.
     console.error("loadUsers failed:", err);
+    debugUsersPageState("loadUsers:error");
     if (rows) rows.innerHTML = `<tr><td colspan="4" class="px-6 py-4 text-sm text-red-600">
       Couldn't load users: ${escapeHtml(err.message || String(err))}. Try refreshing.</td></tr>`;
     toast("Couldn't load users — see the table for details.", false);
