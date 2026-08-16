@@ -11,6 +11,7 @@ A mapping is keyed by domain and looks like:
         "created":  "2026-06-12T10:00:00Z"
     }
 """
+import copy
 import json
 import os
 import tempfile
@@ -19,6 +20,15 @@ import threading
 import config
 
 _lock = threading.RLock()
+
+# _read_all() is on the hot path — polled endpoints (health/traffic/mappings)
+# call it, and several validation helpers (access_in_use, subiface_in_use,
+# etc.) each call it independently within a single request. Cache the parsed
+# result keyed by the file's mtime+size so an unchanged store is served from
+# memory instead of re-reading and re-parsing the JSON file every time; any
+# write (which always goes through _write_all's atomic replace) changes the
+# mtime and invalidates it on the next read.
+_cache = {"key": None, "data": None}
 
 
 def _ensure_store():
@@ -40,6 +50,14 @@ def _canonical_key(m):
 
 def _read_all():
     _ensure_store()
+    st = os.stat(config.DB_FILE)
+    key = (st.st_mtime_ns, st.st_size)
+    if _cache["key"] == key:
+        # Deep-copy out of the cache, not a shared reference — callers mutate
+        # the mapping dicts they get back in place (e.g. mapping["waf_bound"]
+        # = True) before deciding whether to upsert them, and must not see
+        # (or leak into) another caller's in-progress, not-yet-saved edits.
+        return copy.deepcopy(_cache["data"])
     with open(config.DB_FILE, "r", encoding="utf-8") as fh:
         try:
             data = json.load(fh)
@@ -52,7 +70,9 @@ def _read_all():
     for k, m in data.items():
         if isinstance(m, dict) and "domain" in m:
             norm[_canonical_key(m)] = m
-    return norm
+    _cache["key"] = key
+    _cache["data"] = norm
+    return copy.deepcopy(norm)
 
 
 def _write_all(data):

@@ -153,20 +153,6 @@ def clean_backend(value):
     return f"{host}:{port_i}"
 
 
-def clean_backends(values):
-    """Validate a list of 'host:port' backends; dedupe, preserve order."""
-    out = []
-    for v in values or []:
-        v = (v or "").strip()
-        if not v:
-            continue
-        out.append(clean_backend(v))
-    out = list(dict.fromkeys(out))  # de-duplicate, keep order
-    if not out:
-        raise ValidationError("At least one backend server is required.")
-    return out
-
-
 # nginx time values: a number with an optional unit (ms, s, m, h, d, w).
 _TIME_RE = re.compile(r"^\d+(ms|s|m|h|d|w)?$")
 # nginx size/rate values: bytes/sec with an optional k/m/g suffix (e.g. 1m, 512k).

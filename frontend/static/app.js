@@ -1807,7 +1807,7 @@ function startMonitoring() {
   loadIfaceTraffic();
   renderIfaceTree();
   clearInterval(MON_TIMER);
-  MON_TIMER = setInterval(() => { loadMetrics(); loadIfaceTraffic(); }, 2000);
+  MON_TIMER = setInterval(() => { if (!document.hidden) { loadMetrics(); loadIfaceTraffic(); } }, 2000);
 }
 function stopMonitoring() { clearInterval(MON_TIMER); MON_TIMER = null; }
 
@@ -4449,7 +4449,7 @@ function openDiagnose(domain, port) {
   $("#diag-overlay").classList.remove("hidden");
   refreshDiagnose();
   clearInterval(DIAG_TIMER);
-  DIAG_TIMER = setInterval(refreshDiagnose, 2500);   // ~live
+  DIAG_TIMER = setInterval(() => { if (!document.hidden) refreshDiagnose(); }, 2500);   // ~live
 }
 
 function closeDiagnose() {
