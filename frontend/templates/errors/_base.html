@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ status }} — {{ title }} · Splitter</title>
+<link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+<style>
+  * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #1e293b;
+    display: flex; align-items: center; justify-content: center;
+    background:
+      radial-gradient(800px 500px at 15% -10%, rgba(16,185,129,.20), transparent 60%),
+      radial-gradient(700px 500px at 110% 110%, rgba(56,189,248,.18), transparent 55%),
+      linear-gradient(135deg, #f1f5f9, #e9eef5 45%, #e2e8f0);
+    background-size: 100% 100%, 100% 100%, 200% 200%;
+    animation: drift 24s ease-in-out infinite;
+    padding: 24px;
+  }
+  @keyframes drift { 0%,100% { background-position: 0% 50%, 0% 50%, 0% 50%; } 50% { background-position: 0% 50%, 0% 50%, 100% 50%; } }
+  @media (prefers-reduced-motion: reduce) { *, body, .astro, .star, .gear-a, .gear-b, .pulse, .ring { animation: none !important; } }
+  .card {
+    width: 100%; max-width: 30rem;
+    background: rgba(255,255,255,.82); backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,.6);
+    border-radius: 1.25rem;
+    box-shadow: 0 22px 45px -28px rgba(15,23,42,.45);
+    padding: 2.25rem 2rem;
+    text-align: center;
+  }
+  .brand { display:flex; align-items:center; justify-content:center; gap:.5rem; margin-bottom: 1.25rem; }
+  .brand img { height: 1.75rem; width: 1.75rem; }
+  .brand span { font-weight: 800; font-size: 1.05rem; letter-spacing: -.01em; color:#0f172a; }
+  .brand b { color: #10b981; font-weight: 800; }
+  .art { margin: .25rem auto 1rem; display:flex; align-items:center; justify-content:center; min-height: 110px; }
+  .status { font-size: clamp(2.5rem, 2rem + 2vw, 3.5rem); font-weight: 800; line-height:1; letter-spacing: -.02em;
+            background: linear-gradient(135deg, #0f172a, #475569); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  h1 { font-size: 1.05rem; font-weight: 700; margin: .5rem 0 .35rem; color: #1e293b; }
+  p.msg { font-size: .875rem; color: #64748b; margin: 0 0 1.25rem; line-height:1.5; }
+  .path { display:inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem;
+          background: #f1f5f9; border: 1px solid #e2e8f0; color: #475569; padding: .3rem .6rem; border-radius: .5rem; margin-bottom: 1.25rem; word-break: break-all; }
+  .back { display:inline-block; background: linear-gradient(135deg, #10b981, #059669); color:#fff; font-weight:600; font-size:.875rem;
+          padding: .65rem 1.4rem; border-radius: .75rem; text-decoration:none; box-shadow: 0 14px 28px -14px rgba(16,185,129,.6); transition: transform .15s ease; }
+  .back:hover { transform: translateY(-1px); }
+  .meta { margin-top: 1.25rem; font-size: .7rem; color: #94a3b8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  {% block extra_style %}{% endblock %}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand"><img src="/static/logo.svg" alt=""><span>Split<b>ter</b></span></div>
+    <div class="art">{% block art %}{% endblock %}</div>
+    <div class="status">{{ status }}</div>
+    <h1>{{ title }}</h1>
+    <p class="msg">{{ message }}</p>
+    {% if path %}<div class="path">{{ method }} {{ path }}</div>{% endif %}
+    <div><a class="back" href="/">← Back to dashboard</a></div>
+    <div class="meta">{{ timestamp }} · req {{ request_id }}</div>
+  </div>
+</body>
+</html>

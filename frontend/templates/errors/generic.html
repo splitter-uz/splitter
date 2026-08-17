@@ -1,0 +1,18 @@
+{% extends "errors/_base.html" %}
+{% block extra_style %}
+  .pulse { animation: pulse 2s ease-in-out infinite; transform-origin: 60px 55px; }
+  @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.08); opacity: .85; } }
+  .ring { animation: ringPulse 2s ease-in-out infinite; transform-origin: 60px 55px; }
+  @keyframes ringPulse { 0% { transform: scale(.9); opacity: .7; } 100% { transform: scale(1.35); opacity: 0; } }
+{% endblock %}
+{% block art %}
+{% set warn = status < 500 %}
+<svg width="120" height="110" viewBox="0 0 120 110" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle class="ring" cx="60" cy="55" r="30" fill="none" stroke="{{ '#f59e0b' if warn else '#ef4444' }}" stroke-width="2"/>
+  <g class="pulse">
+    <circle cx="60" cy="55" r="26" fill="{{ '#fffbeb' if warn else '#fef2f2' }}" stroke="{{ '#f59e0b' if warn else '#ef4444' }}" stroke-width="2"/>
+    <rect x="57" y="42" width="6" height="16" rx="3" fill="{{ '#f59e0b' if warn else '#ef4444' }}"/>
+    <circle cx="60" cy="65" r="3.2" fill="{{ '#f59e0b' if warn else '#ef4444' }}"/>
+  </g>
+</svg>
+{% endblock %}

@@ -43,7 +43,7 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall"];
+const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall", "errorpages"];
 // Pages whose data is loaded lazily on first visit (see showPage).
 const PAGE_LOADED = new Set();
 function showPage(name) {
@@ -65,6 +65,7 @@ function showPage(name) {
   if (name === "waf") loadWaf();
   if (name === "ssl") loadSslCerts();
   if (name === "firewall") loadFirewall();
+  if (name === "errorpages") loadErrorPagesPage();
   if (name === "docker") loadDocker();
   if (name === "map") startMapPage(requestedTab || MAP_MODE);
   else stopTrafficPolling();
@@ -4194,6 +4195,8 @@ async function refreshLogs() {
   const { domain, port } = LOGS_CURRENT;
   const q = $("#logs-search").value.trim();
   const kind = LOGS_KIND;
+  const dl = $("#logs-download");
+  if (dl) dl.href = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}/download`;
   const url = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}` +
     `?lines=${$("#logs-lines").value}` + (q ? `&q=${encodeURIComponent(q)}` : "");
   try {
@@ -4222,6 +4225,71 @@ function stopLogsAuto() {
   if (LOGS_TIMER) { clearInterval(LOGS_TIMER); LOGS_TIMER = null; }
   const cb = $("#logs-auto");
   if (cb) cb.checked = false;
+}
+
+// --- error pages (admin) ---------------------------------------------------
+// Manage custom uploads for backend/error_pages.py's dashboard-error
+// middleware (404/500/etc). A key is either an exact status code ("404")
+// or an inclusive range ("400-499") — see clean_error_page_key in
+// validators.py, which the backend also enforces.
+let ERRPAGES_FILE = null;   // File chosen via "Choose file…", or null
+
+async function loadErrorPagesPage() {
+  if (!isAdmin()) return;
+  try {
+    const j = await (await fetch("/api/error-pages")).json();
+    if (!j.ok) return;
+    renderErrorPagesList(j.pages || []);
+  } catch (_) { /* non-fatal */ }
+}
+
+function renderErrorPagesList(pages) {
+  const rows = $("#errpages-rows");
+  if (!rows) return;
+  rows.innerHTML = "";
+  $("#errpages-empty").classList.toggle("hidden", pages.length > 0);
+  pages.forEach((p) => {
+    const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50";
+    tr.innerHTML = `
+      <td class="px-6 py-3 font-mono font-semibold text-slate-800">${escapeHtml(p.key)}</td>
+      <td class="px-6 py-3 text-slate-500">${fmtBytes(p.size || 0)}</td>
+      <td class="px-6 py-3 text-slate-500 font-mono text-xs">${escapeHtml(p.mtime || "")}</td>
+      <td class="px-6 py-3 text-right whitespace-nowrap">
+        <a href="/api/error-pages/${encodeURIComponent(p.key)}/preview" target="_blank" rel="noopener" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Preview</a>
+        <button data-key="${escapeHtml(p.key)}" class="errpages-del text-xs font-medium text-red-600 hover:text-red-800">Delete</button>
+      </td>`;
+    rows.appendChild(tr);
+  });
+  rows.querySelectorAll(".errpages-del").forEach((b) =>
+    b.addEventListener("click", () => deleteErrorPage(b.dataset.key)));
+}
+
+async function deleteErrorPage(key) {
+  if (!confirm(`Remove the custom page for "${key}"? It'll fall back to the built-in default.`)) return;
+  const j = await (await fetch(`/api/error-pages/${encodeURIComponent(key)}`, { method: "DELETE" })).json();
+  toast(j.ok ? `Removed custom page for ${key}.` : (j.error || "Could not remove it."), j.ok);
+  if (j.ok) loadErrorPagesPage();
+}
+
+async function uploadErrorPage(e) {
+  e.preventDefault();
+  const key = $("#errpages-key").value.trim();
+  const html = $("#errpages-html").value;
+  if (!key) { toast("Enter a status code or range.", false); return; }
+  if (!ERRPAGES_FILE && !html.trim()) { toast("Paste some HTML or choose a file.", false); return; }
+  const fd = new FormData();
+  fd.append("key", key);
+  if (ERRPAGES_FILE) fd.append("file", ERRPAGES_FILE);
+  else fd.append("html", html);
+  const j = await (await fetch("/api/error-pages", { method: "POST", body: fd })).json();
+  toast(j.ok ? `Saved custom page for ${j.key}.` : (j.error || "Could not save it."), j.ok);
+  if (j.ok) {
+    $("#errpages-form").reset();
+    ERRPAGES_FILE = null;
+    $("#errpages-file-name").classList.add("hidden");
+    loadErrorPagesPage();
+  }
 }
 
 // --- backup & restore (admin) ----------------------------------------------
@@ -4405,6 +4473,7 @@ async function loadMe() {
   toggleHidden("#nav-backup", !admin);
   toggleHidden("#nav-waf", !admin);
   toggleHidden("#nav-firewall", !admin);
+  toggleHidden("#nav-errorpages", !admin);
   // Network page: only admins can change the sub-interface policy / network.
   toggleHidden("#iface-settings-card", !admin);
   toggleHidden("#iface-network-card", !admin);
@@ -4944,7 +5013,76 @@ function startWafInstallPoll() {
   }, 3000);
 }
 
+// --- sidebar drag-to-reorder -------------------------------------------
+// Each user's own layout, not a shared/admin setting — kept in localStorage
+// (per browser) rather than /api/settings. Reordering only ever moves the
+// <button> DOM nodes; showPage()/role-based hidden-toggling are entirely
+// class-driven, so neither cares what order they're in.
+const NAV_ORDER_KEY = "splitter_nav_order";
+
+function saveNavOrder() {
+  const nav = $("#sidebar-nav");
+  if (!nav) return;
+  const order = Array.from(nav.querySelectorAll(".nav-link")).map((b) => b.dataset.page);
+  try { localStorage.setItem(NAV_ORDER_KEY, JSON.stringify(order)); } catch (_) { /* private mode etc */ }
+}
+
+function applySavedNavOrder() {
+  const nav = $("#sidebar-nav");
+  if (!nav) return;
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(NAV_ORDER_KEY) || "null"); } catch (_) { saved = null; }
+  if (!Array.isArray(saved) || !saved.length) return;
+  const byPage = new Map(Array.from(nav.querySelectorAll(".nav-link")).map((b) => [b.dataset.page, b]));
+  // appendChild on an already-attached node MOVES it — walking the saved
+  // order in sequence leaves the nav in exactly that order. Any nav-link not
+  // in a stale saved order (a page added since) keeps its original relative
+  // spot, since only the ones explicitly named get moved.
+  saved.forEach((page) => { const b = byPage.get(page); if (b) nav.appendChild(b); });
+}
+
+function initNavReorder() {
+  const nav = $("#sidebar-nav");
+  if (!nav) return;
+  let dragBtn = null;
+  const clearDropMarkers = () =>
+    nav.querySelectorAll(".nav-link").forEach((b) => b.classList.remove("nav-drop-before", "nav-drop-after"));
+  nav.querySelectorAll(".nav-link").forEach((btn) => {
+    btn.draggable = true;
+    btn.title = "Drag to reorder";
+    btn.addEventListener("dragstart", (e) => {
+      dragBtn = btn;
+      btn.classList.add("nav-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", btn.dataset.page); } catch (_) { /* ignore */ }
+    });
+    btn.addEventListener("dragend", () => {
+      btn.classList.remove("nav-dragging");
+      clearDropMarkers();
+      dragBtn = null;
+    });
+    btn.addEventListener("dragover", (e) => {
+      if (!dragBtn || dragBtn === btn) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const before = (e.clientY - btn.getBoundingClientRect().top) < btn.offsetHeight / 2;
+      clearDropMarkers();
+      btn.classList.add(before ? "nav-drop-before" : "nav-drop-after");
+    });
+    btn.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (!dragBtn || dragBtn === btn) return;
+      const before = btn.classList.contains("nav-drop-before");
+      nav.insertBefore(dragBtn, before ? btn : btn.nextSibling);
+      clearDropMarkers();
+      saveNavOrder();
+    });
+  });
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
+  applySavedNavOrder();   // before first paint's active-class pass below
+
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
   // correct section is visible from the first paint instead of flashing Map/Stream.
   // A bare tab hash (#stream / #proxy / #fwdproxy) resolves to the Map page.
@@ -4970,6 +5108,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // sidebar nav: switch pages (preserve form state)
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
+  initNavReorder();
   // "New Mapping" / empty-state jumps start a fresh add
   // "New Stream" / "New Proxy" jumps inherit the mode of the page clicked from.
   $$(".nav-jump").forEach((b) => b.addEventListener("click", () => {
@@ -5047,6 +5186,33 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#logs-auto").addEventListener("change", (e) => {
     if (LOGS_TIMER) { clearInterval(LOGS_TIMER); LOGS_TIMER = null; }
     if (e.target.checked) LOGS_TIMER = setInterval(refreshLogs, 5000);
+  });
+  // Error pages page
+  $("#errpages-refresh").addEventListener("click", loadErrorPagesPage);
+  $("#errpages-form").addEventListener("submit", uploadErrorPage);
+  $("#errpages-choose").addEventListener("click", () => $("#errpages-file").click());
+  $("#errpages-file").addEventListener("change", (e) => {
+    ERRPAGES_FILE = e.target.files[0] || null;
+    const nameEl = $("#errpages-file-name");
+    if (ERRPAGES_FILE) {
+      nameEl.textContent = `Using file: ${ERRPAGES_FILE.name} (clears the textarea below)`;
+      nameEl.classList.remove("hidden");
+      $("#errpages-html").value = "";
+      $("#errpages-html").disabled = true;
+    } else {
+      nameEl.classList.add("hidden");
+      $("#errpages-html").disabled = false;
+    }
+  });
+  $("#errpages-html").addEventListener("input", () => {
+    // Typing in the textarea abandons a previously chosen file, so the two
+    // inputs never silently disagree about which one will actually upload.
+    if (ERRPAGES_FILE) {
+      ERRPAGES_FILE = null;
+      $("#errpages-file").value = "";
+      $("#errpages-file-name").classList.add("hidden");
+      $("#errpages-html").disabled = false;
+    }
   });
   $("#backup-refresh").addEventListener("click", loadBackups);
   $("#backup-now").addEventListener("click", createBackupNow);

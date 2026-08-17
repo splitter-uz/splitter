@@ -1,0 +1,25 @@
+{% extends "errors/_base.html" %}
+{% block extra_style %}
+  .astro { animation: float 4.5s ease-in-out infinite; transform-origin: 70px 60px; }
+  @keyframes float { 0%,100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-14px) rotate(3deg); } }
+  .star { animation: twinkle 2.4s ease-in-out infinite; }
+  .star:nth-of-type(2) { animation-delay: .4s; } .star:nth-of-type(3) { animation-delay: .9s; } .star:nth-of-type(4) { animation-delay: 1.4s; }
+  @keyframes twinkle { 0%,100% { opacity:.25; } 50% { opacity:1; } }
+{% endblock %}
+{% block art %}
+<svg width="140" height="120" viewBox="0 0 140 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle class="star" cx="14" cy="18" r="1.6" fill="#38bdf8"/>
+  <circle class="star" cx="122" cy="14" r="1.8" fill="#10b981"/>
+  <circle class="star" cx="128" cy="70" r="1.4" fill="#38bdf8"/>
+  <circle class="star" cx="10" cy="80" r="1.6" fill="#10b981"/>
+  <g class="astro">
+    <ellipse cx="70" cy="78" rx="20" ry="24" fill="#e2e8f0" stroke="#94a3b8" stroke-width="2"/>
+    <rect x="50" y="60" width="14" height="8" rx="4" fill="#cbd5e1" transform="rotate(-20 57 64)"/>
+    <rect x="76" y="60" width="14" height="8" rx="4" fill="#cbd5e1" transform="rotate(20 83 64)"/>
+    <circle cx="70" cy="46" r="22" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+    <circle cx="70" cy="46" r="15" fill="#0f172a"/>
+    <circle cx="65" cy="41" r="4" fill="#38bdf8" opacity=".9"/>
+    <path d="M58 50 q12 10 24 0" stroke="#10b981" stroke-width="2" fill="none" stroke-linecap="round"/>
+  </g>
+</svg>
+{% endblock %}

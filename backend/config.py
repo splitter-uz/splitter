@@ -63,6 +63,11 @@ def _default_data_dir():
 DATA_DIR = _default_data_dir()
 DB_FILE = os.path.join(DATA_DIR, "mappings.json")
 
+# Admin-uploaded custom HTML/Jinja2 templates for the dashboard's own error
+# pages (see error_pages.py) — one file per status code or range, e.g.
+# "404.html" or "400-499.html".
+ERROR_PAGES_DIR = os.path.join(DATA_DIR, "error_pages")
+
 # --- Network --------------------------------------------------------------
 # Network interface the new bind IPs are attached to (STEP A).
 NIC = os.environ.get("SPLITTER_NIC", "eth0")
