@@ -2185,6 +2185,20 @@ def error_pages_delete(key):
     return jsonify({"ok": True})
 
 
+@app.get("/api/error-pages/<key>/preview")
+@require_role("admin")
+def error_pages_preview(key):
+    """Render a custom page with example context, without triggering a
+    real error — what the "Preview" link on the Error Pages page opens."""
+    try:
+        html = error_pages.preview_custom(key)
+    except ValidationError as exc:
+        return _err(str(exc))
+    if html is None:
+        return _err("No custom page for that key.", code=404)
+    return Response(html, mimetype="text/html")
+
+
 # --------------------------------------------------------------------------
 # Full-system backup & restore (admin) — see backup.py
 # A backup zips every data store + SSL cert/key. Treat the file as a secret.

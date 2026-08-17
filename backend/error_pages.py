@@ -166,6 +166,29 @@ def delete_custom(key):
     return False
 
 
+def preview_custom(key):
+    """Render the custom page stored for the exact key `key` (no range
+    matching — this previews what you just uploaded) with representative
+    example context. None if there's no custom page for that key."""
+    key = clean_error_page_key(key)
+    path = os.path.join(config.ERROR_PAGES_DIR, f"{key}.html")
+    if not os.path.isfile(path):
+        return None
+    code = _key_range(key)[0]
+    ctx = {
+        "status": code,
+        "title": title_for(code),
+        "message": message_for(code),
+        "path": "/example/path",
+        "method": "GET",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "request_id": "preview",
+    }
+    with open(path, "r", encoding="utf-8") as fh:
+        source = fh.read()
+    return jinja2.Environment(autoescape=True).from_string(source).render(**ctx)
+
+
 def _context(code, rid):
     return {
         "status": code,

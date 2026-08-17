@@ -43,7 +43,7 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall"];
+const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall", "errorpages"];
 // Pages whose data is loaded lazily on first visit (see showPage).
 const PAGE_LOADED = new Set();
 function showPage(name) {
@@ -65,6 +65,7 @@ function showPage(name) {
   if (name === "waf") loadWaf();
   if (name === "ssl") loadSslCerts();
   if (name === "firewall") loadFirewall();
+  if (name === "errorpages") loadErrorPagesPage();
   if (name === "docker") loadDocker();
   if (name === "map") startMapPage(requestedTab || MAP_MODE);
   else stopTrafficPolling();
@@ -4226,6 +4227,71 @@ function stopLogsAuto() {
   if (cb) cb.checked = false;
 }
 
+// --- error pages (admin) ---------------------------------------------------
+// Manage custom uploads for backend/error_pages.py's dashboard-error
+// middleware (404/500/etc). A key is either an exact status code ("404")
+// or an inclusive range ("400-499") — see clean_error_page_key in
+// validators.py, which the backend also enforces.
+let ERRPAGES_FILE = null;   // File chosen via "Choose file…", or null
+
+async function loadErrorPagesPage() {
+  if (!isAdmin()) return;
+  try {
+    const j = await (await fetch("/api/error-pages")).json();
+    if (!j.ok) return;
+    renderErrorPagesList(j.pages || []);
+  } catch (_) { /* non-fatal */ }
+}
+
+function renderErrorPagesList(pages) {
+  const rows = $("#errpages-rows");
+  if (!rows) return;
+  rows.innerHTML = "";
+  $("#errpages-empty").classList.toggle("hidden", pages.length > 0);
+  pages.forEach((p) => {
+    const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50";
+    tr.innerHTML = `
+      <td class="px-6 py-3 font-mono font-semibold text-slate-800">${escapeHtml(p.key)}</td>
+      <td class="px-6 py-3 text-slate-500">${fmtBytes(p.size || 0)}</td>
+      <td class="px-6 py-3 text-slate-500 font-mono text-xs">${escapeHtml(p.mtime || "")}</td>
+      <td class="px-6 py-3 text-right whitespace-nowrap">
+        <a href="/api/error-pages/${encodeURIComponent(p.key)}/preview" target="_blank" rel="noopener" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Preview</a>
+        <button data-key="${escapeHtml(p.key)}" class="errpages-del text-xs font-medium text-red-600 hover:text-red-800">Delete</button>
+      </td>`;
+    rows.appendChild(tr);
+  });
+  rows.querySelectorAll(".errpages-del").forEach((b) =>
+    b.addEventListener("click", () => deleteErrorPage(b.dataset.key)));
+}
+
+async function deleteErrorPage(key) {
+  if (!confirm(`Remove the custom page for "${key}"? It'll fall back to the built-in default.`)) return;
+  const j = await (await fetch(`/api/error-pages/${encodeURIComponent(key)}`, { method: "DELETE" })).json();
+  toast(j.ok ? `Removed custom page for ${key}.` : (j.error || "Could not remove it."), j.ok);
+  if (j.ok) loadErrorPagesPage();
+}
+
+async function uploadErrorPage(e) {
+  e.preventDefault();
+  const key = $("#errpages-key").value.trim();
+  const html = $("#errpages-html").value;
+  if (!key) { toast("Enter a status code or range.", false); return; }
+  if (!ERRPAGES_FILE && !html.trim()) { toast("Paste some HTML or choose a file.", false); return; }
+  const fd = new FormData();
+  fd.append("key", key);
+  if (ERRPAGES_FILE) fd.append("file", ERRPAGES_FILE);
+  else fd.append("html", html);
+  const j = await (await fetch("/api/error-pages", { method: "POST", body: fd })).json();
+  toast(j.ok ? `Saved custom page for ${j.key}.` : (j.error || "Could not save it."), j.ok);
+  if (j.ok) {
+    $("#errpages-form").reset();
+    ERRPAGES_FILE = null;
+    $("#errpages-file-name").classList.add("hidden");
+    loadErrorPagesPage();
+  }
+}
+
 // --- backup & restore (admin) ----------------------------------------------
 let BACKUPS = [];
 const BK_SELECTED = new Set();
@@ -4407,6 +4473,7 @@ async function loadMe() {
   toggleHidden("#nav-backup", !admin);
   toggleHidden("#nav-waf", !admin);
   toggleHidden("#nav-firewall", !admin);
+  toggleHidden("#nav-errorpages", !admin);
   // Network page: only admins can change the sub-interface policy / network.
   toggleHidden("#iface-settings-card", !admin);
   toggleHidden("#iface-network-card", !admin);
@@ -5119,6 +5186,33 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#logs-auto").addEventListener("change", (e) => {
     if (LOGS_TIMER) { clearInterval(LOGS_TIMER); LOGS_TIMER = null; }
     if (e.target.checked) LOGS_TIMER = setInterval(refreshLogs, 5000);
+  });
+  // Error pages page
+  $("#errpages-refresh").addEventListener("click", loadErrorPagesPage);
+  $("#errpages-form").addEventListener("submit", uploadErrorPage);
+  $("#errpages-choose").addEventListener("click", () => $("#errpages-file").click());
+  $("#errpages-file").addEventListener("change", (e) => {
+    ERRPAGES_FILE = e.target.files[0] || null;
+    const nameEl = $("#errpages-file-name");
+    if (ERRPAGES_FILE) {
+      nameEl.textContent = `Using file: ${ERRPAGES_FILE.name} (clears the textarea below)`;
+      nameEl.classList.remove("hidden");
+      $("#errpages-html").value = "";
+      $("#errpages-html").disabled = true;
+    } else {
+      nameEl.classList.add("hidden");
+      $("#errpages-html").disabled = false;
+    }
+  });
+  $("#errpages-html").addEventListener("input", () => {
+    // Typing in the textarea abandons a previously chosen file, so the two
+    // inputs never silently disagree about which one will actually upload.
+    if (ERRPAGES_FILE) {
+      ERRPAGES_FILE = null;
+      $("#errpages-file").value = "";
+      $("#errpages-file-name").classList.add("hidden");
+      $("#errpages-html").disabled = false;
+    }
   });
   $("#backup-refresh").addEventListener("click", loadBackups);
   $("#backup-now").addEventListener("click", createBackupNow);

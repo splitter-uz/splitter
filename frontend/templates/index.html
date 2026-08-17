@@ -194,6 +194,10 @@
           <span>Firewall</span>
           <span id="nav-firewall-badge" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200 hidden">off</span>
         </button>
+        <button data-page="errorpages" id="nav-errorpages" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>
+          <span>Error Pages</span>
+        </button>
       </nav>
 
       <!-- account -->
@@ -2302,6 +2306,77 @@
               <button id="fw-panic-btn" type="button" class="shrink-0 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-sm font-semibold rounded-lg px-4 py-2.5 shadow">Panic — disable now</button>
             </div>
             <p id="fw-panic-msg" class="hidden text-xs mt-3"></p>
+          </div>
+        </section>
+
+        <!-- ── Error Pages (admin) ─────────────────────── -->
+        <section id="page-errorpages" class="page hidden space-y-6">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Error Pages</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Custom pages served for HTTP errors on this dashboard — 404, 500, and everything else. Anything not overridden below uses the built-in animated default.</p>
+            </div>
+            <button id="errpages-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+            <!-- Upload -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+              <div class="text-sm font-semibold text-slate-800 mb-1">Upload a custom page</div>
+              <p class="text-xs text-slate-500 mb-4">Key is an exact status code (<span class="font-mono">404</span>) or an inclusive range (<span class="font-mono">400-499</span>); an exact code always wins over a range that also covers it. Paste HTML/Jinja2 below, or choose a file — a file wins if both are set.</p>
+              <form id="errpages-form" class="space-y-3">
+                <div>
+                  <label class="block text-xs font-medium mb-1">Status code or range</label>
+                  <input id="errpages-key" name="key" placeholder="404  or  400-499" required
+                    class="w-full sm:w-56 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                </div>
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <label class="block text-xs font-medium">HTML / Jinja2 source</label>
+                    <button type="button" id="errpages-choose" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">Choose file…</button>
+                    <input type="file" id="errpages-file" accept=".html,.htm,text/html" class="hidden" />
+                  </div>
+                  <textarea id="errpages-html" name="html" rows="8" spellcheck="false" placeholder="<html>...</html>"
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                  <p id="errpages-file-name" class="hidden text-xs text-emerald-700 mt-1"></p>
+                </div>
+                <p class="text-[11px] text-slate-400">Available variables: <span class="font-mono">status</span>, <span class="font-mono">title</span>, <span class="font-mono">message</span>, <span class="font-mono">path</span>, <span class="font-mono">method</span>, <span class="font-mono">timestamp</span>, <span class="font-mono">request_id</span> — e.g. <span class="font-mono">{{ '{{ status }}' }}</span>.</p>
+                <button type="submit" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save custom page</button>
+              </form>
+            </div>
+
+            <!-- Built-in defaults -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+              <div class="text-sm font-semibold text-slate-800 mb-1">Built-in defaults</div>
+              <p class="text-xs text-slate-500 mb-3">Used for any code without a custom page above.</p>
+              <dl class="space-y-2 text-sm">
+                <div class="flex justify-between"><dt class="text-slate-500">404</dt><dd class="font-medium">Floating astronaut</dd></div>
+                <div class="flex justify-between"><dt class="text-slate-500">500</dt><dd class="font-medium">Spinning gears</dd></div>
+                <div class="flex justify-between"><dt class="text-slate-500">Everything else</dt><dd class="font-medium">Pulsing icon (4xx/5xx)</dd></div>
+              </dl>
+              <p class="text-xs text-slate-400 mt-3">An <span class="font-mono">/api/*</span> request, or one sending <span class="font-mono">Accept: application/json</span>, always gets JSON instead — never one of these pages.</p>
+            </div>
+          </div>
+
+          <!-- Custom pages -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-100">
+              <h3 class="text-sm font-semibold">Custom pages</h3>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                  <tr>
+                    <th class="text-left px-6 py-3 font-medium">Key</th>
+                    <th class="text-left px-6 py-3 font-medium">Size</th>
+                    <th class="text-left px-6 py-3 font-medium">Last modified</th>
+                    <th class="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody id="errpages-rows" class="divide-y divide-slate-100"></tbody>
+              </table>
+            </div>
+            <div id="errpages-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No custom error pages yet — every status code uses the built-in default above.</div>
           </div>
         </section>
 
