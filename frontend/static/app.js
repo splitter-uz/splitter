@@ -5080,8 +5080,42 @@ function initNavReorder() {
   });
 }
 
+// --- sidebar collapse (desktop) ---------------------------------------
+// Also a personal preference (see the nav-order comment above), so it's
+// kept in localStorage rather than /api/settings, and — same reasoning as
+// applySavedNavOrder() — restored before first paint to avoid a flash of
+// the sidebar before it collapses back down.
+const SIDEBAR_COLLAPSED_KEY = "splitter_sidebar_collapsed";
+
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  const btn = $("#sidebar-toggle");
+  if (btn) {
+    btn.setAttribute("aria-expanded", String(!collapsed));
+    btn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    btn.setAttribute("aria-label", btn.title);
+  }
+}
+
+function applySavedSidebarCollapsed() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1"; } catch (_) { /* private mode etc */ }
+  if (collapsed) setSidebarCollapsed(true);   // collapsed is the non-default state; skip the DOM write otherwise
+}
+
+function initSidebarToggle() {
+  const btn = $("#sidebar-toggle");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const collapsed = !document.body.classList.contains("sidebar-collapsed");
+    setSidebarCollapsed(collapsed);
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0"); } catch (_) { /* ignore */ }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   applySavedNavOrder();   // before first paint's active-class pass below
+  applySavedSidebarCollapsed();
 
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
   // correct section is visible from the first paint instead of flashing Map/Stream.
@@ -5109,6 +5143,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // sidebar nav: switch pages (preserve form state)
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
   initNavReorder();
+  initSidebarToggle();
   // "New Mapping" / empty-state jumps start a fresh add
   // "New Stream" / "New Proxy" jumps inherit the mode of the page clicked from.
   $$(".nav-jump").forEach((b) => b.addEventListener("click", () => {

@@ -55,6 +55,32 @@
     .nav-link.nav-drop-before { box-shadow: inset 0 2px 0 0 #34d399; }
     .nav-link.nav-drop-after { box-shadow: inset 0 -2px 0 0 #34d399; }
 
+    /* sidebar collapse — desktop only (lg+); below that the sidebar already
+       stacks full-width above the content, which needs no collapse control.
+       #sidebar-toggle lives OUTSIDE <aside> in the DOM on purpose: a
+       descendant of a transformed ancestor gets trapped in that ancestor's
+       containing block even with position:fixed, so it would slide off
+       with the sidebar instead of staying put to bring it back. */
+    @media (min-width: 1024px) {
+      aside { transition: transform .3s cubic-bezier(.22,1,.36,1); }
+      main  { transition: margin-left .3s cubic-bezier(.22,1,.36,1); }
+      body.sidebar-collapsed aside { transform: translateX(-100%); }
+      body.sidebar-collapsed main  { margin-left: 0 !important; }
+      #sidebar-toggle {
+        position: fixed; top: 26px; left: 244px; z-index: 30;
+        display: flex; align-items: center; justify-content: center;
+        width: 26px; height: 26px; border-radius: 9999px;
+        background: #0f172a; color: #34d399; border: 1px solid rgba(255,255,255,.15);
+        box-shadow: 0 8px 20px -8px rgba(0,0,0,.7);
+        transition: left .3s cubic-bezier(.22,1,.36,1), background .2s ease;
+        cursor: pointer;
+      }
+      #sidebar-toggle:hover { background: #1e293b; }
+      #sidebar-toggle svg { width: 13px; height: 13px; transition: transform .3s cubic-bezier(.22,1,.36,1); }
+      body.sidebar-collapsed #sidebar-toggle { left: 10px; }
+      body.sidebar-collapsed #sidebar-toggle svg { transform: rotate(180deg); }
+    }
+
     /* Page transition — a CSS *transition*, not a keyframe animation.
        Rebuilt after a keyframe-animation version (animation:fadeUp ... both)
        could leave a page permanently stuck invisible: a fill-mode animation
@@ -215,6 +241,13 @@
         </div>
       </div>
     </aside>
+
+    <!-- Collapse/expand the sidebar (desktop only — see the lg+ media query
+         in <style>). Sits outside <aside> so it stays put while the sidebar
+         slides away, letting you bring it back. -->
+    <button id="sidebar-toggle" type="button" title="Collapse sidebar" aria-label="Collapse sidebar" aria-expanded="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 18l-6-6 6-6"/></svg>
+    </button>
 
     <!-- ============ Main ============ -->
     <main class="flex-1 lg:ml-64 overflow-hidden">
