@@ -64,7 +64,14 @@
     @media (min-width: 1024px) {
       aside { transition: transform .3s cubic-bezier(.22,1,.36,1); }
       main  { transition: margin-left .3s cubic-bezier(.22,1,.36,1); }
-      body.sidebar-collapsed aside { transform: translateX(-100%); }
+      /* !important on both: <aside> carries Tailwind's animate-slideIn
+         (animation: slideIn .45s ... both), and a fill-mode "both"
+         animation's locked-in end-state transform (translateX(0)) beats a
+         plain CSS rule for the same property regardless of selector
+         specificity — the exact same class of bug .page's fadeUp
+         animation had (see that comment above). Without !important here
+         this rule is silently never applied. */
+      body.sidebar-collapsed aside { transform: translateX(-100%) !important; }
       body.sidebar-collapsed main  { margin-left: 0 !important; }
       #sidebar-toggle {
         position: fixed; top: 26px; left: 244px; z-index: 30;
