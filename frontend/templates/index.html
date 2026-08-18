@@ -74,16 +74,17 @@
       body.sidebar-collapsed aside { transform: translateX(-100%) !important; }
       body.sidebar-collapsed main  { margin-left: 0 !important; }
       #sidebar-toggle {
-        position: fixed; top: 26px; left: 244px; z-index: 30;
+        position: fixed; top: 50%; left: 250px; z-index: 30;
+        transform: translateY(-50%);
         display: flex; align-items: center; justify-content: center;
-        width: 26px; height: 26px; border-radius: 9999px;
+        width: 18px; height: 48px; border-radius: 9px;
         background: #0f172a; color: #34d399; border: 1px solid rgba(255,255,255,.15);
         box-shadow: 0 8px 20px -8px rgba(0,0,0,.7);
         transition: left .3s cubic-bezier(.22,1,.36,1), background .2s ease;
         cursor: pointer;
       }
       #sidebar-toggle:hover { background: #1e293b; }
-      #sidebar-toggle svg { width: 13px; height: 13px; transition: transform .3s cubic-bezier(.22,1,.36,1); }
+      #sidebar-toggle svg { width: 11px; height: 11px; transition: transform .3s cubic-bezier(.22,1,.36,1); }
       body.sidebar-collapsed #sidebar-toggle { left: 10px; }
       body.sidebar-collapsed #sidebar-toggle svg { transform: rotate(180deg); }
     }
