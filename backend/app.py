@@ -773,9 +773,27 @@ def fwdproxy_index():
     return jsonify({"ok": True, "proxies": storage.fwdproxy_list()})
 
 
+def _local_bind_ips():
+    """Every IPv4 address a listener can bind right now: host interfaces (incl.
+    VLAN/macvlan devices) plus managed sub-interfaces from the registry."""
+    ips = {a["ip"] for i in net_detect.list_interfaces(include_virtual=True)
+           for a in (i.get("addresses") or []) if a.get("ip")}
+    ips.update(s["bind_ip"] for s in storage.subiface_list() if s.get("bind_ip"))
+    return ips
+
+
 def _build_fwdproxy(form, existing=None):
     name = clean_fwdproxy_name(form.get("name"))
     bind_ip = clean_ip(form.get("bind_ip"), "Bind IP")
+    # A forward proxy never provisions an address — it binds one that already
+    # exists. nginx -t actually bind()s stream listeners, so an address that's
+    # on no interface fails the apply with "bind() … Cannot assign requested
+    # address" and a rollback; say what's wrong instead.
+    if bind_ip not in _local_bind_ips():
+        raise ValidationError(
+            f"Bind IP {bind_ip} isn't assigned to any interface or managed "
+            "sub-interface on this host — pick an address from the list, or "
+            "create a sub-interface with that IP first.")
     listen_port = clean_port(form.get("listen_port"), 443)
     allow_all = _truthy(form.get("allow_all"))
     allowed_domains = [] if allow_all else clean_sni_list(form.get("allowed_domains"))
