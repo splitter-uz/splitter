@@ -12,6 +12,9 @@ Roles:
               actions (delete mapping, import, re-apply all).
     creator — may add and edit mappings and export; may NOT delete mappings,
               import, re-apply, or manage users.
+    viewer  — read-only: sees the dashboard (mappings, health, monitoring,
+              certs, forward proxies, docker) but can change nothing except
+              their own password. No tools, no export.
 """
 import json
 import os
@@ -23,7 +26,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
 
-ROLES = ("admin", "creator")
+ROLES = ("admin", "creator", "viewer")
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 MIN_PASSWORD_LEN = 8
 # pbkdf2 is available everywhere; Werkzeug's newer scrypt default needs an
@@ -83,7 +86,7 @@ def _validate(username, password, role):
     if not _USERNAME_RE.match(username or ""):
         raise AuthError("Username must be 3–32 characters: letters, digits, _ . -")
     if role not in ROLES:
-        raise AuthError("Role must be 'admin' or 'creator'.")
+        raise AuthError("Role must be 'admin', 'creator' or 'viewer'.")
     if not password or len(password) < MIN_PASSWORD_LEN:
         raise AuthError(f"Password must be at least {MIN_PASSWORD_LEN} characters.")
 
@@ -123,7 +126,7 @@ def set_password(username, password):
 
 def set_role(username, role):
     if role not in ROLES:
-        raise AuthError("Role must be 'admin' or 'creator'.")
+        raise AuthError("Role must be 'admin', 'creator' or 'viewer'.")
     with _lock:
         data = _read()
         if username not in data:
