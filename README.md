@@ -131,7 +131,10 @@ Run without a service: `sudo ./setup.sh` (configure only) then `sudo ./run.sh`.
 
 **🔐 Auth & roles**
 First run creates an **admin**; after that the whole UI requires login. Admins
-add **admin**/**creator** users, delete, import, re‑apply, and manage everything.
+add **admin**/**creator**/**viewer** users, delete, import, re‑apply, and manage
+everything. Creators add and edit; **viewers** are read‑only (they see every
+page's data but every create/edit/delete control is hidden and the API refuses
+them with 403).
 An **Activity** page keeps an audit log of logins, mapping changes, and
 user‑management actions.
 
@@ -205,7 +208,7 @@ as timestamped zips with scheduled auto‑backups and one‑click rollback.
 </table>
 
 Plus a **Monitoring page** (CPU/RAM/disk/network from `/proc`), a **network
-Tools page** (ping, port test, DNS lookup, traceroute, tcpdump, WHOIS, SSL
+Tools page** (ping, port test, port scanner/nmap, DNS lookup, traceroute, tcpdump, WHOIS, SSL
 check), and a **live routing map** (n8n‑style canvas of every mapping with
 red/✗ flagging when a backend is down).
 
@@ -484,15 +487,16 @@ happened.
 | `GET`·`POST`·`DELETE` | `/api/subinterfaces[/<name>]` | admin | List / create / edit / delete sub‑interfaces. |
 | `GET`·`POST` | `/api/settings` | any / admin | Read / change tool‑wide settings. |
 | `GET`·`POST` | `/api/network/dns` · `/network/hosts` | admin | View / edit host DNS + `/etc/hosts`. |
-| `POST` | `/api/tools/{ping,port,dns,traceroute,whois,tcpdump,routes,sslcheck}` | admin/creator | Network diagnostics. |
+| `POST` | `/api/tools/{ping,port,portscan,dns,traceroute,whois,tcpdump,routes,sslcheck}` | admin/creator | Network diagnostics. |
 | `GET`·`POST`·`DELETE` | `/api/mappings[/<domain>]` | varies | List / create+provision / deprovision; `/toggle`, `/diagnose`. |
 | `POST` | `/api/preview` | any | Render the conf without applying. |
 | `GET` | `/api/health` | any | Cached per‑backend up/down rollup for every mapping. |
 | `GET`·`POST`·`DELETE` | `/api/access-lists[/<name>]` | any / admin | Manage access lists (+ `/refresh`). |
-| `GET`·`POST`·`DELETE` | `/api/ssl/certs[/<name>]` | admin/creator | Upload / self‑sign / **Let's Encrypt** / delete / `/renew`. |
+| `GET`·`POST`·`DELETE` | `/api/ssl/certs[/<name>]` | any / admin/creator | List; upload / self‑sign / **Let's Encrypt** / delete / `/renew`. |
+| `GET` | `/api/backup` | admin/creator | Export the mappings store as JSON (not for viewers). |
 | `GET` | `/api/certs` | any | Certs a mapping can reuse (dropdown source). |
 | `GET` | `/api/docker/status` · `/docker/containers` · `/docker/services` | any | Docker/Swarm discovery for the backend picker. |
-| `GET`·`POST`·`DELETE` | `/api/forward-proxies[/<name>]` | admin | Standalone outbound forward proxies (+ `/toggle`). |
+| `GET`·`POST`·`DELETE` | `/api/forward-proxies[/<name>]` | any / admin/creator | Standalone outbound forward proxies (+ `/toggle`, admin). |
 | `GET`·`POST`·`DELETE` | `/api/firewall/*` | admin | Overview, settings, per‑iface, rules, panic, `/whoami`. |
 | `GET`·`POST`·`DELETE` | `/api/backups[/*]` | admin | Snapshots, download, restore, schedule. |
 | `POST` | `/api/reapply` | admin | Re‑provision every stored mapping. |

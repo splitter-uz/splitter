@@ -564,13 +564,15 @@ def export_all():
 
 def import_merge(records):
     """
-    Merge `records` (dict keyed by domain) into the store, overwriting any
-    existing mapping with the same domain and keeping the rest. Returns the
+    Merge `records` (dict of mappings; keys are ignored — each record is filed
+    under its canonical domain:port identity) into the store, overwriting any
+    existing mapping with the same identity and keeping the rest. Returns the
     merged store.
     """
     with _lock:
         data = _read_all()
-        data.update(records)
+        for m in records.values():
+            data[_canonical_key(m)] = m
         _write_all(data)
         return data
 

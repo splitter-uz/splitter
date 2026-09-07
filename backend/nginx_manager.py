@@ -555,6 +555,9 @@ def upstream_name(domain, port=None):
 # are carried separately on the mapping.
 LB_METHODS = ("round_robin", "least_conn", "hash", "random")
 DEFAULT_LB_METHOD = "round_robin"
+# nginx refuses `server … backup` under these methods ("balancing method does
+# not support parameter backup"), failing `nginx -t` for the whole config.
+NO_BACKUP_METHODS = ("hash", "random")
 
 
 def lb_directive(mapping):
@@ -580,7 +583,7 @@ def _normalize_backends(mapping):
     return out
 
 
-def _server_line(b):
+def _server_line(b, method=DEFAULT_LB_METHOD):
     """Render one `server …;` line with optional per-server parameters."""
     parts = ["server", b["server"]]
     if b.get("weight"):
@@ -591,7 +594,9 @@ def _server_line(b):
         parts.append(f"fail_timeout={b['fail_timeout']}")
     if b.get("max_conns"):
         parts.append(f"max_conns={b['max_conns']}")
-    if b.get("backup"):
+    # Validated at save time (app._parse_lb); dropped here too so a mapping
+    # stored before that check can still render a config nginx accepts.
+    if b.get("backup") and method not in NO_BACKUP_METHODS:
         parts.append("backup")
     if b.get("down"):
         parts.append("down")
@@ -659,8 +664,9 @@ def render_conf(mapping):
     directive = lb_directive(mapping)
     if directive:
         lines.append(f"    {directive}")
+    method = mapping.get("lb_method") or DEFAULT_LB_METHOD
     for b in backends:
-        lines.append(_server_line(b))
+        lines.append(_server_line(b, method))
     lines += ["}", ""]
 
     # UDP is a datagram transport: nginx can't terminate TLS or read a TLS SNI
@@ -971,8 +977,9 @@ def render_http_conf(mapping):
     directive = lb_directive(mapping)
     if directive:
         lines.append(f"    {directive}")
+    method = mapping.get("lb_method") or DEFAULT_LB_METHOD
     for b in backends:
-        lines.append(_server_line(b))
+        lines.append(_server_line(b, method))
     lines += ["}", ""]
 
     # Per-mapping traffic log (full HTTP line — this is an L7 proxy). The

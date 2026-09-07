@@ -25,6 +25,9 @@ let MAP_MODE = "stream";        // which map tab is active
 let FORM_INTENT_MODE = "stream"; // which mode a fresh "New …" should create into
 
 const isAdmin = () => ME && ME.role === "admin";
+// admin + creator may create/edit; a `viewer` is read-only (sees everything,
+// changes nothing but their own password).
+const canEdit = () => ME && (ME.role === "admin" || ME.role === "creator");
 
 // A mapping is identified by domain + listen port (a domain can map on several
 // ports). This composite key is used for selection, health/traffic cells and to
@@ -250,7 +253,7 @@ function renderDockerMappingsList() {
         <td class="px-6 py-3 font-mono text-xs text-slate-600">🐳 ${escapeHtml(names)}</td>
         <td class="px-6 py-3 font-mono text-xs text-slate-500">${escapeHtml(m.bind_ip || "(dhcp)")}</td>
         <td class="px-6 py-3 text-right whitespace-nowrap">
-          <button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="docker-map-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+          ${canEdit() ? `<button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="docker-map-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>` : ""}
           ${isAdmin() ? `<button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="docker-map-del text-xs font-medium text-red-600 hover:text-red-800">Delete</button>` : ""}
         </td>
       </tr>`;
@@ -1404,7 +1407,7 @@ function renderMappings() {
               ? '<div class="text-xs text-slate-400">↳ ' + escapeHtml(m.cert_domain) + '</div>' : '')
         : '<span class="text-slate-400 text-xs">—</span>'}</td>
       <td class="px-6 py-3 text-right whitespace-nowrap">
-        <button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="edit-btn text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+        ${canEdit() ? `<button data-domain="${escapeHtml(m.domain)}" data-port="${port}" class="edit-btn text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>` : ""}
         ${isAdmin() ? `<label class="relative inline-flex items-center cursor-pointer align-middle mr-3" title="${disabled ? "Enable" : "Disable"} this mapping">
           <input type="checkbox" class="toggle-input sr-only peer" data-domain="${escapeHtml(m.domain)}" data-port="${port}" data-enabled="${disabled ? "false" : "true"}" ${disabled ? "" : "checked"} />
           <div class="w-9 h-5 bg-slate-300 rounded-full peer-checked:bg-emerald-500 transition-colors"></div>
@@ -1541,10 +1544,11 @@ function formData() {
 // A fresh "New Proxy" save should land in the WAF-bound Proxy list, not Stream.
 // The mapping API itself has no notion of "proxy" — binding is a separate call
 // (see /api/waf/bind) — so chain it right after a successful create.
-async function tryBindWaf(domain) {
+async function tryBindWaf(domain, port) {
   try {
     const fd = new FormData();
     fd.append("domain", domain);
+    if (port) fd.append("port", port);   // a domain may map on several ports
     const j = await (await fetch("/api/waf/bind", { method: "POST", body: fd })).json();
     if (j.ok) { toast(`${domain} is live as a Proxy (WAF-bound).`); return true; }
     toast(`${domain} was saved as a Stream mapping — could not switch to Proxy: ${j.error || "bind failed"}`, false);
@@ -1602,7 +1606,7 @@ async function apply(e) {
       resetForm();
       const fromDocker = MAPPING_FORM_SOURCE === "docker";
       let finalMode = editing ? FORM_INTENT_MODE : "stream";
-      if (wantsProxy) finalMode = (await tryBindWaf(j.mapping.domain)) ? "proxy" : "stream";
+      if (wantsProxy) finalMode = (await tryBindWaf(j.mapping.domain, j.mapping.listen_port)) ? "proxy" : "stream";
       await loadMappings();
       // A mapping created from the Docker page stays there — Map's Stream/
       // Reverse Proxy tabs are just where it shows up afterward, not where
@@ -3194,8 +3198,12 @@ async function loadSslCerts() {
       const inUse = c.in_use
         ? '<span class="text-xs text-emerald-700">● in use</span>'
         : '<span class="text-xs text-slate-400">unused</span>';
-      const renewBtn = c.source === "letsencrypt"
+      const renewBtn = c.source === "letsencrypt" && canEdit()
         ? `<button data-cert="${escapeHtml(c.name)}" class="ssl-renew-btn text-xs font-medium text-sky-600 hover:text-sky-800 mr-3">Renew</button>`
+        : "";
+      const delBtn = canEdit()
+        ? `<button data-cert="${escapeHtml(c.name)}" class="ssl-del-btn text-xs font-medium ${c.in_use ? "text-slate-300 cursor-not-allowed" : "text-red-600 hover:text-red-800"}" ${c.in_use ? "disabled" : ""}
+            ${c.in_use ? 'title="In use by a mapping — detach it first"' : ""}>Delete</button>`
         : "";
       tr.innerHTML = `
         <td class="px-6 py-3 font-mono">${escapeHtml(c.name)}${c.subject ? `<div class="text-xs text-slate-400 font-sans">${escapeHtml(c.subject)}</div>` : ""}</td>
@@ -3204,8 +3212,7 @@ async function loadSslCerts() {
         <td class="px-6 py-3">${inUse}</td>
         <td class="px-6 py-3 text-right whitespace-nowrap">
           ${renewBtn}
-          <button data-cert="${escapeHtml(c.name)}" class="ssl-del-btn text-xs font-medium ${c.in_use ? "text-slate-300 cursor-not-allowed" : "text-red-600 hover:text-red-800"}" ${c.in_use ? "disabled" : ""}
-            ${c.in_use ? 'title="In use by a mapping — detach it first"' : ""}>Delete</button>
+          ${delBtn}
         </td>`;
       tb.appendChild(tr);
     });
@@ -3325,7 +3332,7 @@ function renderFwdProxyTable() {
       <td class="px-6 py-3">${dest}${domainsPreview}</td>
       <td class="px-6 py-3 text-xs text-slate-600">${acl}</td>
       <td class="px-6 py-3 text-right whitespace-nowrap">
-        <button data-fp="${escapeHtml(f.name)}" class="fp-edit-btn text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+        ${canEdit() ? `<button data-fp="${escapeHtml(f.name)}" class="fp-edit-btn text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>` : ""}
         ${isAdmin() ? `<button data-fp="${escapeHtml(f.name)}" class="fp-toggle-btn text-xs font-medium text-sky-600 hover:text-sky-800 mr-3">${f.enabled === false ? "Enable" : "Disable"}</button>` : ""}
         ${isAdmin() ? `<button data-fp="${escapeHtml(f.name)}" class="fp-del-btn text-xs font-medium text-red-600 hover:text-red-800">Delete</button>` : ""}
       </td>`;
@@ -3493,9 +3500,9 @@ async function loadAccessLists() {
           <td class="px-6 py-3 text-xs text-slate-600">${a.count}${a.include_private ? " <span class='text-slate-400'>+ private</span>" : ""}</td>
           <td class="px-6 py-3 text-xs text-slate-500">${a.last_refresh ? fmtWhen(a.last_refresh) : "—"}</td>
           <td class="px-6 py-3 text-right whitespace-nowrap space-x-3">
-            ${refreshBtn}
-            <button data-acl-edit="${escapeHtml(a.name)}" class="text-xs font-medium text-slate-600 hover:text-slate-900">Edit</button>
-            <button data-acl-del="${escapeHtml(a.name)}" class="text-xs font-medium ${delDisabled ? "text-slate-300 cursor-not-allowed" : "text-red-600 hover:text-red-800"}" ${delDisabled ? "disabled" : ""} ${delTitle ? `title="${escapeHtml(delTitle)}"` : ""}>Delete</button>
+            ${canEdit() ? refreshBtn : ""}
+            ${canEdit() ? `<button data-acl-edit="${escapeHtml(a.name)}" class="text-xs font-medium text-slate-600 hover:text-slate-900">Edit</button>
+            <button data-acl-del="${escapeHtml(a.name)}" class="text-xs font-medium ${delDisabled ? "text-slate-300 cursor-not-allowed" : "text-red-600 hover:text-red-800"}" ${delDisabled ? "disabled" : ""} ${delTitle ? `title="${escapeHtml(delTitle)}"` : ""}>Delete</button>` : ""}
           </td>`;
         tb.appendChild(tr);
       });
@@ -4462,7 +4469,19 @@ async function loadMe() {
   const who = $("#who"); if (who) who.textContent = `${ME.username} · ${ME.role}`;
   const av = $("#avatar"); if (av) av.textContent = (ME.username[0] || "?").toUpperCase();
   // Creators can add/edit + export, but not destructive/bulk or user mgmt.
+  // Viewers can only look: every create/edit entry point is hidden (the API
+  // rejects them with 403 regardless).
   const admin = isAdmin();
+  const editor = canEdit();
+  $$(".nav-jump").forEach((b) => b.classList.toggle("hidden", !editor));
+  toggleHidden("#export-btn", !editor);
+  toggleHidden("#bulk-export", !editor);
+  toggleHidden("#docker-new-btn", !editor);
+  toggleHidden("#docker-new-btn-empty", !editor);
+  toggleHidden("#fp-create-card", !editor);
+  toggleHidden("#ssl-create-col", !editor);
+  toggleHidden("#acl-create-card", !editor);
+  toggleHidden("#nav-tools", !editor);
   toggleHidden("#import-btn", !admin);
   toggleHidden("#reapply-btn", !admin);
   toggleHidden("#users-card", !admin);
@@ -4559,7 +4578,7 @@ async function loadUsersInner(rows) {
         ? '<input type="checkbox" disabled title="Cannot delete your own account" class="rounded border-slate-200 align-middle opacity-40" />'
         : `<input type="checkbox" class="user-check rounded border-slate-300 cursor-pointer align-middle" data-user="${escapeHtml(u.username)}" ${USR_SELECTED.has(u.username) ? "checked" : ""} />`}</td>
       <td class="px-6 py-3 font-mono">${escapeHtml(u.username)}${self ? ' <span class="text-xs text-slate-400">(you)</span>' : ""}</td>
-      <td class="px-6 py-3"><span class="inline-block px-2 py-0.5 rounded-full text-xs ${u.role === "admin" ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"}">${escapeHtml(u.role)}</span></td>
+      <td class="px-6 py-3"><span class="inline-block px-2 py-0.5 rounded-full text-xs ${u.role === "admin" ? "bg-emerald-100 text-emerald-700" : u.role === "viewer" ? "bg-sky-100 text-sky-700" : "bg-slate-100 text-slate-600"}" ${u.role === "viewer" ? 'title="Read-only"' : ""}>${escapeHtml(u.role)}</span></td>
       <td class="px-6 py-3 text-right whitespace-nowrap">
         <button type="button" data-user="${escapeHtml(u.username)}" class="edit-user text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
         ${self ? "" : `<button type="button" data-user="${escapeHtml(u.username)}" class="del-user text-xs font-medium text-red-600 hover:text-red-800">Delete</button>`}
@@ -4577,6 +4596,7 @@ async function loadUsersInner(rows) {
             <select class="ed-role mt-1 block rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
               <option value="creator"${u.role === "creator" ? " selected" : ""}>creator</option>
               <option value="admin"${u.role === "admin" ? " selected" : ""}>admin</option>
+              <option value="viewer"${u.role === "viewer" ? " selected" : ""}>viewer (read-only)</option>
             </select>
           </label>
           <label class="text-xs font-medium text-slate-600 flex-1 min-w-[160px]">New password <span class="text-slate-400 font-normal">(blank = keep)</span>
@@ -4843,9 +4863,9 @@ function renderWafApps(apps, installed) {
     } else if (!installed) {
       action = `<span class="text-xs text-slate-400">install WAF first</span>`;
     } else if (a.bound) {
-      action = `<button data-unbind="${escapeHtml(a.domain)}" class="waf-unbind text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition">Protected · Unbind</button>`;
+      action = `<button data-unbind="${escapeHtml(a.domain)}" data-port="${a.listen_port || ""}" class="waf-unbind text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition">Protected · Unbind</button>`;
     } else {
-      action = `<button data-bind="${escapeHtml(a.domain)}" class="waf-bind text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-200 text-slate-700 hover:bg-slate-300 transition">Bind WAF</button>`;
+      action = `<button data-bind="${escapeHtml(a.domain)}" data-port="${a.listen_port || ""}" class="waf-bind text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-200 text-slate-700 hover:bg-slate-300 transition">Bind WAF</button>`;
     }
     tr.innerHTML =
       `<td class="px-6 py-3"><div class="font-medium text-slate-800">${escapeHtml(a.domain)}</div>` +
@@ -4856,14 +4876,15 @@ function renderWafApps(apps, installed) {
     tb.appendChild(tr);
   }
   tb.querySelectorAll(".waf-bind").forEach((b) =>
-    b.addEventListener("click", () => bindApp(b.dataset.bind)));
+    b.addEventListener("click", () => bindApp(b.dataset.bind, b.dataset.port)));
   tb.querySelectorAll(".waf-unbind").forEach((b) =>
-    b.addEventListener("click", () => unbindApp(b.dataset.unbind)));
+    b.addEventListener("click", () => unbindApp(b.dataset.unbind, b.dataset.port)));
 }
 
-async function bindApp(domain) {
+async function bindApp(domain, port) {
   if (!confirm(`Bind ${domain} to the WAF?\n\nIt becomes an HTTPS reverse proxy with ModSecurity in front — nginx terminates TLS to inspect requests. Starts in the WAF's current mode. Tune false positives before enforcing.`)) return;
   const fd = new FormData(); fd.append("domain", domain);
+  if (port) fd.append("port", port);
   const j = await (await fetch("/api/waf/bind", { method: "POST", body: fd })).json();
   renderWafSteps(j.steps);
   toast(j.ok ? `${domain} is now behind the WAF.` : (j.error || "Bind failed."), j.ok);
@@ -4872,9 +4893,10 @@ async function bindApp(domain) {
   if (j.ok && PAGE_LOADED.has("mappings")) await loadMappings();
 }
 
-async function unbindApp(domain) {
+async function unbindApp(domain, port) {
   if (!confirm(`Unbind ${domain}?\n\nIt reverts to a Layer-4 stream proxy (no WAF inspection).`)) return;
   const fd = new FormData(); fd.append("domain", domain);
+  if (port) fd.append("port", port);
   const j = await (await fetch("/api/waf/unbind", { method: "POST", body: fd })).json();
   renderWafSteps(j.steps);
   toast(j.ok ? `${domain} reverted to Layer-4.` : (j.error || "Unbind failed."), j.ok);
@@ -5080,8 +5102,42 @@ function initNavReorder() {
   });
 }
 
+// --- sidebar collapse (desktop) ---------------------------------------
+// Also a personal preference (see the nav-order comment above), so it's
+// kept in localStorage rather than /api/settings, and — same reasoning as
+// applySavedNavOrder() — restored before first paint to avoid a flash of
+// the sidebar before it collapses back down.
+const SIDEBAR_COLLAPSED_KEY = "splitter_sidebar_collapsed";
+
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  const btn = $("#sidebar-toggle");
+  if (btn) {
+    btn.setAttribute("aria-expanded", String(!collapsed));
+    btn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    btn.setAttribute("aria-label", btn.title);
+  }
+}
+
+function applySavedSidebarCollapsed() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1"; } catch (_) { /* private mode etc */ }
+  if (collapsed) setSidebarCollapsed(true);   // collapsed is the non-default state; skip the DOM write otherwise
+}
+
+function initSidebarToggle() {
+  const btn = $("#sidebar-toggle");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const collapsed = !document.body.classList.contains("sidebar-collapsed");
+    setSidebarCollapsed(collapsed);
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0"); } catch (_) { /* ignore */ }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   applySavedNavOrder();   // before first paint's active-class pass below
+  applySavedSidebarCollapsed();
 
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
   // correct section is visible from the first paint instead of flashing Map/Stream.
@@ -5109,6 +5165,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // sidebar nav: switch pages (preserve form state)
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
   initNavReorder();
+  initSidebarToggle();
   // "New Mapping" / empty-state jumps start a fresh add
   // "New Stream" / "New Proxy" jumps inherit the mode of the page clicked from.
   $$(".nav-jump").forEach((b) => b.addEventListener("click", () => {
@@ -5356,7 +5413,7 @@ function startTools() {
   _toolsPopulateInterfaces();
 
   // Allow Enter key to submit in tool input fields
-  ["ping-host", "port-host", "port-port", "dns-host", "traceroute-host", "whois-query", "sslcheck-host", "sslcheck-port"].forEach((id) => {
+  ["ping-host", "port-host", "port-port", "dns-host", "traceroute-host", "whois-query", "sslcheck-host", "sslcheck-port", "portscan-target", "portscan-ports"].forEach((id) => {
     const el = $("#" + id);
     if (el) el.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -5364,6 +5421,14 @@ function startTools() {
         runTool(tool);
       }
     });
+  });
+
+  // Port Scanner: the custom ports box only shows for the "custom" preset
+  const psPreset = $("#portscan-ports-preset");
+  if (psPreset) psPreset.addEventListener("change", () => {
+    const custom = psPreset.value === "custom";
+    $("#portscan-ports").classList.toggle("hidden", !custom);
+    if (custom) $("#portscan-ports").focus();
   });
 
   // SSL Checker: Website vs Managed-cert mode
@@ -5499,6 +5564,21 @@ function runTool(tool) {
       fd.set("host", host);
       fd.set("port", $("#sslcheck-port").value || "443");
     }
+  } else if (tool === "portscan") {
+    const target = ($("#portscan-target").value || "").trim();
+    if (!target) { out.textContent = "Error: Target is required."; return; }
+    const preset = $("#portscan-ports-preset").value || "top100";
+    let ports = preset;
+    if (preset === "custom") {
+      ports = ($("#portscan-ports").value || "").trim();
+      if (!ports) { out.textContent = "Error: Enter a port list or range (e.g. 22,80,8000-8100)."; return; }
+    }
+    fd.set("target", target);
+    fd.set("ports", ports);
+    fd.set("scan_type", $("#portscan-type").value || "connect");
+    fd.set("timing", $("#portscan-timing").value || "4");
+    fd.set("version", $("#portscan-version").checked ? "1" : "0");
+    fd.set("no_ping", $("#portscan-noping").checked ? "1" : "0");
   }
 
   // Show running state

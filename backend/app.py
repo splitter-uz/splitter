@@ -6,6 +6,7 @@ load-balancing pools and automated SSL (upload or openssl self-signed).
 Run:  sudo ./run.sh     (or install via ./setup.sh — see README)
 """
 import datetime
+import ipaddress
 import json
 import logging
 import os
@@ -81,8 +82,12 @@ def _parse_lb(form):
             items = json.loads(raw)
         except (ValueError, TypeError):
             raise ValidationError("Malformed backend pool data.")
+        # A JSON scalar/object here used to fall through to `for it in items`
+        # and 500 with "'int' object is not iterable" — reject it up front.
+        if not isinstance(items, list):
+            raise ValidationError("Malformed backend pool data.")
     else:
-        items = form.getlist("backends") or [form.get("backend")]
+        items = [b for b in (form.getlist("backends") or [form.get("backend")]) if b]
     # Docker-discovered backends: an item may reference a container by name
     # ({"docker_container": "web", "docker_port": 80, ...}) instead of a static
     # address. Resolve it to the container's live IP:PORT now; the reconciler
@@ -101,6 +106,13 @@ def _parse_lb(form):
     method = (form.get("lb_method") or nm.DEFAULT_LB_METHOD).strip().lower()
     if method not in nm.LB_METHODS:
         raise ValidationError(f"Unknown load-balancing method: {method!r}")
+    # nginx: "the backup parameter cannot be used along with the hash and
+    # random load balancing methods" — `nginx -t` rejects the whole config,
+    # so say so here instead of failing the apply with a rollback.
+    if method in nm.NO_BACKUP_METHODS and any(b.get("backup") for b in backends):
+        raise ValidationError(
+            f"The {method!r} balancing method doesn't support 'backup' servers "
+            "in nginx — clear the backup flag, or use round-robin / least_conn.")
 
     cfg = {
         "backends": backends,
@@ -315,6 +327,11 @@ def _require_login():
         return redirect("/login")
 
 
+# Every role — for read-only endpoints that still shouldn't be reachable
+# without an explicit role gate. `viewer` sees everything here, changes nothing.
+ANY_ROLE = auth.ROLES
+
+
 def require_role(*roles):
     """Gate an endpoint behind a session and (optionally) specific role(s)."""
     def decorator(fn):
@@ -493,7 +510,7 @@ def delete_user_api(username):
 
 
 @app.post("/api/account/password")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def change_own_password():
     """Any logged-in user may change their own password."""
     me = session["user"]["username"]
@@ -568,7 +585,7 @@ def docker_status():
 
 
 @app.get("/api/docker/containers")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def docker_containers():
     """Running containers (name, image, IPs, ports) for the Docker page picker."""
     if not docker_detect.available():
@@ -582,7 +599,7 @@ def docker_containers():
 
 
 @app.get("/api/docker/services")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def docker_services():
     """Swarm services (name, replicas, published ports) for the Docker page when
     this node is a swarm manager."""
@@ -650,17 +667,30 @@ def waf_apps():
     return jsonify({"ok": True, "apps": apps, "waf_installed": waf.installed()})
 
 
+def _form_mapping():
+    """Resolve the mapping named by a form's `domain` (+ optional `port`, which
+    disambiguates a domain mapped on several ports). Returns (mapping, error)."""
+    try:
+        domain = clean_domain(request.form.get("domain") or "")
+        port = None
+        if request.form.get("port"):
+            port = clean_port(request.form.get("port"), config.LISTEN_PORT)
+    except ValidationError as exc:
+        return None, _err(str(exc))
+    mapping = storage.get(domain, port)
+    if not mapping:
+        return None, _err("No such mapping.", code=404)
+    return mapping, None
+
+
 @app.post("/api/waf/bind")
 @require_role("admin")
 def waf_bind():
     """Bind a mapping's app to the WAF (switch it to L7 HTTP reverse proxy)."""
-    try:
-        domain = clean_domain(request.form.get("domain") or "")
-    except ValidationError as exc:
-        return _err(str(exc))
-    mapping = storage.get(domain)
-    if not mapping:
-        return _err("No such mapping.", code=404)
+    mapping, err = _form_mapping()
+    if err:
+        return err
+    domain = mapping["domain"]
     if not waf.installed():
         return _err("Install the WAF first (WAF page → Install).")
     eligible, reason = nm.waf_eligible(mapping)
@@ -687,13 +717,10 @@ def waf_bind():
 @require_role("admin")
 def waf_unbind():
     """Unbind a mapping's app from the WAF (back to the L4 stream proxy)."""
-    try:
-        domain = clean_domain(request.form.get("domain") or "")
-    except ValidationError as exc:
-        return _err(str(exc))
-    mapping = storage.get(domain)
-    if not mapping:
-        return _err("No such mapping.", code=404)
+    mapping, err = _form_mapping()
+    if err:
+        return err
+    domain = mapping["domain"]
     if not mapping.get("waf_bound"):
         return jsonify({"ok": True, "steps": [], "bound": False})
 
@@ -742,14 +769,32 @@ def waf_update_settings():
 # no backend of its own — see nginx_manager.render_forward_proxy_conf)
 # --------------------------------------------------------------------------
 @app.get("/api/forward-proxies")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def fwdproxy_index():
     return jsonify({"ok": True, "proxies": storage.fwdproxy_list()})
+
+
+def _local_bind_ips():
+    """Every IPv4 address a listener can bind right now: host interfaces (incl.
+    VLAN/macvlan devices) plus managed sub-interfaces from the registry."""
+    ips = {a["ip"] for i in net_detect.list_interfaces(include_virtual=True)
+           for a in (i.get("addresses") or []) if a.get("ip")}
+    ips.update(s["bind_ip"] for s in storage.subiface_list() if s.get("bind_ip"))
+    return ips
 
 
 def _build_fwdproxy(form, existing=None):
     name = clean_fwdproxy_name(form.get("name"))
     bind_ip = clean_ip(form.get("bind_ip"), "Bind IP")
+    # A forward proxy never provisions an address — it binds one that already
+    # exists. nginx -t actually bind()s stream listeners, so an address that's
+    # on no interface fails the apply with "bind() … Cannot assign requested
+    # address" and a rollback; say what's wrong instead.
+    if bind_ip not in _local_bind_ips():
+        raise ValidationError(
+            f"Bind IP {bind_ip} isn't assigned to any interface or managed "
+            "sub-interface on this host — pick an address from the list, or "
+            "create a sub-interface with that IP first.")
     listen_port = clean_port(form.get("listen_port"), 443)
     allow_all = _truthy(form.get("allow_all"))
     allowed_domains = [] if allow_all else clean_sni_list(form.get("allowed_domains"))
@@ -916,11 +961,25 @@ def _build_subiface(form, existing=None):
 
 
 @app.get("/api/subinterfaces")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def list_subinterfaces():
     subs = [{**s, "in_use": storage.subiface_in_use(s["name"])}
             for s in storage.subiface_list()]
     return jsonify({"ok": True, "subinterfaces": subs})
+
+
+def _subiface_ip_taken(bind_ip, exclude_name=None):
+    """Who already holds `bind_ip`: a mapping ("domain:port") or another
+    managed sub-interface (its device name). None if free. Mappings never
+    own an IP any more, so the sub-interface registry is the real check —
+    without it two sub-interfaces could be provisioned with the same address."""
+    other = storage.bind_ip_in_use(bind_ip)
+    if other:
+        return other
+    for s in storage.subiface_list():
+        if s["name"] != exclude_name and s.get("bind_ip") == bind_ip:
+            return f"sub-interface {s['name']}"
+    return None
 
 
 @app.post("/api/subinterfaces")
@@ -929,7 +988,7 @@ def create_subinterface():
     try:
         rec = _build_subiface(request.form)
         if rec["bind_ip"]:
-            other = storage.bind_ip_in_use(rec["bind_ip"])
+            other = _subiface_ip_taken(rec["bind_ip"])
             if other:
                 return _err(f"Bind IP {rec['bind_ip']} is already used by {other}")
     except ValidationError as exc:
@@ -960,7 +1019,7 @@ def update_subinterface(name):
     try:
         rec = _build_subiface(request.form, existing=existing)
         if rec["bind_ip"]:
-            other = storage.bind_ip_in_use(rec["bind_ip"])
+            other = _subiface_ip_taken(rec["bind_ip"], exclude_name=name)
             if other:
                 return _err(f"Bind IP {rec['bind_ip']} is already used by {other}")
     except ValidationError as exc:
@@ -1050,7 +1109,7 @@ def _fw_public_iface(name):
 
 
 @app.get("/api/firewall/overview")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def firewall_overview():
     """Every host interface (incl. Splitter-managed sub-interfaces) with its
     firewall settings and rule count, plus the master switch."""
@@ -1066,7 +1125,7 @@ def firewall_overview():
 
 
 @app.get("/api/firewall/whoami")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def firewall_whoami():
     """The caller's own IP as a /32 (or /128) CIDR, for the rule form's "My IP"
     shortcut. Behind the WAF the peer address is loopback, so in that case fall
@@ -1135,7 +1194,7 @@ def firewall_update_interface(name):
 
 
 @app.get("/api/firewall/rules")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def firewall_list_rules():
     interface = (request.args.get("interface") or "").strip() or None
     return jsonify({"ok": True, "rules": storage.fw_rule_list(interface)})
@@ -1262,7 +1321,7 @@ def list_mappings():
 
 
 @app.get("/api/health")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def backend_health():
     """Probe every mapping's backend host:port and report a traffic-light status.
 
@@ -1272,14 +1331,14 @@ def backend_health():
 
 
 @app.get("/api/metrics")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def host_metrics():
     """Current host resource usage: CPU, memory, storage and network."""
     return jsonify({"ok": True, "metrics": metrics.snapshot()})
 
 
 @app.get("/api/interfaces/traffic")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def interfaces_traffic():
     """Live upload/download per interface (physical at top, sub-interfaces
     nested) for the Monitoring page throughput tree."""
@@ -1287,7 +1346,7 @@ def interfaces_traffic():
 
 
 @app.get("/api/traffic")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def mapping_traffic():
     """Live per-mapping connection counts for the animated traffic column.
 
@@ -1344,7 +1403,7 @@ def list_certs():
 # SSL Management — managed certificate registry (upload / self-signed / delete)
 # --------------------------------------------------------------------------
 @app.get("/api/ssl/certs")
-@require_role("admin", "creator")
+@require_role(*ANY_ROLE)
 def ssl_list():
     certs = [{**c, "in_use": storage.cert_in_use(c["name"])} for c in storage.cert_list()]
     return jsonify({"ok": True, "certs": certs, "ssl_dir": config.SSL_DIR})
@@ -1658,7 +1717,13 @@ def create_mapping():
             orig_port = clean_port(form.get("orig_port"), config.LISTEN_PORT)
         except ValidationError:
             orig_port = None
-    is_edit = bool(orig_domain and storage.get(orig_domain, orig_port))
+    existing = storage.get(orig_domain, orig_port) if orig_domain else None
+    is_edit = existing is not None
+    if is_edit and orig_port is None:
+        # Client sent orig_domain but no orig_port: pin the identity to the
+        # record we matched, otherwise `(orig_domain, None) != (domain, port)`
+        # reads as a rename and the save is rejected as a duplicate of itself.
+        orig_port = existing.get("listen_port") or config.LISTEN_PORT
     renamed = is_edit and (orig_domain, orig_port) != (domain, listen_port)
     if (not is_edit or renamed) and storage.exists(domain, listen_port):
         return _err(f"{domain}:{listen_port} already exists — edit that mapping, "
@@ -1721,7 +1786,6 @@ def create_mapping():
         if other:
             return _err(f"Bind {bind_ip}:{listen_port} is already used by {other}")
 
-    existing = storage.get(orig_domain, orig_port) if is_edit else None
     has_cert = bool(existing and existing.get("has_cert"))
 
     # --- SSL: upload / self-signed / use-existing ---------------------------
@@ -1935,7 +1999,10 @@ def delete_mapping(domain):
     owns_cert = mapping.get("has_cert") and \
         (mapping.get("cert_domain") or domain) == domain and \
         mapping.get("ssl_mode") in ("upload", "selfsigned")
+    # …and never when the SSL page manages a cert of the same name — its files
+    # live at the same <domain>.crt/.key path and belong to that registry.
     remove_cert = bool(owns_cert) and config.REMOVE_CERTS_ON_DELETE and \
+        not storage.cert_get(domain) and \
         not storage.cert_in_use(domain, exclude_domain=domain, exclude_port=port)
 
     steps = nm.deprovision_mapping(mapping, delete_vlan=delete_vlan,
@@ -2021,7 +2088,10 @@ def diagnose_mapping(domain):
     force = _truthy(request.args.get("force"))
 
     servers = health._mapping_servers(mapping)
-    backends = [{**health._check(srv, force=force), "enabled": enabled}
+    # Same probe the Health column uses (HTTP health check when configured),
+    # so Diagnose never disagrees with the dashboard about a backend's state.
+    hc = health.hc_spec(mapping)
+    backends = [{**health._check(srv, force=force, hc=hc), "enabled": enabled}
                 for srv, enabled in servers]
 
     # Filter the error log to lines naming this mapping's listen IP or upstreams.
@@ -2301,8 +2371,11 @@ def backups_schedule():
 # Backup — export / import the mappings store as JSON (legacy, mappings-only)
 # --------------------------------------------------------------------------
 @app.get("/api/backup")
+@require_role("admin", "creator")
 def export_backup():
-    """Download the whole mappings store as a self-describing JSON file."""
+    """Download the whole mappings store as a self-describing JSON file.
+    Creators may export (documented role); viewers may not — the dump carries
+    every mapping's full config."""
     payload = {
         "splitter_backup": True,
         "version": 1,
@@ -2350,12 +2423,19 @@ def import_backup():
     for key, m in data.items():
         if not isinstance(m, dict):
             return _err(f"Invalid mapping entry: {key!r}")
+        # Legacy exports were keyed by bare domain; current ones by domain:port.
+        # Either way the record's own fields are authoritative.
         try:
-            dom = clean_domain(m.get("domain") or key)
+            dom = clean_domain(m.get("domain") or key.split(":", 1)[0])
+            port = clean_port(m.get("listen_port"), config.LISTEN_PORT)
         except ValidationError as exc:
             return _err(f"{key}: {exc}")
         m["domain"] = dom
-        records[dom] = m
+        m["listen_port"] = port
+        # Identity is (domain, port) — keying by domain alone collapsed a
+        # domain's several ports into one and never overwrote the existing
+        # record (the store is keyed domain:port, so both keys survived).
+        records[f"{dom}:{port}"] = m
 
     if not records:
         return _err("Backup contains no mappings.")
@@ -2392,7 +2472,9 @@ def reapply_all():
     for mapping in storage.list_mappings():
         # Disabled mappings stay offline — ensure no stale config is left behind.
         if not mapping.get("enabled", True):
-            nm.remove_conf(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT)
+            port = mapping.get("listen_port") or config.LISTEN_PORT
+            nm.remove_conf(mapping["domain"], port)
+            nm.remove_http_conf(mapping["domain"], port)   # a disabled WAF-bound app, too
             results.append({"domain": mapping["domain"], "ok": True,
                             "skipped": "disabled", "steps": []})
             continue
@@ -2468,6 +2550,19 @@ def _valid_host(h: str) -> bool:
     return bool(h) and len(h) < 256 and bool(re.match(r'^[a-zA-Z0-9.\-_]+$', h))
 
 
+def _form_int(name, default, lo, hi):
+    """Clamped integer form field. A non-numeric value raises ValidationError
+    (=> 400) instead of the bare ValueError that used to 500 the request."""
+    raw = (request.form.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+    except ValueError:
+        raise ValidationError(f"{name} must be a whole number, got {raw!r}")
+    return max(lo, min(n, hi))
+
+
 def _run_cmd(cmd: list, timeout: int = 30) -> dict:
     try:
         r = _subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -2485,7 +2580,10 @@ def _run_cmd(cmd: list, timeout: int = 30) -> dict:
 @require_role("admin", "creator")
 def tools_ping():
     host  = (request.form.get("host") or "").strip()
-    count = max(1, min(int(request.form.get("count") or 4), 20))
+    try:
+        count = _form_int("count", 4, 1, 20)
+    except ValidationError as exc:
+        return _err(str(exc))
     if not _valid_host(host):
         return _err("Invalid host")
     if config.SIMULATE:
@@ -2504,7 +2602,10 @@ def tools_ping():
 def tools_port():
     host = (request.form.get("host") or "").strip()
     port_s = (request.form.get("port") or "").strip()
-    tout = max(1, min(int(request.form.get("timeout") or 5), 30))
+    try:
+        tout = _form_int("timeout", 5, 1, 30)
+    except ValidationError as exc:
+        return _err(str(exc))
     if not _valid_host(host):
         return _err("Invalid host")
     try:
@@ -2528,6 +2629,162 @@ def tools_port():
         return jsonify({"ok": True,  "output": f"[{ts}] {host}:{port}\nPort {port} is CLOSED  (connection refused)"})
     except Exception as exc:
         return jsonify({"ok": False, "output": str(exc)})
+
+
+# Port scanner (nmap). Targets accept whatever nmap does — a host, an IP, a
+# CIDR block (192.168.1.0/24) or an octet range (192.168.1.1-50). Ports are a
+# preset ("top100"/"top1000"/"all") or a custom nmap spec ("22,80,8000-8100").
+_PORTSCAN_TARGET_RE = re.compile(r'^[a-zA-Z0-9.\-_/]+$')
+_PORTSCAN_PORTS_RE  = re.compile(r'^\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*$')
+_PORTSCAN_TYPES = {
+    "connect": ["-sT"],   # full TCP handshake — works unprivileged
+    "syn":     ["-sS"],   # half-open — needs root / NET_RAW
+    "udp":     ["-sU"],   # slow; needs root
+    "ping":    ["-sn"],   # host discovery only, no port scan
+}
+
+
+def _portscan_ports_arg(ports: str):
+    """Translate the form's ports field into nmap args. Returns (args, error)."""
+    ports = (ports or "top100").strip().lower()
+    if ports == "top100":
+        return ["--top-ports", "100"], None
+    if ports == "top1000":
+        return ["--top-ports", "1000"], None
+    if ports == "all":
+        return ["-p-"], None
+    ports = ports.replace(" ", "")
+    if not _PORTSCAN_PORTS_RE.match(ports):
+        return None, "Ports must be a comma list of numbers / ranges, e.g. 22,80,443,8000-8100"
+    for part in ports.split(","):
+        for n in part.split("-"):
+            if not (1 <= int(n) <= 65535):
+                return None, "Ports must be within 1–65535"
+    return ["-p", ports], None
+
+
+def _expand_port_spec(spec: str, cap: int = 4096):
+    """The custom / preset port field as a sorted int list (for the fallback
+    scanner). Capped so a '-p-' style request can't spawn 65k connects."""
+    top100 = [7, 9, 13, 21, 22, 23, 25, 26, 37, 53, 79, 80, 81, 88, 106, 110, 111,
+              113, 119, 135, 139, 143, 144, 179, 199, 389, 427, 443, 444, 445, 465,
+              513, 514, 515, 543, 544, 548, 554, 587, 631, 646, 873, 990, 993, 995,
+              1025, 1026, 1027, 1028, 1029, 1110, 1433, 1720, 1723, 1755, 1900,
+              2000, 2001, 2049, 2121, 2717, 3000, 3128, 3306, 3389, 3986, 4899,
+              5000, 5009, 5051, 5060, 5101, 5190, 5357, 5432, 5631, 5666, 5800,
+              5900, 6000, 6001, 6646, 7070, 8000, 8008, 8009, 8080, 8081, 8443,
+              8888, 9100, 9999, 10000, 32768, 49152, 49153, 49154, 49155, 49156,
+              49157]
+    spec = (spec or "top100").strip().lower().replace(" ", "")
+    if spec in ("top100", "top1000"):
+        return top100
+    if spec == "all":
+        return list(range(1, cap + 1))
+    out = set()
+    for part in spec.split(","):
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.update(range(int(a), int(b) + 1))
+        else:
+            out.add(int(part))
+    return sorted(out)[:cap]
+
+
+def _fallback_tcp_scan(host: str, ports, timeout: float = 1.0) -> dict:
+    """nmap-less TCP connect scan of one host (threaded). Only reports open
+    ports, like nmap's default view."""
+    import concurrent.futures as _cf
+    try:
+        addr = _socket.gethostbyname(host)
+    except Exception as exc:
+        return {"ok": False, "output": f"Cannot resolve {host}: {exc}"}
+    t0 = _time.time()
+
+    def probe(port):
+        try:
+            with _socket.create_connection((addr, port), timeout=timeout):
+                return port
+        except Exception:
+            return None
+
+    with _cf.ThreadPoolExecutor(max_workers=64) as ex:
+        open_ports = sorted(p for p in ex.map(probe, ports) if p)
+    lines = [f"nmap not installed — built-in TCP connect scan of {host} ({addr})",
+             f"Scanned {len(ports)} ports in {_time.time() - t0:.1f}s", ""]
+    if open_ports:
+        lines.append("PORT       STATE")
+        for p in open_ports:
+            try:
+                svc = _socket.getservbyport(p, "tcp")
+            except Exception:
+                svc = "unknown"
+            lines.append(f"{p}/tcp".ljust(11) + "open   " + svc)
+    else:
+        lines.append("No open TCP ports found in the scanned set.")
+    lines += ["", "Install nmap for SYN/UDP scans, service detection and CIDR targets."]
+    return {"ok": True, "output": "\n".join(lines)}
+
+
+@app.post("/api/tools/portscan")
+@require_role("admin", "creator")
+def tools_portscan():
+    target   = (request.form.get("target") or "").strip()
+    ports    = (request.form.get("ports") or "top100").strip()
+    stype    = (request.form.get("scan_type") or "connect").strip().lower()
+    version  = (request.form.get("version") or "") in ("1", "true", "on")
+    no_ping  = (request.form.get("no_ping") or "") in ("1", "true", "on")
+    try:
+        timing = _form_int("timing", 4, 0, 5)
+    except ValidationError as exc:
+        return _err(str(exc))
+    if not target or len(target) > 256 or not _PORTSCAN_TARGET_RE.match(target):
+        return _err("Invalid target — use a host, IP, CIDR (10.0.0.0/24) or range (10.0.0.1-50)")
+    if "/" in target:
+        try:
+            ipaddress.ip_network(target, strict=False)
+        except ValueError:
+            return _err("Invalid CIDR target")
+    if stype not in _PORTSCAN_TYPES:
+        return _err("Invalid scan type")
+    port_args, perr = _portscan_ports_arg(ports)
+    if perr:
+        return _err(perr)
+
+    cmd = ["nmap", *_PORTSCAN_TYPES[stype], f"-T{timing}", "-n"]
+    if stype != "ping":
+        cmd += port_args
+        if version:
+            cmd.append("-sV")
+    if no_ping and stype != "ping":
+        cmd.append("-Pn")
+    cmd += ["--host-timeout", "240s", target]
+
+    if config.SIMULATE:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M %Z").strip()
+        lines = [f"# {' '.join(cmd)}",
+                 f"Starting Nmap 7.93 (simulated) at {ts}",
+                 f"Nmap scan report for {target}",
+                 "Host is up (0.0012s latency)."]
+        if stype != "ping":
+            lines += ["Not shown: 97 closed tcp ports (conn-refused)",
+                      "PORT     STATE SERVICE" + ("  VERSION" if version else ""),
+                      "22/tcp   open  ssh" + ("      OpenSSH 9.2p1 Debian" if version else ""),
+                      "80/tcp   open  http" + ("     nginx 1.22.1" if version else ""),
+                      "443/tcp  open  https" + ("    nginx 1.22.1" if version else "")]
+        lines += ["", "Nmap done: 1 IP address (1 host up) scanned in 1.42 seconds"]
+        return jsonify({"ok": True, "output": "\n".join(lines)})
+
+    result = _run_cmd(cmd, timeout=300)
+    if not result["ok"] and result["output"].startswith("Command not found"):
+        if stype != "connect" or "/" in target or re.search(r"\d-\d", target):
+            return jsonify({"ok": False, "output": (
+                "nmap is not installed on this host. Without it only a plain TCP "
+                "connect scan of a single host is available — install nmap "
+                "(apt install nmap) for SYN/UDP scans, CIDR targets and service detection.")})
+        result = _fallback_tcp_scan(target, _expand_port_spec(ports))
+    if result["ok"]:
+        result["output"] = f"# {' '.join(cmd)}\n" + result["output"]
+    return jsonify(result)
 
 
 @app.post("/api/tools/dns")
@@ -2564,7 +2821,10 @@ def tools_dns():
 @require_role("admin", "creator")
 def tools_traceroute():
     host    = (request.form.get("host") or "").strip()
-    maxhops = max(1, min(int(request.form.get("maxhops") or 30), 64))
+    try:
+        maxhops = _form_int("maxhops", 30, 1, 64)
+    except ValidationError as exc:
+        return _err(str(exc))
     if not _valid_host(host):
         return _err("Invalid host")
     if config.SIMULATE:
@@ -2583,7 +2843,10 @@ def tools_traceroute():
 @require_role("admin")
 def tools_tcpdump():
     iface = (request.form.get("interface") or "any").strip()
-    count = max(1, min(int(request.form.get("count") or 50), 500))
+    try:
+        count = _form_int("count", 50, 1, 500)
+    except ValidationError as exc:
+        return _err(str(exc))
     filt  = (request.form.get("filter") or "").strip()
     if not re.match(r'^[a-zA-Z0-9.\-_:]+$', iface):
         return _err("Invalid interface name")
@@ -2771,13 +3034,11 @@ def tools_sslcheck():
     # --- external website mode: connect out and inspect the live cert -------
     host = (request.form.get("host") or "").strip()
     try:
-        port = int(request.form.get("port") or 443)
-    except (TypeError, ValueError):
-        port = 443
+        port = clean_port(request.form.get("port"), 443, field="Port")
+    except ValidationError as exc:
+        return _err(str(exc))
     if not _valid_host(host):
         return _err("Invalid host")
-    if not (1 <= port <= 65535):
-        return _err("Invalid port")
 
     if config.SIMULATE:
         return jsonify({"ok": True, "output": (
