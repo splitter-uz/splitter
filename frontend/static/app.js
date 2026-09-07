@@ -959,10 +959,19 @@ function serializeLocations() {
 }
 
 // --- load-balancing method panels -----------------------------------------
+const LB_METHOD_DESC = {
+  round_robin: "Each new connection goes to the next backend in turn (weights respected). A good default for similar, stateless backends.",
+  least_conn:  "Each new connection goes to the backend with the fewest active connections. Best when sessions are long-lived or uneven in cost.",
+  hash:        "The same client (by hash key, default its IP) always lands on the same backend — sticky sessions without cookies.",
+  random:      "Picks a backend at random; with \"two\" enabled it picks 2 and uses the less loaded one, which balances much better.",
+};
+
 function onLbChange() {
   const m = $("#lb_method").value;
   $("#lb-hash").classList.toggle("hidden", m !== "hash");
   $("#lb-random").classList.toggle("hidden", m !== "random");
+  const desc = $("#lb-method-desc");
+  if (desc) desc.textContent = LB_METHOD_DESC[m] || "";
 }
 
 function backendCount() { return $$("#backends .be-row").length; }
@@ -5125,6 +5134,50 @@ function applySavedSidebarCollapsed() {
   if (collapsed) setSidebarCollapsed(true);   // collapsed is the non-default state; skip the DOM write otherwise
 }
 
+// --- info tooltips ---------------------------------------------------------
+// Any element with class="info-tip" and a data-tip attribute shows its text in
+// a floating pop-up on hover / focus / tap. One shared pop-up lives on <body>
+// (position:fixed) so it never gets clipped by a card's overflow. The icons are
+// <button type="button">, which keeps a click on one from toggling the checkbox
+// of a <label> it sits inside.
+function initInfoTips() {
+  const pop = document.createElement("div");
+  pop.id = "info-tip-pop";
+  pop.setAttribute("role", "tooltip");
+  pop.hidden = true;
+  document.body.appendChild(pop);
+  let cur = null;
+
+  const show = (el) => {
+    const text = el.dataset.tip;
+    if (!text) return;
+    cur = el;
+    pop.textContent = text;
+    pop.classList.remove("below");
+    pop.hidden = false;
+    const r = el.getBoundingClientRect();
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let left = r.left + r.width / 2 - pw / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+    let top = r.top - ph - 8;
+    if (top < 8) { top = r.bottom + 8; pop.classList.add("below"); }
+    pop.style.left = left + "px";
+    pop.style.top = top + "px";
+    pop.style.setProperty("--arrow-x", (r.left + r.width / 2 - left) + "px");
+  };
+  const hide = () => { cur = null; pop.hidden = true; };
+  const tipOf = (e) => (e.target instanceof Element) ? e.target.closest(".info-tip") : null;
+
+  document.addEventListener("mouseover", (e) => { const t = tipOf(e); if (t && t !== cur) show(t); });
+  document.addEventListener("mouseout", (e) => { const t = tipOf(e); if (t && !(e.relatedTarget && t.contains(e.relatedTarget))) hide(); });
+  document.addEventListener("focusin", (e) => { const t = tipOf(e); if (t) show(t); });
+  document.addEventListener("focusout", (e) => { if (tipOf(e)) hide(); });
+  document.addEventListener("click", (e) => { const t = tipOf(e); if (t) { e.preventDefault(); show(t); } else hide(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") hide(); });
+  window.addEventListener("scroll", hide, true);
+  window.addEventListener("resize", hide);
+}
+
 function initSidebarToggle() {
   const btn = $("#sidebar-toggle");
   if (!btn) return;
@@ -5138,6 +5191,7 @@ function initSidebarToggle() {
 document.addEventListener("DOMContentLoaded", async () => {
   applySavedNavOrder();   // before first paint's active-class pass below
   applySavedSidebarCollapsed();
+  initInfoTips();
 
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
   // correct section is visible from the first paint instead of flashing Map/Stream.
@@ -5209,6 +5263,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#gen-mac").addEventListener("click", generateMac);
   $("#interface").addEventListener("change", updateIfaceInfo);
   $("#lb_method").addEventListener("change", onLbChange);
+  onLbChange();
   $("#lb_enabled").addEventListener("change", () => {
     if (!$("#lb_enabled").checked) { $("#lb_method").value = "round_robin"; onLbChange(); }
     toggleLbSection();

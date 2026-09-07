@@ -154,6 +154,15 @@
     #sidebar-nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border: none; background-clip: padding-box; }
     #sidebar-nav::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.32); background-clip: padding-box; }
 
+    /* Info tooltips: an (i) icon next to a form label; hovering/focusing it
+       shows a floating description (see initInfoTips() in app.js). The pop-up
+       is position:fixed on <body> so it's never clipped by a card's overflow. */
+    .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: .35rem; padding: 0; flex: none; border-radius: 9999px; border: 1px solid #cbd5e1; background: #fff; color: #94a3b8; font: 700 9.5px/1 ui-sans-serif, system-ui, sans-serif; vertical-align: -1px; cursor: help; }
+    .info-tip:hover, .info-tip:focus-visible { border-color: #38bdf8; color: #0284c7; background: #f0f9ff; outline: none; }
+    #info-tip-pop { position: fixed; z-index: 1000; max-width: 300px; background: #0f172a; color: #e2e8f0; font-size: 12px; line-height: 1.45; padding: .55rem .7rem; border-radius: .5rem; box-shadow: 0 12px 30px -10px rgba(15,23,42,.6); white-space: pre-line; pointer-events: none; }
+    #info-tip-pop::after { content: ""; position: absolute; left: var(--arrow-x, 50%); top: 100%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: #0f172a; }
+    #info-tip-pop.below::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: #0f172a; }
+
     @media (prefers-reduced-motion: reduce) {
       *, body { animation: none !important; transition: none !important; }
     }
@@ -400,14 +409,14 @@
                   <input type="hidden" name="orig_port" id="orig_port" value="">
                   <!-- Identity -->
                   <div>
-                    <label class="block text-sm font-medium mb-1">Domain Name</label>
+                    <label class="block text-sm font-medium mb-1">Domain Name<button type="button" class="info-tip" aria-label="More info" data-tip="The hostname clients connect to. With TLS passthrough it is matched against the SNI the client sends; on a terminated / reverse-proxy mapping it becomes the nginx server_name. The same domain can be mapped on several listen ports.">i</button></label>
                     <input name="domain" id="domain" required placeholder="site4.example.com"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                   </div>
 
                   <!-- Transport (TCP / UDP) -->
                   <div>
-                    <label class="block text-sm font-medium mb-1">Transport</label>
+                    <label class="block text-sm font-medium mb-1">Transport<button type="button" class="info-tip" aria-label="More info" data-tip="TCP for connection-based services (HTTP, databases, SSH, RDP). UDP for datagram protocols such as DNS, WireGuard, QUIC and NTP.">i</button></label>
                     <div class="flex gap-2">
                       <label class="flex-1 cursor-pointer">
                         <input type="radio" name="transport" value="tcp" class="peer sr-only" checked />
@@ -423,7 +432,7 @@
                   <!-- Protocol (filtered by transport) + listen port -->
                   <div class="grid grid-cols-2 gap-3">
                     <div>
-                      <label class="block text-sm font-medium mb-1">Protocol</label>
+                      <label class="block text-sm font-medium mb-1">Protocol<button type="button" class="info-tip" aria-label="More info" data-tip="A preset that fills in the usual port and matches the chosen transport. Pick Custom… to enter any port.">i</button></label>
                       <select name="protocol" id="protocol"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
                         <option value="https" data-port="443" data-transport="tcp">HTTPS — 443 (TLS)</option>
@@ -442,7 +451,7 @@
                       </select>
                     </div>
                     <div>
-                      <label class="block text-sm font-medium mb-1">Listen Port</label>
+                      <label class="block text-sm font-medium mb-1">Listen Port<button type="button" class="info-tip" aria-label="More info" data-tip="The port this mapping accepts connections on at its bind IP. Port 443 enables the TLS termination options further down.">i</button></label>
                       <input name="listen_port" id="listen_port" type="number" min="1" max="65535" value="443"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                     </div>
@@ -450,7 +459,7 @@
                   <p id="port-ssl-hint" class="text-xs text-slate-400 -mt-2">Port 443 → TLS termination (configure a certificate below).</p>
 
                   <div id="parent-iface-block">
-                    <label class="block text-sm font-medium mb-1">Parent Interface</label>
+                    <label class="block text-sm font-medium mb-1">Parent Interface<button type="button" class="info-tip" aria-label="More info" data-tip="The host NIC (or bridge) this mapping binds on, or the parent of the sub-interface that gets created for it.">i</button></label>
                     <select name="interface" id="interface"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
                       <option>loading…</option>
@@ -461,7 +470,7 @@
 
                   <!-- Managed sub-interface picker (shown when the toggle is ON) -->
                   <div id="subiface-pick" class="hidden">
-                    <label class="block text-sm font-medium mb-1">Sub-interface</label>
+                    <label class="block text-sm font-medium mb-1">Sub-interface<button type="button" class="info-tip" aria-label="More info" data-tip="A managed macvlan / VLAN device with its own IP address. Several mappings can share one sub-interface as long as they use different ports.">i</button></label>
                     <select name="subiface" id="subiface-select"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"></select>
                     <p id="subiface-pick-note" class="text-xs text-slate-400 mt-1">Bind to a sub-interface managed on the <b>Network → Sub-interfaces</b> tab. Several mappings can share one on different ports.</p>
@@ -470,12 +479,12 @@
                   <div id="subiface-fields" class="space-y-4">
                   <div class="grid grid-cols-3 gap-3">
                     <div>
-                      <label class="block text-sm font-medium mb-1">VLAN ID <span class="text-slate-400 font-normal">(opt)</span></label>
+                      <label class="block text-sm font-medium mb-1">VLAN ID <span class="text-slate-400 font-normal">(opt)</span><button type="button" class="info-tip" aria-label="More info" data-tip="Tag this mapping&#x27;s traffic with an 802.1Q VLAN. Leave blank for untagged traffic on the parent interface.">i</button></label>
                       <input name="vlan_id" id="vlan_id" type="number" min="1" max="4094" placeholder="e.g. 50"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                     </div>
                     <div class="col-span-2">
-                      <label class="block text-sm font-medium mb-1">MAC Address <span class="text-slate-400 font-normal">(blank = random)</span></label>
+                      <label class="block text-sm font-medium mb-1">MAC Address <span class="text-slate-400 font-normal">(blank = random)</span><button type="button" class="info-tip" aria-label="More info" data-tip="Hardware address of the macvlan device. Blank generates a random locally-administered MAC. Set a fixed one if your DHCP server hands out reservations by MAC.">i</button></label>
                       <div class="flex gap-2">
                         <input name="mac" id="mac" placeholder="auto-generated"
                           class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
@@ -486,7 +495,7 @@
                   </div>
 
                   <div>
-                    <label class="block text-sm font-medium mb-1">IP Allocation</label>
+                    <label class="block text-sm font-medium mb-1">IP Allocation<button type="button" class="info-tip" aria-label="More info" data-tip="DHCP: create a macvlan sub-interface and request a lease from your network&#x27;s DHCP server. Static: use the IP address and prefix you type below.">i</button></label>
                     <div class="flex gap-2">
                       <label class="flex-1 cursor-pointer">
                         <input type="radio" name="alloc_method" value="dhcp" class="peer sr-only" checked />
@@ -501,12 +510,12 @@
 
                   <div class="grid grid-cols-3 gap-3" id="static-row">
                     <div class="col-span-2">
-                      <label class="block text-sm font-medium mb-1">Bind IP Address</label>
+                      <label class="block text-sm font-medium mb-1">Bind IP Address<button type="button" class="info-tip" aria-label="More info" data-tip="The IP nginx listens on for this mapping. It must be unused on the LAN, or already owned by a managed sub-interface.">i</button></label>
                       <input name="bind_ip" id="bind_ip" placeholder="192.168.10.15"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                     </div>
                     <div>
-                      <label class="block text-sm font-medium mb-1">Prefix</label>
+                      <label class="block text-sm font-medium mb-1">Prefix<button type="button" class="info-tip" aria-label="More info" data-tip="CIDR prefix length of the bind IP&#x27;s network, e.g. 24 for 255.255.255.0.">i</button></label>
                       <input name="bind_prefix" id="bind_prefix" placeholder="24"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                     </div>
@@ -517,7 +526,7 @@
                   <!-- Backend pool -->
                   <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
                     <div class="flex items-center justify-between mb-2">
-                      <label class="block text-sm font-semibold">Backend Pool <span class="font-normal text-slate-400">load balanced</span></label>
+                      <label class="block text-sm font-semibold">Backend Pool <span class="font-normal text-slate-400">load balanced</span><button type="button" class="info-tip" aria-label="More info" data-tip="The upstream servers (host:port) traffic is forwarded to. One backend is a plain proxy; two or more form a load-balanced pool. Each row can carry a weight and a failover tier.">i</button></label>
                       <div class="flex items-center gap-3">
                         <button type="button" id="add-backend-docker" class="text-xs font-medium text-sky-700 hover:text-sky-900">🐳 Add from Docker</button>
                         <button type="button" id="add-backend" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add Backend</button>
@@ -544,12 +553,15 @@
                   <!-- Load balancing (auto-opens with 2+ backends) -->
                   <div class="rounded-lg border border-slate-200">
                     <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                      <span class="text-sm font-medium">Load balancing
+                      <span class="text-sm font-medium">Load balancing<button type="button" class="info-tip" aria-label="More info" data-tip="How new connections are spread across the backend pool. Opens automatically once the pool has 2+ backends; with a single backend it has no effect.">i</button>
                         <span id="lb-auto-hint" class="hidden text-xs font-normal text-emerald-600">· auto (2+ backends)</span></span>
                       <input type="checkbox" id="lb_enabled" class="h-4 w-4 rounded" />
                     </label>
                     <div id="lb-section" class="hidden px-3 pb-3 space-y-2">
-                      <label class="block text-xs font-medium mb-1">Method</label>
+                      <label class="block text-xs font-medium mb-1">Method<button type="button" class="info-tip" aria-label="More info" data-tip="Round Robin — each new connection goes to the next backend in turn, honouring weights. Good default.
+Least Connections — pick the backend with the fewest active connections. Best for long-lived or uneven sessions.
+Hash — the same client (by hash key, default its IP) always reaches the same backend. Sticky sessions.
+Random — pick a backend at random; with the two option, pick 2 and use the less loaded one." id="lb-method-tip">i</button></label>
                       <select name="lb_method" id="lb_method"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
                         <option value="round_robin">Round Robin (default)</option>
@@ -557,23 +569,24 @@
                         <option value="hash">Hash</option>
                         <option value="random">Random</option>
                       </select>
+                      <p id="lb-method-desc" class="text-[11px] text-slate-500"></p>
 
                       <div id="lb-hash" class="hidden mt-2 rounded-lg bg-slate-50 border border-slate-200 p-3 space-y-2">
                         <div>
-                          <label class="block text-xs font-medium mb-1">Hash key</label>
+                          <label class="block text-xs font-medium mb-1">Hash key<button type="button" class="info-tip" aria-label="More info" data-tip="nginx variable(s) the hash is computed from. $remote_addr = client IP (one client, one backend). $remote_addr$remote_port spreads each connection separately.">i</button></label>
                           <input name="hash_key" id="hash_key" value="$remote_addr"
                             class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
                         </div>
                         <label class="flex items-center gap-2 text-xs text-slate-700">
                           <input type="checkbox" name="hash_consistent" id="hash_consistent" value="1" class="rounded" />
-                          consistent (ketama) — minimal remap when servers change
+                          consistent (ketama) — minimal remap when servers change<button type="button" class="info-tip" aria-label="More info" data-tip="Consistent (ketama) hashing: adding or removing a backend remaps only a small share of clients instead of reshuffling everyone.">i</button>
                         </label>
                       </div>
 
                       <div id="lb-random" class="hidden mt-2 rounded-lg bg-slate-50 border border-slate-200 p-3">
                         <label class="flex items-center gap-2 text-xs text-slate-700">
                           <input type="checkbox" name="random_two" id="random_two" value="1" class="rounded" />
-                          two — pick 2 at random, then least_conn (power of two choices)
+                          two — pick 2 at random, then least_conn (power of two choices)<button type="button" class="info-tip" aria-label="More info" data-tip="Power-of-two-choices: pick two random backends, then send the connection to the one with fewer active connections. Balances far better than plain random.">i</button>
                         </label>
                       </div>
                     </div>
@@ -582,7 +595,7 @@
                   <!-- Active-passive priority failover -->
                   <div class="rounded-lg border border-slate-200">
                     <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                      <span class="text-sm font-medium">Active-passive failover
+                      <span class="text-sm font-medium">Active-passive failover<button type="button" class="info-tip" aria-label="More info" data-tip="Give each backend a tier (Primary, Backup, …). Traffic stays on the Primary tier; when every Primary backend is down the next tier is promoted automatically, and traffic fails back once Primary recovers.">i</button>
                         <span class="text-xs font-normal text-slate-400">· automatic backup promotion</span></span>
                       <input type="checkbox" name="failover" id="failover" value="on" class="h-4 w-4 rounded" />
                     </label>
@@ -596,18 +609,18 @@
                       <!-- HTTP health check (used for the health column + failover promotion) -->
                       <div class="rounded-lg border border-slate-200">
                         <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                          <span class="text-sm font-medium">HTTP health check
+                          <span class="text-sm font-medium">HTTP health check<button type="button" class="info-tip" aria-label="More info" data-tip="Probe an HTTP URL on each backend instead of a bare TCP connect, so a server that accepts connections but answers with errors is also treated as down.">i</button>
                             <span class="text-xs font-normal text-slate-400">· probe a URL instead of a TCP connect</span></span>
                           <input type="checkbox" name="health_check" id="health_check" value="on" class="h-4 w-4 rounded" />
                         </label>
                         <div id="health-section" class="hidden px-3 pb-3 space-y-2">
                           <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                             <div class="sm:col-span-2">
-                              <label class="text-[11px] font-medium text-slate-500">Health check URL</label>
+                              <label class="text-[11px] font-medium text-slate-500">Health check URL<button type="button" class="info-tip" aria-label="More info" data-tip="A path (probed on every backend at its own host:port) or a full URL (probed exactly as written, for a shared status endpoint).">i</button></label>
                               <input name="health_path" id="health_path" placeholder="/healthz  or  http://host:8080/health" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono">
                             </div>
                             <div>
-                              <label class="text-[11px] font-medium text-slate-500">Expected status <span class="text-slate-400">(blank = 2xx/3xx)</span></label>
+                              <label class="text-[11px] font-medium text-slate-500">Expected status <span class="text-slate-400">(blank = 2xx/3xx)</span><button type="button" class="info-tip" aria-label="More info" data-tip="The HTTP status code that counts as healthy. Leave blank to accept any 2xx or 3xx response.">i</button></label>
                               <input name="health_expect" id="health_expect" type="number" min="100" max="599" placeholder="200" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
                             </div>
                           </div>
@@ -627,25 +640,25 @@
                   <!-- Rate limit (Layer-4: connection cap + bandwidth) -->
                   <div class="rounded-lg border border-slate-200">
                     <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                      <span class="text-sm font-medium">Rate limit
+                      <span class="text-sm font-medium">Rate limit<button type="button" class="info-tip" aria-label="More info" data-tip="Per-client limits: cap how many simultaneous connections one IP may hold, and throttle bytes per second on each connection.">i</button>
                         <span class="text-xs font-normal text-slate-400">· per client IP / connection</span></span>
                       <input type="checkbox" name="rate_limit" id="rate_limit_enabled" value="1" class="h-4 w-4 rounded" />
                     </label>
                     <div id="rate-section" class="hidden px-3 pb-3 space-y-3">
                       <div>
-                        <label class="block text-xs font-medium mb-1">Max connections / client IP</label>
+                        <label class="block text-xs font-medium mb-1">Max connections / client IP<button type="button" class="info-tip" aria-label="More info" data-tip="Maximum simultaneous connections from one source IP (limit_conn). Connections above the cap are refused. Blank = unlimited.">i</button></label>
                         <input name="limit_conn" id="limit_conn" type="number" min="1" placeholder="e.g. 10"
                           class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
                         <p class="text-[11px] text-slate-400 mt-1">Caps simultaneous connections from one IP (<span class="font-mono">limit_conn</span>). Blank = unlimited.</p>
                       </div>
                       <div class="grid grid-cols-2 gap-3">
                         <div>
-                          <label class="block text-xs font-medium mb-1">Download rate</label>
+                          <label class="block text-xs font-medium mb-1">Download rate<button type="button" class="info-tip" aria-label="More info" data-tip="Bytes per second sent to the client on each connection (proxy_download_rate). Use a k or m suffix, e.g. 1m.">i</button></label>
                           <input name="proxy_download_rate" id="proxy_download_rate" placeholder="e.g. 1m"
                             class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
                         </div>
                         <div>
-                          <label class="block text-xs font-medium mb-1">Upload rate</label>
+                          <label class="block text-xs font-medium mb-1">Upload rate<button type="button" class="info-tip" aria-label="More info" data-tip="Bytes per second read from the client on each connection (proxy_upload_rate). Use a k or m suffix, e.g. 512k.">i</button></label>
                           <input name="proxy_upload_rate" id="proxy_upload_rate" placeholder="e.g. 512k"
                             class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
                         </div>
@@ -657,16 +670,16 @@
                   <!-- Advanced: proxy timeouts -->
                   <details class="group rounded-lg border border-slate-200">
                     <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 flex items-center justify-between">
-                      Advanced (timeouts) <span class="text-xs text-slate-400 group-open:hidden">show</span>
+                      <span>Advanced (timeouts)<button type="button" class="info-tip" aria-label="More info" data-tip="Idle and connect timeouts for the proxied connection.">i</button></span> <span class="text-xs text-slate-400 group-open:hidden">show</span>
                     </summary>
                     <div class="px-3 pb-3 grid grid-cols-2 gap-3">
                       <div>
-                        <label class="block text-xs font-medium mb-1">proxy_timeout</label>
+                        <label class="block text-xs font-medium mb-1">proxy_timeout<button type="button" class="info-tip" aria-label="More info" data-tip="Close the session after this long with no data flowing in either direction. Default 10m. Raise it for long-idle connections such as databases or SSH.">i</button></label>
                         <input name="proxy_timeout" id="proxy_timeout" placeholder="10m"
                           class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
                       </div>
                       <div>
-                        <label class="block text-xs font-medium mb-1">proxy_connect_timeout</label>
+                        <label class="block text-xs font-medium mb-1">proxy_connect_timeout<button type="button" class="info-tip" aria-label="More info" data-tip="How long to wait for a backend to accept the connection before it is marked failed and the next backend is tried. Default 5s.">i</button></label>
                         <input name="proxy_connect_timeout" id="proxy_connect_timeout" placeholder="5s"
                           class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
                       </div>
@@ -677,12 +690,12 @@
                        is bound to Reverse Proxy/WAF; ignored on a plain L4 stream. -->
                   <details id="l7-advanced-details" class="group rounded-lg border border-slate-200">
                     <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 flex items-center justify-between">
-                      Reverse Proxy (L7) options <span class="text-xs text-slate-400 group-open:hidden">show</span>
+                      <span>Reverse Proxy (L7) options<button type="button" class="info-tip" aria-label="More info" data-tip="Settings that only apply after this mapping is bound to the Reverse Proxy / WAF. On a plain Layer-4 stream mapping they are stored but ignored.">i</button></span> <span class="text-xs text-slate-400 group-open:hidden">show</span>
                     </summary>
                     <div class="px-3 pb-3 space-y-3">
                       <label class="flex items-center gap-2 text-xs text-slate-700">
                         <input type="checkbox" name="websocket_upgrade" id="websocket_upgrade" value="1" class="rounded" />
-                        <span><b>WebSocket support</b> — forward <span class="font-mono">Upgrade</span>/<span class="font-mono">Connection</span> headers.</span>
+                        <span><b>WebSocket support</b> — forward <span class="font-mono">Upgrade</span>/<span class="font-mono">Connection</span> headers.<button type="button" class="info-tip" aria-label="More info" data-tip="Needed for apps that keep a WebSocket open: chat, live dashboards, terminals, code-server. Also switches the backend connection to HTTP/1.1.">i</button></span>
                       </label>
                       <label class="flex items-center gap-2 text-xs text-slate-700">
                         <input type="checkbox" name="http2" id="http2" value="1" checked class="rounded" />
@@ -695,7 +708,7 @@
 
                       <div>
                         <div class="flex items-center justify-between mb-1.5">
-                          <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path-specific config</span></label>
+                          <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path-specific config</span><button type="button" class="info-tip" aria-label="More info" data-tip="Extra nginx location blocks for specific paths, e.g. /api with different headers or timeouts. The proxy target is added for you.">i</button></label>
                           <button type="button" id="add-location" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add location</button>
                         </div>
                         <div id="locations" class="space-y-2"></div>
@@ -713,7 +726,7 @@
 
                   <!-- SSL -->
                   <div id="ssl-section">
-                    <label class="block text-sm font-medium mb-1">SSL / TLS</label>
+                    <label class="block text-sm font-medium mb-1">SSL / TLS<button type="button" class="info-tip" aria-label="More info" data-tip="None: the encrypted stream is passed through untouched and the backend holds the certificate. Managed cert: nginx terminates TLS here with a certificate from the SSL page, so it can inspect traffic (WAF, HTTP/2, redirects).">i</button></label>
                     <div id="ssl-keep" class="hidden mb-2 text-xs rounded-md bg-slate-100 text-slate-600 px-3 py-2">
                       Keeping current certificate (<span id="ssl-keep-mode" class="font-mono"></span>). Pick an option to change it.
                     </div>
@@ -724,7 +737,7 @@
                     <input type="hidden" name="ssl_mode" id="ssl_mode" value="none" />
 
                     <div id="ssl-existing" class="hidden">
-                      <label class="block text-xs font-medium mb-1">Certificate</label>
+                      <label class="block text-xs font-medium mb-1">Certificate<button type="button" class="info-tip" aria-label="More info" data-tip="A certificate managed on the SSL page. Its names should cover this mapping&#x27;s domain or browsers will warn.">i</button></label>
                       <select name="ssl_existing" id="ssl_existing"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white outline-none focus:ring-2 focus:ring-emerald-500">
                       </select>
@@ -737,20 +750,20 @@
                       <p>nginx will <b>terminate TLS</b> on <span class="font-mono">:443</span> with this certificate (<span class="font-mono">listen … ssl</span>).</p>
                       <label class="flex items-center gap-2">
                         <input type="checkbox" name="proxy_ssl" id="proxy_ssl" value="1" checked class="rounded" />
-                        Re-encrypt to backend (<span class="font-mono">proxy_ssl on</span>) — keep on for TLS backends (:443)
+                        Re-encrypt to backend (<span class="font-mono">proxy_ssl on</span>) — keep on for TLS backends (:443)<button type="button" class="info-tip" aria-label="More info" data-tip="On: nginx opens a new TLS connection to the backend (backend speaks HTTPS, usually port 443). Off: plain TCP to the backend (e.g. port 80 or 8080).">i</button>
                       </label>
                       <label class="flex items-center gap-2">
                         <input type="checkbox" name="ssl_forced" id="ssl_forced" value="1" class="rounded" />
-                        Force HTTPS — redirect plain <span class="font-mono">:80</span> requests for this domain to this listener. Reverse Proxy (L7) only.
+                        Force HTTPS — redirect plain <span class="font-mono">:80</span> requests for this domain to this listener. Reverse Proxy (L7) only.<button type="button" class="info-tip" aria-label="More info" data-tip="Adds a port-80 listener that answers http://domain with a permanent redirect to this HTTPS listener. Takes effect once the mapping is bound to the Reverse Proxy.">i</button>
                       </label>
                       <div id="hsts-block" class="hidden pl-5 space-y-2">
                         <label class="flex items-center gap-2">
                           <input type="checkbox" name="hsts_enabled" id="hsts_enabled" value="1" class="rounded" />
-                          Send <span class="font-mono">Strict-Transport-Security</span> (HSTS)
+                          Send <span class="font-mono">Strict-Transport-Security</span> (HSTS)<button type="button" class="info-tip" aria-label="More info" data-tip="Tells browsers to use HTTPS only for this domain for a long time. Browsers remember it, so enable it only once HTTPS is working reliably.">i</button>
                         </label>
                         <label id="hsts-subdomains-row" class="hidden flex items-center gap-2 pl-5">
                           <input type="checkbox" name="hsts_subdomains" id="hsts_subdomains" value="1" class="rounded" />
-                          Include subdomains (<span class="font-mono">includeSubDomains</span>)
+                          Include subdomains (<span class="font-mono">includeSubDomains</span>)<button type="button" class="info-tip" aria-label="More info" data-tip="Extends the HSTS rule to every subdomain. Make sure all of them already serve HTTPS, or they will become unreachable in browsers.">i</button>
                         </label>
                       </div>
                     </div>
@@ -758,7 +771,7 @@
 
                   <!-- Access list (allow/deny) -->
                   <div>
-                    <label class="block text-sm font-medium mb-1">Access list</label>
+                    <label class="block text-sm font-medium mb-1">Access list<button type="button" class="info-tip" aria-label="More info" data-tip="An allow / deny list of networks applied to this listener; anyone outside it is refused. Global default follows the setting on Network → Access Lists.">i</button></label>
                     <select name="access_list" id="access_list"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
                       <option value="__default__">Use global default</option>
@@ -770,7 +783,7 @@
                   <!-- Hostname restriction (SNI) -->
                   <label id="sni-section" class="flex items-start gap-2 text-xs text-slate-700 rounded-lg border border-slate-200 p-3">
                     <input type="checkbox" name="sni_guard" id="sni_guard" value="1" class="mt-0.5 rounded" />
-                    <span><b>Only allow this hostname</b> — drop any connection whose TLS SNI isn't this domain.
+                    <span><b>Only allow this hostname</b> — drop any connection whose TLS SNI isn't this domain.<button type="button" class="info-tip" aria-label="More info" data-tip="Rejects TLS connections whose SNI hostname is not this domain, so other names pointing at the same IP cannot reach the backend. Works with passthrough only.">i</button>
                     Requires TLS passthrough (don't terminate a certificate on this mapping).</span>
                   </label>
 
