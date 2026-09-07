@@ -5413,7 +5413,7 @@ function startTools() {
   _toolsPopulateInterfaces();
 
   // Allow Enter key to submit in tool input fields
-  ["ping-host", "port-host", "port-port", "dns-host", "traceroute-host", "whois-query", "sslcheck-host", "sslcheck-port"].forEach((id) => {
+  ["ping-host", "port-host", "port-port", "dns-host", "traceroute-host", "whois-query", "sslcheck-host", "sslcheck-port", "portscan-target", "portscan-ports"].forEach((id) => {
     const el = $("#" + id);
     if (el) el.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -5421,6 +5421,14 @@ function startTools() {
         runTool(tool);
       }
     });
+  });
+
+  // Port Scanner: the custom ports box only shows for the "custom" preset
+  const psPreset = $("#portscan-ports-preset");
+  if (psPreset) psPreset.addEventListener("change", () => {
+    const custom = psPreset.value === "custom";
+    $("#portscan-ports").classList.toggle("hidden", !custom);
+    if (custom) $("#portscan-ports").focus();
   });
 
   // SSL Checker: Website vs Managed-cert mode
@@ -5556,6 +5564,21 @@ function runTool(tool) {
       fd.set("host", host);
       fd.set("port", $("#sslcheck-port").value || "443");
     }
+  } else if (tool === "portscan") {
+    const target = ($("#portscan-target").value || "").trim();
+    if (!target) { out.textContent = "Error: Target is required."; return; }
+    const preset = $("#portscan-ports-preset").value || "top100";
+    let ports = preset;
+    if (preset === "custom") {
+      ports = ($("#portscan-ports").value || "").trim();
+      if (!ports) { out.textContent = "Error: Enter a port list or range (e.g. 22,80,8000-8100)."; return; }
+    }
+    fd.set("target", target);
+    fd.set("ports", ports);
+    fd.set("scan_type", $("#portscan-type").value || "connect");
+    fd.set("timing", $("#portscan-timing").value || "4");
+    fd.set("version", $("#portscan-version").checked ? "1" : "0");
+    fd.set("no_ping", $("#portscan-noping").checked ? "1" : "0");
   }
 
   // Show running state

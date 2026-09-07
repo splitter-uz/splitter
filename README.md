@@ -208,7 +208,7 @@ as timestamped zips with scheduled auto‑backups and one‑click rollback.
 </table>
 
 Plus a **Monitoring page** (CPU/RAM/disk/network from `/proc`), a **network
-Tools page** (ping, port test, DNS lookup, traceroute, tcpdump, WHOIS, SSL
+Tools page** (ping, port test, port scanner/nmap, DNS lookup, traceroute, tcpdump, WHOIS, SSL
 check), and a **live routing map** (n8n‑style canvas of every mapping with
 red/✗ flagging when a backend is down).
 
@@ -487,7 +487,7 @@ happened.
 | `GET`·`POST`·`DELETE` | `/api/subinterfaces[/<name>]` | admin | List / create / edit / delete sub‑interfaces. |
 | `GET`·`POST` | `/api/settings` | any / admin | Read / change tool‑wide settings. |
 | `GET`·`POST` | `/api/network/dns` · `/network/hosts` | admin | View / edit host DNS + `/etc/hosts`. |
-| `POST` | `/api/tools/{ping,port,dns,traceroute,whois,tcpdump,routes,sslcheck}` | admin/creator | Network diagnostics. |
+| `POST` | `/api/tools/{ping,port,portscan,dns,traceroute,whois,tcpdump,routes,sslcheck}` | admin/creator | Network diagnostics. |
 | `GET`·`POST`·`DELETE` | `/api/mappings[/<domain>]` | varies | List / create+provision / deprovision; `/toggle`, `/diagnose`. |
 | `POST` | `/api/preview` | any | Render the conf without applying. |
 | `GET` | `/api/health` | any | Cached per‑backend up/down rollup for every mapping. |

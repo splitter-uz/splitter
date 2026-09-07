@@ -27,14 +27,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Runtime packages. Mirrors setup.sh's apt list (nginx + stream module,
 # python3, iproute2, dhcp client, openssl, iptables) plus the CLI tools the
-# Tools page shells out to (ping/traceroute/tcpdump/whois/dig/netstat) and
+# Tools page shells out to (ping/traceroute/tcpdump/whois/dig/netstat/nmap) and
 # procps for `pgrep`, which nginx_manager uses to detect a running nginx.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       nginx libnginx-mod-stream \
       python3 python3-venv \
       iproute2 isc-dhcp-client openssl iptables \
-      procps iputils-ping traceroute tcpdump whois dnsutils net-tools \
+      procps iputils-ping traceroute tcpdump whois dnsutils net-tools nmap \
       ca-certificates certbot \
  && rm -rf /var/lib/apt/lists/*
 

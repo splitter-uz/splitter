@@ -6,6 +6,7 @@ load-balancing pools and automated SSL (upload or openssl self-signed).
 Run:  sudo ./run.sh     (or install via ./setup.sh — see README)
 """
 import datetime
+import ipaddress
 import json
 import logging
 import os
@@ -2628,6 +2629,162 @@ def tools_port():
         return jsonify({"ok": True,  "output": f"[{ts}] {host}:{port}\nPort {port} is CLOSED  (connection refused)"})
     except Exception as exc:
         return jsonify({"ok": False, "output": str(exc)})
+
+
+# Port scanner (nmap). Targets accept whatever nmap does — a host, an IP, a
+# CIDR block (192.168.1.0/24) or an octet range (192.168.1.1-50). Ports are a
+# preset ("top100"/"top1000"/"all") or a custom nmap spec ("22,80,8000-8100").
+_PORTSCAN_TARGET_RE = re.compile(r'^[a-zA-Z0-9.\-_/]+$')
+_PORTSCAN_PORTS_RE  = re.compile(r'^\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*$')
+_PORTSCAN_TYPES = {
+    "connect": ["-sT"],   # full TCP handshake — works unprivileged
+    "syn":     ["-sS"],   # half-open — needs root / NET_RAW
+    "udp":     ["-sU"],   # slow; needs root
+    "ping":    ["-sn"],   # host discovery only, no port scan
+}
+
+
+def _portscan_ports_arg(ports: str):
+    """Translate the form's ports field into nmap args. Returns (args, error)."""
+    ports = (ports or "top100").strip().lower()
+    if ports == "top100":
+        return ["--top-ports", "100"], None
+    if ports == "top1000":
+        return ["--top-ports", "1000"], None
+    if ports == "all":
+        return ["-p-"], None
+    ports = ports.replace(" ", "")
+    if not _PORTSCAN_PORTS_RE.match(ports):
+        return None, "Ports must be a comma list of numbers / ranges, e.g. 22,80,443,8000-8100"
+    for part in ports.split(","):
+        for n in part.split("-"):
+            if not (1 <= int(n) <= 65535):
+                return None, "Ports must be within 1–65535"
+    return ["-p", ports], None
+
+
+def _expand_port_spec(spec: str, cap: int = 4096):
+    """The custom / preset port field as a sorted int list (for the fallback
+    scanner). Capped so a '-p-' style request can't spawn 65k connects."""
+    top100 = [7, 9, 13, 21, 22, 23, 25, 26, 37, 53, 79, 80, 81, 88, 106, 110, 111,
+              113, 119, 135, 139, 143, 144, 179, 199, 389, 427, 443, 444, 445, 465,
+              513, 514, 515, 543, 544, 548, 554, 587, 631, 646, 873, 990, 993, 995,
+              1025, 1026, 1027, 1028, 1029, 1110, 1433, 1720, 1723, 1755, 1900,
+              2000, 2001, 2049, 2121, 2717, 3000, 3128, 3306, 3389, 3986, 4899,
+              5000, 5009, 5051, 5060, 5101, 5190, 5357, 5432, 5631, 5666, 5800,
+              5900, 6000, 6001, 6646, 7070, 8000, 8008, 8009, 8080, 8081, 8443,
+              8888, 9100, 9999, 10000, 32768, 49152, 49153, 49154, 49155, 49156,
+              49157]
+    spec = (spec or "top100").strip().lower().replace(" ", "")
+    if spec in ("top100", "top1000"):
+        return top100
+    if spec == "all":
+        return list(range(1, cap + 1))
+    out = set()
+    for part in spec.split(","):
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.update(range(int(a), int(b) + 1))
+        else:
+            out.add(int(part))
+    return sorted(out)[:cap]
+
+
+def _fallback_tcp_scan(host: str, ports, timeout: float = 1.0) -> dict:
+    """nmap-less TCP connect scan of one host (threaded). Only reports open
+    ports, like nmap's default view."""
+    import concurrent.futures as _cf
+    try:
+        addr = _socket.gethostbyname(host)
+    except Exception as exc:
+        return {"ok": False, "output": f"Cannot resolve {host}: {exc}"}
+    t0 = _time.time()
+
+    def probe(port):
+        try:
+            with _socket.create_connection((addr, port), timeout=timeout):
+                return port
+        except Exception:
+            return None
+
+    with _cf.ThreadPoolExecutor(max_workers=64) as ex:
+        open_ports = sorted(p for p in ex.map(probe, ports) if p)
+    lines = [f"nmap not installed — built-in TCP connect scan of {host} ({addr})",
+             f"Scanned {len(ports)} ports in {_time.time() - t0:.1f}s", ""]
+    if open_ports:
+        lines.append("PORT       STATE")
+        for p in open_ports:
+            try:
+                svc = _socket.getservbyport(p, "tcp")
+            except Exception:
+                svc = "unknown"
+            lines.append(f"{p}/tcp".ljust(11) + "open   " + svc)
+    else:
+        lines.append("No open TCP ports found in the scanned set.")
+    lines += ["", "Install nmap for SYN/UDP scans, service detection and CIDR targets."]
+    return {"ok": True, "output": "\n".join(lines)}
+
+
+@app.post("/api/tools/portscan")
+@require_role("admin", "creator")
+def tools_portscan():
+    target   = (request.form.get("target") or "").strip()
+    ports    = (request.form.get("ports") or "top100").strip()
+    stype    = (request.form.get("scan_type") or "connect").strip().lower()
+    version  = (request.form.get("version") or "") in ("1", "true", "on")
+    no_ping  = (request.form.get("no_ping") or "") in ("1", "true", "on")
+    try:
+        timing = _form_int("timing", 4, 0, 5)
+    except ValidationError as exc:
+        return _err(str(exc))
+    if not target or len(target) > 256 or not _PORTSCAN_TARGET_RE.match(target):
+        return _err("Invalid target — use a host, IP, CIDR (10.0.0.0/24) or range (10.0.0.1-50)")
+    if "/" in target:
+        try:
+            ipaddress.ip_network(target, strict=False)
+        except ValueError:
+            return _err("Invalid CIDR target")
+    if stype not in _PORTSCAN_TYPES:
+        return _err("Invalid scan type")
+    port_args, perr = _portscan_ports_arg(ports)
+    if perr:
+        return _err(perr)
+
+    cmd = ["nmap", *_PORTSCAN_TYPES[stype], f"-T{timing}", "-n"]
+    if stype != "ping":
+        cmd += port_args
+        if version:
+            cmd.append("-sV")
+    if no_ping and stype != "ping":
+        cmd.append("-Pn")
+    cmd += ["--host-timeout", "240s", target]
+
+    if config.SIMULATE:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M %Z").strip()
+        lines = [f"# {' '.join(cmd)}",
+                 f"Starting Nmap 7.93 (simulated) at {ts}",
+                 f"Nmap scan report for {target}",
+                 "Host is up (0.0012s latency)."]
+        if stype != "ping":
+            lines += ["Not shown: 97 closed tcp ports (conn-refused)",
+                      "PORT     STATE SERVICE" + ("  VERSION" if version else ""),
+                      "22/tcp   open  ssh" + ("      OpenSSH 9.2p1 Debian" if version else ""),
+                      "80/tcp   open  http" + ("     nginx 1.22.1" if version else ""),
+                      "443/tcp  open  https" + ("    nginx 1.22.1" if version else "")]
+        lines += ["", "Nmap done: 1 IP address (1 host up) scanned in 1.42 seconds"]
+        return jsonify({"ok": True, "output": "\n".join(lines)})
+
+    result = _run_cmd(cmd, timeout=300)
+    if not result["ok"] and result["output"].startswith("Command not found"):
+        if stype != "connect" or "/" in target or re.search(r"\d-\d", target):
+            return jsonify({"ok": False, "output": (
+                "nmap is not installed on this host. Without it only a plain TCP "
+                "connect scan of a single host is available — install nmap "
+                "(apt install nmap) for SYN/UDP scans, CIDR targets and service detection.")})
+        result = _fallback_tcp_scan(target, _expand_port_spec(ports))
+    if result["ok"]:
+        result["output"] = f"# {' '.join(cmd)}\n" + result["output"]
+    return jsonify(result)
 
 
 @app.post("/api/tools/dns")
