@@ -46,7 +46,7 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall", "errorpages"];
+const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall", "snippets"];
 // Pages whose data is loaded lazily on first visit (see showPage).
 const PAGE_LOADED = new Set();
 function showPage(name) {
@@ -54,6 +54,8 @@ function showPage(name) {
   // on the Map page with that tab selected, rather than 404-ing to the default.
   let requestedTab = null;
   if (MAP_TABS.includes(name)) { requestedTab = name; name = "map"; }
+  // Error Pages moved into the Snippets page — old #errorpages links still land there.
+  if (name === "errorpages") { SNIP_TAB = "errorpages"; name = "snippets"; }
   if (!PAGES.includes(name)) name = "map";
   history.replaceState(null, "", "#" + (name === "map" ? MAP_MODE : name));
   PAGES.forEach((p) => {
@@ -68,7 +70,7 @@ function showPage(name) {
   if (name === "waf") loadWaf();
   if (name === "ssl") loadSslCerts();
   if (name === "firewall") loadFirewall();
-  if (name === "errorpages") loadErrorPagesPage();
+  if (name === "snippets") startSnippets();
   if (name === "docker") loadDocker();
   if (name === "map") startMapPage(requestedTab || MAP_MODE);
   else stopTrafficPolling();
@@ -165,6 +167,7 @@ let MAPPING_FORM_SOURCE = "map";   // "map" | "docker"
 
 function showMappingForm() {
   MAPPING_FORM_SOURCE = "map";
+  loadLogFormats();
   const home = $("#mappanel-mappings"), form = $("#mapping-form-view");
   if (home && form && form.parentElement !== home) home.appendChild(form);
   const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
@@ -212,6 +215,7 @@ function dockerNewMapping() {
 
 function dockerShowMappingForm() {
   MAPPING_FORM_SOURCE = "docker";
+  loadLogFormats();
   const slot = $("#docker-form-slot"), form = $("#mapping-form-view");
   if (slot && form) slot.appendChild(form);
   if (form) form.classList.remove("hidden");
@@ -1971,6 +1975,16 @@ function editMapping(domain, port) {
     ? m.access_list : "__default__";
   if (![...$("#access_list").options].some((o) => o.value === $("#access_list").value))
     $("#access_list").value = "__default__";
+
+  // Log format snippet — keep the stored name even if the list hasn't loaded yet.
+  const lf = $("#log_format");
+  if (lf) {
+    const want = m.log_format || "";
+    if (want && ![...lf.options].some((o) => o.value === want)) {
+      const o = document.createElement("option"); o.value = want; o.textContent = want; lf.appendChild(o);
+    }
+    lf.value = want;
+  }
 
   // SSL — keep the current cert untouched by default
   EDIT_HAS_CERT = !!m.has_cert;
@@ -4356,7 +4370,199 @@ async function loadErrorPagesPage() {
     const j = await (await fetch("/api/error-pages")).json();
     if (!j.ok) return;
     renderErrorPagesList(j.pages || []);
+    const badge = $("#snip-errorpages-count"); if (badge) badge.textContent = (j.pages || []).length;
   } catch (_) { /* non-fatal */ }
+}
+
+// --- Snippets page: Log formats / Error pages tabs --------------------------
+let SNIP_TAB = "logformats";
+let _snippetsReady = false;
+let LOG_FORMATS = [];        // saved snippets from /api/log-formats
+let LOGFMT_PRESETS = [];
+let LOGFMT_VARS = {};
+
+function startSnippets() {
+  loadLogFormats();
+  loadErrorPagesPage();
+  if (!_snippetsReady) {
+    _snippetsReady = true;
+    $$(".snip-tab").forEach((btn) => btn.addEventListener("click", () => showSnipTab(btn.dataset.sniptab)));
+    $("#snippets-refresh").addEventListener("click", () => { loadLogFormats(); loadErrorPagesPage(); });
+    $("#logfmt-form").addEventListener("submit", saveLogFormat);
+    $("#logfmt-cancel").addEventListener("click", resetLogFormatForm);
+    $("#logfmt-preset").addEventListener("change", applyLogFormatPreset);
+    ["logfmt-name", "logfmt-context", "logfmt-escape", "logfmt-format"].forEach((id) =>
+      $("#" + id).addEventListener("input", renderLogFormatPreview));
+    $("#logfmt-context").addEventListener("change", renderLogFormatVars);
+  }
+  showSnipTab(SNIP_TAB);
+}
+
+function showSnipTab(name) {
+  SNIP_TAB = name;
+  $$(".snip-tab").forEach((btn) => {
+    const active = btn.dataset.sniptab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  $$(".snip-panel").forEach((p) => p.classList.add("hidden"));
+  const panel = $("#snippanel-" + name);
+  if (panel) panel.classList.remove("hidden");
+}
+
+async function loadLogFormats() {
+  try {
+    const j = await (await fetch("/api/log-formats")).json();
+    if (!j.ok) return;
+    LOG_FORMATS = j.formats || [];
+    LOGFMT_PRESETS = j.presets || [];
+    LOGFMT_VARS = j.variables || {};
+    renderLogFormatsList();
+    populateLogFormatDropdown();
+    const badge = $("#snip-logformats-count"); if (badge) badge.textContent = LOG_FORMATS.length;
+    const presetSel = $("#logfmt-preset");
+    if (presetSel && presetSel.options.length <= 1) {
+      LOGFMT_PRESETS.forEach((p) => {
+        const o = document.createElement("option"); o.value = p.name; o.textContent = p.label; presetSel.appendChild(o);
+      });
+    }
+    renderLogFormatVars();
+    renderLogFormatPreview();
+  } catch (_) { /* non-fatal */ }
+}
+
+// The exact directive the backend will emit (mirrors log_format_lines() in
+// nginx_manager.py): one quoted string per non-empty line, joined by nginx.
+function nginxQuote(t) { return "'" + t.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'"; }
+
+function renderLogFormatPreview() {
+  const pre = $("#logfmt-preview"); if (!pre) return;
+  const name = ($("#logfmt-name").value || "<mapping>").trim() || "<mapping>";
+  const esc = $("#logfmt-escape").value;
+  const parts = ($("#logfmt-format").value || "").split(/\r?\n/).filter((l) => l.trim());
+  if (!parts.length) { pre.textContent = "log_format …"; return; }
+  const head = `log_format ${name}_fmt${esc === "json" || esc === "none" ? " escape=" + esc : ""} `;
+  pre.textContent = parts.map((p, i) => (i ? " ".repeat(head.length) : head) + nginxQuote(p) + (i === parts.length - 1 ? ";" : "")).join("\n");
+}
+
+function renderLogFormatVars() {
+  const box = $("#logfmt-vars"); if (!box) return;
+  const vars = LOGFMT_VARS[$("#logfmt-context").value] || [];
+  box.innerHTML = vars.map((v) => `<button type="button" data-var="${escapeHtml(v)}" class="logfmt-var font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600">${escapeHtml(v)}</button>`).join("");
+  box.querySelectorAll(".logfmt-var").forEach((b) => b.addEventListener("click", () => {
+    const ta = $("#logfmt-format");
+    const at = ta.selectionStart ?? ta.value.length;
+    ta.value = ta.value.slice(0, at) + b.dataset.var + ta.value.slice(ta.selectionEnd ?? at);
+    ta.focus(); ta.selectionStart = ta.selectionEnd = at + b.dataset.var.length;
+    renderLogFormatPreview();
+  }));
+}
+
+function applyLogFormatPreset() {
+  const p = LOGFMT_PRESETS.find((x) => x.name === $("#logfmt-preset").value);
+  if (!p) return;
+  $("#logfmt-context").value = p.context;
+  $("#logfmt-escape").value = p.escape;
+  $("#logfmt-format").value = p.format;
+  if (!$("#logfmt-name").value.trim()) $("#logfmt-name").value = p.name;
+  if (!$("#logfmt-description").value.trim()) $("#logfmt-description").value = p.description || "";
+  renderLogFormatVars();
+  renderLogFormatPreview();
+}
+
+function resetLogFormatForm() {
+  $("#logfmt-form").reset();
+  $("#logfmt-name").readOnly = false;
+  $("#logfmt-form-title").textContent = "New log format";
+  $("#logfmt-cancel").classList.add("hidden");
+  $("#logfmt-steps").classList.add("hidden");
+  renderLogFormatVars();
+  renderLogFormatPreview();
+}
+
+function editLogFormat(name) {
+  const r = LOG_FORMATS.find((x) => x.name === name); if (!r) return;
+  $("#logfmt-name").value = r.name; $("#logfmt-name").readOnly = true;
+  $("#logfmt-context").value = r.context;
+  $("#logfmt-escape").value = r.escape || "default";
+  $("#logfmt-format").value = r.format;
+  $("#logfmt-description").value = r.description || "";
+  $("#logfmt-form-title").textContent = `Edit log format: ${r.name}`;
+  $("#logfmt-cancel").classList.remove("hidden");
+  renderLogFormatVars();
+  renderLogFormatPreview();
+  $("#logfmt-form").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderLogFormatsList() {
+  const rows = $("#logfmt-rows"); if (!rows) return;
+  rows.innerHTML = "";
+  $("#logfmt-empty").classList.toggle("hidden", LOG_FORMATS.length > 0);
+  LOG_FORMATS.forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50 align-top";
+    const used = r.in_use || [];
+    tr.innerHTML = `
+      <td class="px-6 py-3 whitespace-nowrap"><div class="font-mono font-semibold text-slate-800">${escapeHtml(r.name)}</div>${r.description ? `<div class="text-xs text-slate-400 mt-0.5">${escapeHtml(r.description)}</div>` : ""}</td>
+      <td class="px-6 py-3 whitespace-nowrap"><span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${r.context === "http" ? "bg-sky-50 text-sky-700" : "bg-violet-50 text-violet-700"}">${escapeHtml(r.context)}</span>${r.escape && r.escape !== "default" ? `<span class="ml-1 text-[11px] text-slate-400 font-mono">escape=${escapeHtml(r.escape)}</span>` : ""}</td>
+      <td class="px-6 py-3"><pre class="font-mono text-[11px] text-slate-600 whitespace-pre-wrap break-all max-w-md">${escapeHtml(r.format)}</pre></td>
+      <td class="px-6 py-3 text-xs text-slate-500">${used.length ? used.map((u) => `<div class="font-mono">${escapeHtml(u)}</div>`).join("") : '<span class="text-slate-300">—</span>'}</td>
+      <td class="px-6 py-3 text-right whitespace-nowrap">
+        <button data-name="${escapeHtml(r.name)}" class="logfmt-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+        <button data-name="${escapeHtml(r.name)}" class="logfmt-del text-xs font-medium text-red-600 hover:text-red-800 ${used.length ? "opacity-40 cursor-not-allowed" : ""}" ${used.length ? 'title="In use by a mapping"' : ""}>Delete</button>
+      </td>`;
+    rows.appendChild(tr);
+  });
+  rows.querySelectorAll(".logfmt-edit").forEach((b) => b.addEventListener("click", () => editLogFormat(b.dataset.name)));
+  rows.querySelectorAll(".logfmt-del").forEach((b) => b.addEventListener("click", () => deleteLogFormat(b.dataset.name)));
+}
+
+async function saveLogFormat(e) {
+  e.preventDefault();
+  const btn = $("#logfmt-save"), out = $("#logfmt-steps");
+  btn.disabled = true;
+  try {
+    const fd = new FormData($("#logfmt-form"));
+    const j = await (await fetch("/api/log-formats", { method: "POST", body: fd })).json();
+    toast(j.ok ? `Saved log format ${fd.get("name")}.` : (j.error || "Could not save it."), j.ok);
+    if (j.steps && j.steps.length) {
+      out.classList.remove("hidden");
+      out.textContent = j.steps.map((st) => `${st.ok ? "✔" : "✘"} ${st.name}\n   ${st.detail || ""}`).join("\n");
+    }
+    if (j.ok) { resetLogFormatForm(); if (j.steps && j.steps.length) { out.classList.remove("hidden"); } }
+    loadLogFormats();
+  } catch (err) {
+    toast("Request failed: " + err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteLogFormat(name) {
+  const r = LOG_FORMATS.find((x) => x.name === name);
+  if (r && (r.in_use || []).length) { toast(`"${name}" is used by ${r.in_use.join(", ")} — switch those mappings first.`, false); return; }
+  if (!confirm(`Delete log format "${name}"?`)) return;
+  const j = await (await fetch(`/api/log-formats/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
+  toast(j.ok ? `Deleted ${name}.` : (j.error || "Could not delete it."), j.ok);
+  loadLogFormats();
+}
+
+// Mapping form's Log format dropdown — built-in default + every snippet,
+// labelled with its context. Preserves the current selection.
+function populateLogFormatDropdown() {
+  const sel = $("#log_format"); if (!sel) return;
+  const cur = sel.value || "";
+  sel.innerHTML = "";
+  const opts = [["", "Built-in default"]];
+  for (const r of LOG_FORMATS) opts.push([r.name, `${r.name} (${r.context}${r.escape && r.escape !== "default" ? ", " + r.escape : ""})`]);
+  for (const [v, label] of opts) {
+    const o = document.createElement("option"); o.value = v; o.textContent = label; sel.appendChild(o);
+  }
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "";
 }
 
 function renderErrorPagesList(pages) {
@@ -4601,7 +4807,7 @@ async function loadMe() {
   toggleHidden("#nav-backup", !admin);
   toggleHidden("#nav-waf", !admin);
   toggleHidden("#nav-firewall", !admin);
-  toggleHidden("#nav-errorpages", !admin);
+  toggleHidden("#nav-snippets", !admin);
   // Network page: only admins can change the sub-interface policy / network.
   toggleHidden("#iface-settings-card", !admin);
   toggleHidden("#iface-network-card", !admin);

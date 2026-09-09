@@ -633,6 +633,42 @@ def _apply_failover(mapping, backends):
             for b in backends]
 
 
+def _nginx_quote(text):
+    """Single-quoted nginx string literal. Backslashes and single quotes are
+    escaped the way ngx_conf_read_token expects."""
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def log_format_lines(mapping, fmt_name, context, default_lines):
+    """The `log_format <fmt_name> ...;` block for a mapping.
+
+    If the mapping selected a log-format snippet (Snippets page) whose context
+    matches (`stream` for the L4 proxy, `http` for the L7 reverse proxy), its
+    body replaces the built-in line — each line of the snippet becomes one
+    quoted string, concatenated by nginx exactly like the default below.
+    Otherwise (no selection, unknown name, or a snippet for the other context)
+    the built-in `default_lines` are emitted unchanged.
+    """
+    sel = (mapping.get("log_format") or "").strip()
+    snip = storage.logfmt_get(sel) if sel else None
+    if not snip:
+        return list(default_lines) + [""]
+    if snip.get("context") != context:
+        return [f"# log format snippet '{sel}' is for the {snip.get('context')} "
+                f"context — using the built-in {context} format instead."] + \
+               list(default_lines) + [""]
+    esc = f" escape={snip['escape']}" if snip.get("escape") in ("json", "none") else ""
+    parts = [ln for ln in (snip.get("format") or "").splitlines() if ln.strip()] or [""]
+    head = f"log_format {fmt_name}{esc} "
+    out = [f"# log format snippet: {sel}"]
+    for i, part in enumerate(parts):
+        prefix = head if i == 0 else " " * len(head)
+        tail = ";" if i == len(parts) - 1 else ""
+        out.append(f"{prefix}{_nginx_quote(part)}{tail}")
+    out.append("")
+    return out
+
+
 def render_conf(mapping):
     backends = _apply_failover(mapping, _normalize_backends(mapping))
     name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT)
@@ -699,12 +735,11 @@ def render_conf(mapping):
     log_paths = log_paths_for(mapping["domain"], port)
     sni_src = "$ssl_server_name" if terminate else (
         "$ssl_preread_server_name" if ssl_preread else "")
-    lines += [
+    lines += log_format_lines(mapping, f"{name}_fmt", "stream", [
         f"log_format {name}_fmt '$remote_addr [$time_local] $protocol $status '",
         f"                       'host=\"{sni_src}\" sent=$bytes_sent "
         "rcvd=$bytes_received time=$session_time upstream=\"$upstream_addr\"';",
-        "",
-    ]
+    ])
 
     if sni_guard:
         lines += [
@@ -985,13 +1020,12 @@ def render_http_conf(mapping):
     # Per-mapping traffic log (full HTTP line — this is an L7 proxy). The
     # format name is global to http{}, so scope it to this mapping.
     log_paths = log_paths_for(mapping["domain"], port)
-    lines += [
+    lines += log_format_lines(mapping, f"{name}_fmt", "http", [
         f"log_format {name}_fmt '$remote_addr - $remote_user [$time_local] "
         "\"$request\" $status $body_bytes_sent '",
         "                       '\"$http_referer\" \"$http_user_agent\" "
         "rt=$request_time upstream=$upstream_addr';",
-        "",
-    ]
+    ])
 
     # Force-HTTPS redirect: a companion server{} in the SAME file, on :80, for
     # this domain only. Safe to coexist with other mappings on the same

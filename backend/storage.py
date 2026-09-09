@@ -556,6 +556,66 @@ def access_in_use(name, exclude_domain=None):
     return None
 
 
+# --------------------------------------------------------------------------
+# Log format snippets (Snippets page) — named nginx log_format bodies a mapping
+# can select instead of the built-in access-log line.
+# --------------------------------------------------------------------------
+_LOGFMT_FILE = os.path.join(config.DATA_DIR, "log_formats.json")
+
+
+def _read_logfmt():
+    try:
+        with open(_LOGFMT_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_logfmt(data):
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=config.DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+        os.replace(tmp, _LOGFMT_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def logfmt_list():
+    with _lock:
+        return sorted(_read_logfmt().values(), key=lambda r: r["name"])
+
+
+def logfmt_get(name):
+    with _lock:
+        return _read_logfmt().get(name)
+
+
+def logfmt_add(rec):
+    with _lock:
+        data = _read_logfmt()
+        data[rec["name"]] = rec
+        _write_logfmt(data)
+        return rec
+
+
+def logfmt_remove(name):
+    with _lock:
+        data = _read_logfmt()
+        removed = data.pop(name, None)
+        _write_logfmt(data)
+        return removed
+
+
+def logfmt_usage(name):
+    """Mappings that selected log format `name` (full records)."""
+    with _lock:
+        return [m for m in _read_all().values() if m.get("log_format") == name]
+
+
 def export_all():
     """Whole store as a dict keyed by domain — used by the backup/export API."""
     with _lock:

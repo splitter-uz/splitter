@@ -1901,6 +1901,11 @@ def create_mapping():
     if access_list and access_list != "__default__" and not storage.access_get(access_list):
         return _err(f"No such access list: {access_list}")
 
+    # Log format snippet: "" => built-in access-log line, "<name>" => snippet.
+    log_format = (form.get("log_format") or "").strip()
+    if log_format and not storage.logfmt_get(log_format):
+        return _err(f"No such log format snippet: {log_format}")
+
     # --- assemble mapping & sub-interface naming ----------------------------
     if existing and isinstance(existing.get("subiface_index"), int):
         idx = existing["subiface_index"]
@@ -1933,6 +1938,7 @@ def create_mapping():
         "proxy_ssl": proxy_ssl,   # re-encrypt to backend
         "sni_guard": sni_guard,   # only serve this hostname (passthrough)
         "access_list": access_list,   # "" | "__default__" | "<name>" allow/deny list
+        "log_format": log_format,     # "" (built-in) | "<snippet name>" from the Snippets page
         # Whether this app is bound to the WAF (L7 HTTP reverse proxy + ModSecurity)
         # instead of the default L4 stream proxy. Preserved across edits; toggled
         # from the WAF page's "Protected apps" list.
@@ -2245,6 +2251,143 @@ def list_activity():
 
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Log format snippets (Snippets page): named nginx log_format bodies that a
+# mapping can select (mapping form → Log format) instead of the built-in line.
+# --------------------------------------------------------------------------
+_LOGFMT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+_LOGFMT_CONTEXTS = ("stream", "http")
+_LOGFMT_ESCAPES = ("default", "json", "none")
+
+# Ready-made bodies the UI offers as starting points (never stored as-is).
+LOG_FORMAT_PRESETS = [
+    {"name": "stream_default", "context": "stream", "escape": "default",
+     "label": "Stream — built-in",
+     "description": "The default Layer-4 line: client, time, protocol, status, bytes, session time, upstream.",
+     "format": "$remote_addr [$time_local] $protocol $status \n"
+               "sent=$bytes_sent rcvd=$bytes_received time=$session_time upstream=\"$upstream_addr\""},
+    {"name": "stream_json", "context": "stream", "escape": "json",
+     "label": "Stream — JSON",
+     "description": "One JSON object per session, ready for Loki / Elasticsearch / jq.",
+     "format": "{\"ts\":\"$time_iso8601\",\"client\":\"$remote_addr\",\"proto\":\"$protocol\",\n"
+               "\"status\":$status,\"sni\":\"$ssl_preread_server_name\",\n"
+               "\"sent\":$bytes_sent,\"rcvd\":$bytes_received,\"session_time\":$session_time,\n"
+               "\"upstream\":\"$upstream_addr\",\"upstream_connect_time\":\"$upstream_connect_time\"}"},
+    {"name": "http_combined", "context": "http", "escape": "default",
+     "label": "HTTP — combined + timings",
+     "description": "Apache combined log plus request time and the upstream that served it.",
+     "format": "$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent \n"
+               "\"$http_referer\" \"$http_user_agent\" rt=$request_time upstream=$upstream_addr"},
+    {"name": "http_json", "context": "http", "escape": "json",
+     "label": "HTTP — JSON",
+     "description": "One JSON object per request with timings, sizes and the real client IP behind proxies.",
+     "format": "{\"ts\":\"$time_iso8601\",\"client\":\"$remote_addr\",\"xff\":\"$http_x_forwarded_for\",\n"
+               "\"host\":\"$host\",\"method\":\"$request_method\",\"uri\":\"$request_uri\",\n"
+               "\"status\":$status,\"bytes\":$body_bytes_sent,\"referer\":\"$http_referer\",\n"
+               "\"ua\":\"$http_user_agent\",\"rt\":$request_time,\"upstream\":\"$upstream_addr\",\n"
+               "\"upstream_rt\":\"$upstream_response_time\",\"ssl\":\"$ssl_protocol\"}"},
+    {"name": "http_minimal", "context": "http", "escape": "default",
+     "label": "HTTP — minimal",
+     "description": "Short line for busy sites: time, client, method, path, status, bytes, request time.",
+     "format": "$time_iso8601 $remote_addr $request_method $request_uri $status $body_bytes_sent $request_time"},
+]
+
+LOG_FORMAT_VARIABLES = {
+    "stream": ["$remote_addr", "$remote_port", "$server_addr", "$server_port", "$protocol",
+               "$status", "$bytes_sent", "$bytes_received", "$session_time", "$time_local",
+               "$time_iso8601", "$upstream_addr", "$upstream_bytes_sent", "$upstream_bytes_received",
+               "$upstream_connect_time", "$ssl_preread_server_name", "$ssl_server_name",
+               "$ssl_protocol", "$ssl_cipher"],
+    "http": ["$remote_addr", "$remote_user", "$time_local", "$time_iso8601", "$request",
+             "$request_method", "$request_uri", "$host", "$status", "$body_bytes_sent",
+             "$bytes_sent", "$request_time", "$request_length", "$http_referer",
+             "$http_user_agent", "$http_x_forwarded_for", "$upstream_addr",
+             "$upstream_status", "$upstream_response_time", "$ssl_protocol", "$ssl_cipher",
+             "$server_protocol", "$scheme"],
+}
+
+
+def _logfmt_public(rec):
+    used = storage.logfmt_usage(rec["name"])
+    return {**rec, "in_use": [f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used]}
+
+
+@app.get("/api/log-formats")
+@require_role(*ANY_ROLE)
+def log_formats_list():
+    return jsonify({"ok": True,
+                    "formats": [_logfmt_public(r) for r in storage.logfmt_list()],
+                    "presets": LOG_FORMAT_PRESETS,
+                    "variables": LOG_FORMAT_VARIABLES})
+
+
+@app.post("/api/log-formats")
+@require_role("admin")
+def log_formats_save():
+    """Create or update a snippet. Mappings already using it are re-applied so
+    the new line takes effect (nginx -t protects against a broken format)."""
+    form = request.form
+    name = (form.get("name") or "").strip()
+    context = (form.get("context") or "stream").strip().lower()
+    escape = (form.get("escape") or "default").strip().lower()
+    fmt = (form.get("format") or "").replace("\r\n", "\n").strip("\n")
+    description = (form.get("description") or "").strip()[:200]
+    if not _LOGFMT_NAME_RE.match(name):
+        return _err("Name must start with a letter and use only letters, digits, _ or - (max 40).")
+    if context not in _LOGFMT_CONTEXTS:
+        return _err("Context must be 'stream' or 'http'.")
+    if escape not in _LOGFMT_ESCAPES:
+        return _err("Escape must be default, json or none.")
+    if not fmt.strip():
+        return _err("Format is empty.")
+    if len(fmt) > 4000:
+        return _err("Format is too long (max 4000 characters).")
+    if "$" not in fmt:
+        return _err("Format has no nginx variables ($remote_addr, $status, …) — every line would be identical.")
+    existing = storage.logfmt_get(name)
+    rec = {
+        "name": name, "context": context, "escape": escape, "format": fmt,
+        "description": description,
+        "created": (existing or {}).get("created", _now()), "updated": _now(),
+    }
+    storage.logfmt_add(rec)
+    _audit("logformat.save", target=name, detail=f"context={context} escape={escape}")
+
+    # Re-apply every enabled mapping that uses this snippet so its access_log
+    # switches to the new line now. A format nginx rejects fails that mapping's
+    # nginx -t and apply_mapping rolls it back to the previous config.
+    steps, failed = [], []
+    for m in storage.logfmt_usage(name):
+        if not m.get("enabled", True):
+            continue
+        label = f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}"
+        try:
+            for st in nm.apply_mapping(m):
+                steps.append({**st, "name": f"[{label}] {st['name']}"})
+        except nm.ProvisionError as exc:
+            failed.append(f"{label}: {exc}")
+            steps.extend({**st, "name": f"[{label}] {st['name']}"} for st in (exc.steps or []))
+    resp = {"ok": not failed, "format": _logfmt_public(rec), "steps": steps}
+    if failed:
+        resp["error"] = ("Saved, but re-applying failed for: " + "; ".join(failed)
+                         + ". Those mappings were rolled back to their previous config.")
+    return jsonify(resp)
+
+
+@app.delete("/api/log-formats/<name>")
+@require_role("admin")
+def log_formats_delete(name):
+    used = storage.logfmt_usage(name)
+    if used:
+        who = ", ".join(f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used)
+        return _err(f"'{name}' is used by {who} — switch those mappings to another "
+                    "log format first.", code=409)
+    if not storage.logfmt_remove(name):
+        return _err("No such log format snippet.", code=404)
+    _audit("logformat.delete", target=name)
+    return jsonify({"ok": True})
+
+
 # Custom error pages (admin only) — see error_pages.py. A key is either an
 # exact HTTP status code ("404") or an inclusive range ("400-499").
 # --------------------------------------------------------------------------
@@ -2562,6 +2705,7 @@ def preview_conf():
         "cert_domain": cert_domain, "proxy_ssl": _truthy(form.get("proxy_ssl")),
         "sni_guard": _truthy(form.get("sni_guard")),
         "access_list": (form.get("access_list") or "").strip(),
+        "log_format": (form.get("log_format") or "").strip(),
         "upstream_name": nm.upstream_name(domain, listen_port),
     }
     mapping.update(lb)
