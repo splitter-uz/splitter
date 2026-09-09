@@ -2035,12 +2035,16 @@ function startMonitoring() {
 }
 
 // --- nginx stub_status card -------------------------------------------------
-async function loadNginxStatus() {
+async function fetchNginxStatus() {
   try {
     const j = await (await fetch("/api/nginx/status")).json();
-    if (!j.ok) return;
-    renderNginxStatus(j);
-  } catch (_) { /* non-fatal — keep last values */ }
+    return j.ok ? j : null;
+  } catch (_) { return null; }   // non-fatal — callers keep their last values
+}
+
+async function loadNginxStatus() {
+  const j = await fetchNginxStatus();
+  if (j) renderNginxStatus(j);
 }
 
 function fmtCount(n) {
@@ -2098,11 +2102,43 @@ async function provisionNginxStatus() {
 }
 function stopMonitoring() { clearInterval(MON_TIMER); MON_TIMER = null; }
 
+let LIVEMAP_NGX_TIMER = null;
+
 function startLivemap() {
   renderRouteMap(true);   // draw with whatever we have…
   loadMappings();         // …then refresh from the API (re-renders if changed)
+  loadLivemapNginx();
+  clearInterval(LIVEMAP_NGX_TIMER);
+  LIVEMAP_NGX_TIMER = setInterval(() => { if (!document.hidden) loadLivemapNginx(); }, 2000);
 }
-function stopLivemap() { /* nothing to tear down */ }
+function stopLivemap() { clearInterval(LIVEMAP_NGX_TIMER); LIVEMAP_NGX_TIMER = null; }
+
+// nginx stub_status strip under the routing-map header (same endpoint as the
+// Monitoring card, compact rendering).
+async function loadLivemapNginx() {
+  const j = await fetchNginxStatus();
+  if (j) renderLivemapNginx(j);
+}
+
+function renderLivemapNginx(j) {
+  const unavailable = $("#livemap-nginx-unavailable"), stats = $("#livemap-nginx-stats");
+  if (!unavailable || !stats) return;
+  unavailable.classList.toggle("hidden", !!j.available);
+  stats.classList.toggle("hidden", !j.available);
+  $("#lm-ngx-updated").textContent = (j.simulated ? "simulated · " : "") + new Date().toLocaleTimeString();
+  if (!j.available) return;
+  const s = j.stats || {};
+  $("#lm-ngx-active").textContent = fmtCount(s.active);
+  $("#lm-ngx-rps").textContent = s.requests_rate == null ? "…" : s.requests_rate.toFixed(1);
+  $("#lm-ngx-cps").textContent = s.accepts_rate == null ? "…" : s.accepts_rate.toFixed(1);
+  $("#lm-ngx-reading").textContent = fmtCount(s.reading);
+  $("#lm-ngx-writing").textContent = fmtCount(s.writing);
+  $("#lm-ngx-waiting").textContent = fmtCount(s.waiting);
+  $("#lm-ngx-requests").textContent = fmtCount(s.requests);
+  const dropped = $("#lm-ngx-dropped");
+  dropped.classList.toggle("hidden", !s.dropped);
+  dropped.textContent = s.dropped ? ` · ${fmtCount(s.dropped)} dropped` : "";
+}
 
 // --- live routing map (built from real mappings) ---------------------------
 let ROUTE_SIG = null;
@@ -5440,6 +5476,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener("mouseup", onRouteNodeUp);
   $("#mon-refresh").addEventListener("click", () => { loadMetrics(); loadIfaceTraffic(); loadNginxStatus(); });
   $("#mon-nginx-provision").addEventListener("click", provisionNginxStatus);
+  $$(".nav-jump-monitoring").forEach((b) => b.addEventListener("click", () => showPage("monitoring")));
   $("#network-refresh").addEventListener("click", refreshNetworkTab);
   $("#subiface-toggle").addEventListener("change", (e) => saveSubifaceSetting(e.target.checked));
   $("#dns-add").addEventListener("click", () => addDnsRow(""));

@@ -1244,6 +1244,22 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                 </span>
               </div>
             </figcaption>
+            <!-- nginx stub_status strip (http layer) — polled while this page is open -->
+            <div id="livemap-nginx" class="flex items-center gap-x-4 gap-y-1.5 flex-wrap px-6 py-2 border-b border-slate-100 bg-slate-50/70 text-xs">
+              <span class="flex items-center gap-1.5 font-mono tracking-widest text-[10px] text-slate-400">
+                <span class="h-1.5 w-1.5 rounded-full bg-rose-500"></span> NGINX
+                <button type="button" class="info-tip" aria-label="More info" data-tip="Live stub_status counters for nginx's HTTP layer (Reverse Proxy / WAF mappings). Layer-4 stream mappings are not counted here — their flow is shown on the map itself.&#10;R / W / Idle = connections reading a request, writing a response, or idle keep-alive.">i</button>
+              </span>
+              <span id="livemap-nginx-unavailable" class="hidden text-slate-400">stub_status unavailable — <button type="button" class="nav-jump-monitoring underline hover:text-slate-600">see Monitoring</button></span>
+              <span id="livemap-nginx-stats" class="hidden contents">
+                <span class="flex items-baseline gap-1"><span class="text-slate-400">Active</span><span id="lm-ngx-active" class="font-bold tabular-nums text-slate-800">—</span></span>
+                <span class="flex items-baseline gap-1"><span id="lm-ngx-rps" class="font-bold tabular-nums text-rose-700">—</span><span class="text-slate-400">req/s</span></span>
+                <span class="flex items-baseline gap-1"><span id="lm-ngx-cps" class="font-bold tabular-nums text-sky-700">—</span><span class="text-slate-400">conn/s</span></span>
+                <span class="flex items-baseline gap-1 tabular-nums"><span class="text-slate-400">R</span><span id="lm-ngx-reading" class="font-semibold text-amber-600">—</span><span class="text-slate-300">/</span><span class="text-slate-400">W</span><span id="lm-ngx-writing" class="font-semibold text-emerald-600">—</span><span class="text-slate-300">/</span><span class="text-slate-400">Idle</span><span id="lm-ngx-waiting" class="font-semibold text-sky-600">—</span></span>
+                <span class="flex items-baseline gap-1 text-slate-400"><span id="lm-ngx-requests" class="tabular-nums">—</span> requests total<span id="lm-ngx-dropped" class="hidden text-red-600"></span></span>
+              </span>
+              <span id="lm-ngx-updated" class="ml-auto text-[10px] text-slate-400 tabular-nums">—</span>
+            </div>
             <div class="relative">
               <div id="route-scroll" class="overflow-auto p-4 sm:p-6 cursor-grab select-none" style="height:calc(100vh - 120px);min-height:420px;background-color:#fff;background-image:radial-gradient(circle, rgba(148,163,184,.4) 1px, transparent 1.6px);background-size:22px 22px;background-attachment:local">
                 <svg id="route-map" viewBox="0 0 1000 380" class="h-auto block" style="width:100%" aria-label="Live traffic routing visualization"></svg>
