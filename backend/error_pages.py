@@ -154,16 +154,87 @@ def upload_custom(key, html_text):
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(html_text)
     os.replace(tmp, path)
+    try:
+        export_static(key)   # keep nginx's copy current
+    except Exception:
+        pass
     return key
 
 
 def delete_custom(key):
     key = clean_error_page_key(key)
     path = os.path.join(config.ERROR_PAGES_DIR, f"{key}.html")
+    removed = False
     if os.path.isfile(path):
         os.remove(path)
-        return True
-    return False
+        removed = True
+    try:
+        os.remove(static_path(key))
+    except OSError:
+        pass
+    return removed
+
+
+# --------------------------------------------------------------------------
+# nginx: a Reverse Proxy / WAF mapping can select uploaded pages; its server
+# block gets `error_page <codes> /__splitter_error/<key>.html` pointing at a
+# static export of the template (nginx can't run Jinja2). Exports are refreshed
+# on every upload and at app start.
+# --------------------------------------------------------------------------
+def static_path(key):
+    return os.path.join(config.ERROR_PAGES_NGINX_DIR, f"{key}.html")
+
+
+def nginx_codes(key):
+    """Status codes nginx's error_page accepts for this key (300-599 only)."""
+    lo, hi = _key_range(key)
+    return [c for c in range(lo, hi + 1) if 300 <= c <= 599]
+
+
+def export_static(key):
+    """Render the custom template for `key` with a generic context and write
+    it where nginx serves it from. Returns the path, or None if no template."""
+    key = clean_error_page_key(key)
+    src = os.path.join(config.ERROR_PAGES_DIR, f"{key}.html")
+    if not os.path.isfile(src):
+        return None
+    code = _key_range(key)[0]
+    ctx = {
+        "status": code, "title": title_for(code), "message": message_for(code),
+        "path": "", "method": "", "timestamp": "", "request_id": "",
+    }
+    with open(src, "r", encoding="utf-8") as fh:
+        source = fh.read()
+    try:
+        html = jinja2.Environment(autoescape=True).from_string(source).render(**ctx)
+    except Exception:
+        html = source   # not valid Jinja2 — serve it as-is
+    os.makedirs(config.ERROR_PAGES_NGINX_DIR, exist_ok=True)
+    dst = static_path(key)
+    tmp = dst + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    os.replace(tmp, dst)
+    os.chmod(dst, 0o644)
+    return dst
+
+
+def sync_static():
+    """Export every uploaded page (idempotent). Never raises; returns keys."""
+    done = []
+    for entry in list_custom():
+        try:
+            if export_static(entry["key"]):
+                done.append(entry["key"])
+        except Exception:
+            pass
+    return done
+
+
+def usage(key):
+    """Mappings that selected error page `key`."""
+    import storage
+    return [m for m in storage.export_all().values() if key in (m.get("error_pages") or [])]
 
 
 def preview_custom(key):

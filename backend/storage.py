@@ -616,6 +616,73 @@ def logfmt_usage(name):
         return [m for m in _read_all().values() if m.get("log_format") == name]
 
 
+# --------------------------------------------------------------------------
+# Config snippets (Snippets page) — named blocks of raw nginx directives that
+# a mapping includes from its Advanced config / custom locations.
+# --------------------------------------------------------------------------
+_CFGSNIP_FILE = os.path.join(config.DATA_DIR, "config_snippets.json")
+
+
+def _read_cfgsnip():
+    try:
+        with open(_CFGSNIP_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_cfgsnip(data):
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=config.DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+        os.replace(tmp, _CFGSNIP_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def cfgsnip_list():
+    with _lock:
+        return sorted(_read_cfgsnip().values(), key=lambda r: r["name"])
+
+
+def cfgsnip_get(name):
+    with _lock:
+        return _read_cfgsnip().get(name)
+
+
+def cfgsnip_add(rec):
+    with _lock:
+        data = _read_cfgsnip()
+        data[rec["name"]] = rec
+        _write_cfgsnip(data)
+        return rec
+
+
+def cfgsnip_remove(name):
+    with _lock:
+        data = _read_cfgsnip()
+        removed = data.pop(name, None)
+        _write_cfgsnip(data)
+        return removed
+
+
+def cfgsnip_usage(token):
+    """Mappings whose Advanced config or any custom location contains `token`
+    (the snippet's include path). Full records."""
+    with _lock:
+        out = []
+        for m in _read_all().values():
+            texts = [m.get("advanced_config") or ""]
+            texts += [(loc or {}).get("config") or "" for loc in (m.get("locations") or [])]
+            if any(token in t for t in texts):
+                out.append(m)
+        return out
+
+
 def export_all():
     """Whole store as a dict keyed by domain — used by the backup/export API."""
     with _lock:

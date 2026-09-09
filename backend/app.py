@@ -37,6 +37,7 @@ import net_detect
 import net_settings
 import nginx_manager as nm
 import nginx_status
+import config_snippets
 import storage
 import waf
 
@@ -67,6 +68,7 @@ from validators import (
     clean_transport,
     clean_uint,
     clean_vlan_id,
+    clean_error_page_key,
 )
 
 
@@ -227,7 +229,22 @@ def _parse_http_opts(form):
         "hsts_subdomains": hsts_subdomains,
         "advanced_config": (form.get("advanced_config") or "").strip()[:_ADVANCED_CONFIG_MAX],
         "locations": locations,
+        # Uploaded error pages (Snippets → Error pages) nginx should serve for
+        # their status codes on this L7 mapping. Keys as stored ("404", "500-599").
+        "error_pages": _parse_error_page_keys(form),
     }
+
+
+def _parse_error_page_keys(form):
+    available = {e["key"] for e in error_pages.list_custom()}
+    out = []
+    for raw in form.getlist("error_pages"):
+        key = clean_error_page_key(raw)
+        if key not in available:
+            raise ValidationError(f"No uploaded error page for {key!r} — add it on Snippets → Error pages first.")
+        if key not in out:
+            out.append(key)
+    return out
 
 
 def _truthy(v):
@@ -280,6 +297,22 @@ try:
     nm.migrate_conf_files(storage.list_mappings())
 except Exception as _exc:  # never let a migration hiccup stop the server
     app.logger.warning("conf-file migration skipped: %s", _exc)
+
+# Error pages selected on L7 mappings are served by nginx from static exports;
+# refresh them so a restored/fresh data dir has every file the configs expect.
+try:
+    error_pages.sync_static()
+except Exception as _exc:
+    app.logger.warning("error page export skipped: %s", _exc)
+
+# Config snippets are real nginx include files; re-create any that are missing
+# from conf.d (fresh volume, restore) so mappings that include them still load.
+try:
+    _written = config_snippets.sync_files()
+    if _written:
+        app.logger.info("config snippet files re-created: %s", ", ".join(_written))
+except Exception as _exc:
+    app.logger.warning("config snippet sync skipped: %s", _exc)
 
 # Make sure nginx exposes its stub_status counters for the Monitoring page.
 # Best-effort: a failure here is logged, never fatal — the page shows an
@@ -2388,14 +2421,90 @@ def log_formats_delete(name):
     return jsonify({"ok": True})
 
 
+# --------------------------------------------------------------------------
+# Config snippets (Snippets page): named blocks of raw nginx directives that a
+# mapping pulls in with `include` from its Advanced config / custom locations.
+# --------------------------------------------------------------------------
+def _cfgsnip_public(rec):
+    used = config_snippets.usage(rec["name"])
+    return {**rec,
+            "path": config_snippets.path_for(rec["name"]),
+            "include": config_snippets.include_line(rec["name"]),
+            "in_use": [f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used]}
+
+
+@app.get("/api/config-snippets")
+@require_role(*ANY_ROLE)
+def config_snippets_list():
+    return jsonify({"ok": True,
+                    "snippets": [_cfgsnip_public(r) for r in storage.cfgsnip_list()],
+                    "presets": config_snippets.PRESETS,
+                    "dir": config.SNIPPET_DIR})
+
+
+@app.post("/api/config-snippets")
+@require_role("admin")
+def config_snippets_save():
+    form = request.form
+    name = (form.get("name") or "").strip()
+    scope = (form.get("scope") or "any").strip().lower()
+    content = (form.get("content") or "").replace("\r\n", "\n").strip("\n")
+    description = (form.get("description") or "").strip()[:200]
+    if not config_snippets.NAME_RE.match(name):
+        return _err("Name must start with a letter and use only letters, digits, _ or - (max 40).")
+    if scope not in config_snippets.SCOPES:
+        return _err("Scope must be server, location or any.")
+    if not content.strip():
+        return _err("Snippet content is empty.")
+    if len(content) > config_snippets.MAX_CONTENT:
+        return _err(f"Snippet is too long (max {config_snippets.MAX_CONTENT} characters).")
+    if content.count("{") != content.count("}"):
+        return _err("Unbalanced braces — every { needs a matching }.")
+    existing = storage.cfgsnip_get(name)
+    rec = {
+        "name": name, "scope": scope, "content": content, "description": description,
+        "created": (existing or {}).get("created", _now()), "updated": _now(),
+    }
+    ok, steps = config_snippets.write_snippet(rec)
+    if not ok:
+        # Keep the store consistent with what is on disk: the previous version
+        # (if any) is what nginx is still running with.
+        failed = "; ".join(f"{st['name']}: {st.get('detail', '')}" for st in steps if not st.get("ok"))
+        return _err("nginx rejected the snippet — nothing changed. " + failed, steps=steps)
+    storage.cfgsnip_add(rec)
+    _audit("snippet.save", target=name, detail=f"scope={scope}")
+    return jsonify({"ok": True, "snippet": _cfgsnip_public(rec), "steps": steps})
+
+
+@app.delete("/api/config-snippets/<name>")
+@require_role("admin")
+def config_snippets_delete(name):
+    if not storage.cfgsnip_get(name):
+        return _err("No such config snippet.", code=404)
+    used = config_snippets.usage(name)
+    if used:
+        who = ", ".join(f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used)
+        return _err(f"'{name}' is included by {who} — remove the include line from "
+                    "those mappings first.", code=409)
+    storage.cfgsnip_remove(name)
+    step = config_snippets.remove_snippet_file(name)
+    _audit("snippet.delete", target=name)
+    return jsonify({"ok": True, "steps": [step]})
+
+
 # Custom error pages (admin only) — see error_pages.py. A key is either an
 # exact HTTP status code ("404") or an inclusive range ("400-499").
 # --------------------------------------------------------------------------
 @app.get("/api/error-pages")
-@require_role("admin")
+@require_role(*ANY_ROLE)
 def error_pages_list():
-    return jsonify({"ok": True, "pages": error_pages.list_custom(),
-                    "builtin": error_pages.builtin_codes()})
+    pages = []
+    for e in error_pages.list_custom():
+        used = error_pages.usage(e["key"])
+        pages.append({**e, "in_use": [f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used],
+                      "nginx_codes": len(error_pages.nginx_codes(e["key"]))})
+    return jsonify({"ok": True, "pages": pages, "builtin": error_pages.builtin_codes(),
+                    "uri": config.ERROR_PAGES_URI})
 
 
 @app.post("/api/error-pages")
@@ -2423,9 +2532,14 @@ def error_pages_upload():
 @require_role("admin")
 def error_pages_delete(key):
     try:
-        removed = error_pages.delete_custom(key)
+        key = clean_error_page_key(key)
     except ValidationError as exc:
         return _err(str(exc))
+    used = error_pages.usage(key)
+    if used:
+        who = ", ".join(f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used)
+        return _err(f"Error page {key} is selected on {who} — untick it there first.", code=409)
+    removed = error_pages.delete_custom(key)
     if not removed:
         return _err("No custom page for that key.", code=404)
     _audit("error_page.delete", target=key)

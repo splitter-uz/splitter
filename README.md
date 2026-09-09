@@ -508,6 +508,7 @@ happened.
 | `GET` | `/api/metrics` · `/api/traffic` | any | Host CPU/RAM/disk/network + per‑mapping traffic. |
 | `GET`·`POST` | `/api/nginx/status` · `/nginx/status/provision` | any / admin | nginx `stub_status` counters (http layer) + (re)provision the loopback status endpoint. |
 | `GET`·`POST`·`DELETE` | `/api/log-formats[/<name>]` | any / admin | Log‑format snippets (Snippets page) a mapping can select via its `log_format` field. |
+| `GET`·`POST`·`DELETE` | `/api/config-snippets[/<name>]` | any / admin | Config snippets: raw nginx blocks written as include files a mapping pulls into its Advanced config / custom locations. |
 | `GET` | `/api/random-mac` | any | Generate a random locally‑administered MAC. |
 | `POST` | `/api/system/reboot` | admin | Reboot the host (native install only). |
 

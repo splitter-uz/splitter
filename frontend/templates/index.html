@@ -706,6 +706,14 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                         <span><b>HTTP/1.1 to backend</b> — send <span class="font-mono">proxy_http_version 1.1</span> instead of nginx's 1.0 default. Needed for keep-alive/chunked backends; always on automatically when WebSocket support is on.</span>
                       </label>
 
+                      <!-- Uploaded error pages nginx should serve on this mapping -->
+                      <div>
+                        <label class="block text-xs font-semibold mb-1.5">Error pages <span class="font-normal text-slate-400">served by nginx for these status codes</span><button type="button" class="info-tip" aria-label="More info" data-tip="Pages uploaded on Snippets → Error pages. Ticking one adds proxy_intercept_errors on plus an error_page line for its status codes, so backend responses with those codes — and nginx's own 502 / 504 when the backend is down — show that page instead of the raw error.">i</button></label>
+                        <div id="error-pages-pick" class="flex flex-wrap gap-1.5">
+                          <span class="text-xs text-slate-400">No custom error pages uploaded yet — add some on <b>Snippets → Error pages</b>.</span>
+                        </div>
+                      </div>
+
                       <div>
                         <div class="flex items-center justify-between mb-1.5">
                           <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path-specific config</span><button type="button" class="info-tip" aria-label="More info" data-tip="Extra nginx location blocks for specific paths, e.g. /api with different headers or timeouts. The proxy target is added for you.">i</button></label>
@@ -716,7 +724,10 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                       </div>
 
                       <div>
-                        <label class="block text-xs font-medium mb-1">Advanced config <span class="text-slate-400 font-normal">(raw nginx, inserted into the server block)</span></label>
+                        <div class="flex items-center justify-between mb-1 gap-2">
+                          <label class="block text-xs font-medium">Advanced config <span class="text-slate-400 font-normal">(raw nginx, inserted into the server block)</span></label>
+                          <select id="advanced-snippet-pick" data-snippet-target="#advanced_config" data-snippet-scope="server" class="snippet-pick rounded-md border border-slate-300 px-2 py-1 text-xs bg-white text-slate-600"><option value="">Insert snippet…</option></select>
+                        </div>
                         <textarea name="advanced_config" id="advanced_config" rows="4" spellcheck="false" placeholder="# e.g. extra headers, rewrites…"
                           class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
                         <p class="text-[11px] text-amber-600 mt-1">Written verbatim into the generated config — a mistake here can fail <span class="font-mono">nginx -t</span> for this mapping only (rolled back automatically). Admin/creator access required, same as everything else on this form.</p>
@@ -2530,6 +2541,7 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
           <!-- Tab strip -->
           <div class="flex overflow-x-auto bg-slate-50/70 border border-slate-200 rounded-xl px-2 pt-2 gap-0.5">
             <button data-sniptab="logformats" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Log formats <span id="snip-logformats-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+            <button data-sniptab="config" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Config snippets <span id="snip-config-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
             <button data-sniptab="errorpages" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Error pages <span id="snip-errorpages-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
           </div>
 
@@ -2631,9 +2643,97 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
             </div>
           </div>
 
+          <!-- ── Config snippets ─────────────────────────────────────── -->
+          <div id="snippanel-config" class="snip-panel hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <!-- Editor -->
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="cfgsnip-form-title" class="text-sm font-semibold text-slate-800">New config snippet</div>
+                  <button type="button" id="cfgsnip-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">A reusable block of raw nginx directives. It is saved as an <span class="font-mono">include</span> file; a mapping pulls it in from its <b>Advanced config</b> or a <b>custom location</b> with the Insert snippet picker. Editing the snippet later updates every mapping that includes it.</p>
+                <form id="cfgsnip-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Name<button type="button" class="info-tip" aria-label="More info" data-tip="Also the include file name (<name>.inc). Letters, digits, _ and - only; max 40 characters.">i</button></label>
+                      <input id="cfgsnip-name" name="name" required placeholder="security_headers" pattern="[A-Za-z][A-Za-z0-9_-]{0,39}"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Scope<button type="button" class="info-tip" aria-label="More info" data-tip="Where the directives are valid. server: inside the server block (Advanced config). location: inside a location block (custom location). any: works in both. Only used to label and filter the picker — nginx -t still checks placement.">i</button></label>
+                      <select id="cfgsnip-scope" name="scope" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="server">server — Advanced config</option>
+                        <option value="location">location — custom location</option>
+                        <option value="any">any</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Start from</label>
+                      <select id="cfgsnip-preset" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500"><option value="">preset…</option></select>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Directives<button type="button" class="info-tip" aria-label="More info" data-tip="Raw nginx configuration, written verbatim into the include file. Every directive ends with a semicolon; a mistake fails nginx -t for the mappings that include it and is rolled back automatically.">i</button></label>
+                    <textarea id="cfgsnip-content" name="content" rows="8" spellcheck="false" placeholder="add_header X-Frame-Options SAMEORIGIN always;"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label>
+                    <input id="cfgsnip-description" name="description" maxlength="200" placeholder="What this block does"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">INCLUDE LINE A MAPPING GETS</div>
+                    <pre id="cfgsnip-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all">include …</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="cfgsnip-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save snippet</button>
+                    <span class="text-[11px] text-slate-400">If a live mapping includes it, nginx is validated and reloaded; a bad snippet is rolled back.</span>
+                  </div>
+                </form>
+                <pre id="cfgsnip-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+
+              <!-- Help -->
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4">
+                  <li>Save a snippet here (or start from a preset).</li>
+                  <li>Open a mapping's <b>Reverse Proxy (L7) options</b>. Use <b>Insert snippet</b> above <b>Advanced config</b> (server scope) or on a <b>custom location</b> (location scope).</li>
+                  <li>The picker adds one <span class="font-mono">include …;</span> line. Save / Apply the mapping — nginx validates the result.</li>
+                </ol>
+                <p class="text-xs text-slate-400 mt-3">Files live in <span class="font-mono" id="cfgsnip-dir">…</span>. Applies to Reverse Proxy / WAF mappings (the L7 server block); plain L4 stream mappings have no raw-config hook.</p>
+                <p class="text-xs text-amber-600 mt-2">A snippet can't be deleted while a mapping includes it.</p>
+              </div>
+            </div>
+
+            <!-- List -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100">
+                <h3 class="text-sm font-semibold">Saved config snippets</h3>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                    <tr>
+                      <th class="text-left px-6 py-3 font-medium">Name</th>
+                      <th class="text-left px-6 py-3 font-medium">Scope</th>
+                      <th class="text-left px-6 py-3 font-medium">Directives</th>
+                      <th class="text-left px-6 py-3 font-medium">Included by</th>
+                      <th class="px-6 py-3"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="cfgsnip-rows" class="divide-y divide-slate-100"></tbody>
+                </table>
+              </div>
+              <div id="cfgsnip-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No config snippets yet.</div>
+            </div>
+          </div>
+
           <!-- ── Error pages (moved from its own page) ────────────────── -->
           <div id="snippanel-errorpages" class="snip-panel hidden space-y-6">
-            <p class="text-sm text-slate-500 -mb-2">Custom pages served for HTTP errors on this dashboard — 404, 500, and everything else. Anything not overridden below uses the built-in animated default. <button id="errpages-refresh" type="button" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 ml-1">Refresh</button></p>
+            <p class="text-sm text-slate-500 -mb-2">Custom pages for HTTP errors. The dashboard serves them for its own errors, and any <b>Reverse Proxy / WAF mapping</b> can select them (mapping form → Reverse Proxy options → Error pages) so nginx serves the page for those status codes. Anything not overridden uses the built-in animated default. <button id="errpages-refresh" type="button" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 ml-1">Refresh</button></p>
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
             <!-- Upload -->
             <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
@@ -2685,6 +2785,7 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                     <th class="text-left px-6 py-3 font-medium">Key</th>
                     <th class="text-left px-6 py-3 font-medium">Size</th>
                     <th class="text-left px-6 py-3 font-medium">Last modified</th>
+                    <th class="text-left px-6 py-3 font-medium">Used by mappings</th>
                     <th class="px-6 py-3"></th>
                   </tr>
                 </thead>

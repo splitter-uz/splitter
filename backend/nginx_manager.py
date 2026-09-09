@@ -974,6 +974,32 @@ def _websocket_headers(indent="        "):
     ]
 
 
+def _error_page_lines(mapping):
+    """`error_page` directives for the custom pages a mapping selected
+    (Snippets → Error pages), served from their static exports through an
+    internal-only location. proxy_intercept_errors makes backend responses
+    with those codes use the page too, not just nginx's own (502/504…)."""
+    keys = [k for k in (mapping.get("error_pages") or []) if isinstance(k, str)]
+    if not keys:
+        return []
+    out = ["", "    # --- Custom error pages (Snippets → Error pages) ---",
+           "    proxy_intercept_errors on;"]
+    for key in keys:
+        lo, hi = (key.split("-") + [None])[:2]
+        try:
+            lo = int(lo); hi = int(hi) if hi else lo
+        except ValueError:
+            continue
+        codes = [c for c in range(lo, hi + 1) if 300 <= c <= 599]
+        if codes:
+            out.append(f"    error_page {' '.join(map(str, codes))} {config.ERROR_PAGES_URI}{key}.html;")
+    out += [f"    location ^~ {config.ERROR_PAGES_URI} {{",
+            f"        alias {config.ERROR_PAGES_NGINX_DIR}/;",
+            "        internal;",
+            "    }", ""]
+    return out
+
+
 def render_http_conf(mapping):
     """Render the L7 HTTP reverse-proxy + ModSecurity server block.
 
@@ -1100,6 +1126,8 @@ def render_http_conf(mapping):
         lines.append("    # --- Advanced config (raw) ---")
         lines.append(mapping["advanced_config"])
         lines.append("")
+
+    lines += _error_page_lines(mapping)
 
     lines.append("    location / {")
     if websocket:

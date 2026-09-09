@@ -168,6 +168,8 @@ let MAPPING_FORM_SOURCE = "map";   // "map" | "docker"
 function showMappingForm() {
   MAPPING_FORM_SOURCE = "map";
   loadLogFormats();
+  loadConfigSnippets();
+  loadErrorPages();
   const home = $("#mappanel-mappings"), form = $("#mapping-form-view");
   if (home && form && form.parentElement !== home) home.appendChild(form);
   const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
@@ -216,6 +218,8 @@ function dockerNewMapping() {
 function dockerShowMappingForm() {
   MAPPING_FORM_SOURCE = "docker";
   loadLogFormats();
+  loadConfigSnippets();
+  loadErrorPages();
   const slot = $("#docker-form-slot"), form = $("#mapping-form-view");
   if (slot && form) slot.appendChild(form);
   if (form) form.classList.remove("hidden");
@@ -947,11 +951,15 @@ function addLocationRow(loc) {
     <div class="flex gap-2 items-center">
       <input class="loc-path flex-1 min-w-0 rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
         placeholder="/api" value="${escapeHtml(loc.path || "")}" />
+      <select data-snippet-scope="location" class="snippet-pick loc-snippet rounded-md border border-slate-300 px-2 py-1 text-xs bg-white text-slate-600"><option value="">Insert snippet…</option></select>
       <button type="button" class="rm-location px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
     </div>
     <textarea class="loc-config w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" rows="3"
       placeholder="proxy_set_header X-Api-Key mykey;">${escapeHtml(loc.config || "")}</textarea>`;
   wrap.querySelector(".rm-location").addEventListener("click", () => wrap.remove());
+  const pick = wrap.querySelector(".loc-snippet");
+  fillSnippetPicker(pick);
+  pick.addEventListener("change", () => insertSnippetInto(wrap.querySelector(".loc-config"), pick));
   $("#locations").appendChild(wrap);
 }
 
@@ -1965,7 +1973,8 @@ function editMapping(domain, port) {
   setVal("advanced_config", m.advanced_config || "");
   $("#locations").innerHTML = "";
   (m.locations || []).forEach(addLocationRow);
-  if (m.websocket_upgrade || !m.http2 || m.proxy_http11 || m.ssl_forced || m.advanced_config || (m.locations || []).length) {
+  renderErrorPagePicker(m.error_pages || []);
+  if (m.websocket_upgrade || !m.http2 || m.proxy_http11 || m.ssl_forced || m.advanced_config || (m.locations || []).length || (m.error_pages || []).length) {
     const l7d = $("#l7-advanced-details"); if (l7d) l7d.open = true;
   }
 
@@ -4364,14 +4373,41 @@ function stopLogsAuto() {
 // validators.py, which the backend also enforces.
 let ERRPAGES_FILE = null;   // File chosen via "Choose file…", or null
 
-async function loadErrorPagesPage() {
-  if (!isAdmin()) return;
+let ERROR_PAGES = [];   // uploaded custom pages (any role may list them)
+
+// Fetch the uploaded pages; feeds both the Snippets tab and the mapping
+// form's error-page picker.
+async function loadErrorPages() {
   try {
     const j = await (await fetch("/api/error-pages")).json();
-    if (!j.ok) return;
-    renderErrorPagesList(j.pages || []);
-    const badge = $("#snip-errorpages-count"); if (badge) badge.textContent = (j.pages || []).length;
-  } catch (_) { /* non-fatal */ }
+    if (!j.ok) return null;
+    ERROR_PAGES = j.pages || [];
+    renderErrorPagePicker();
+    const badge = $("#snip-errorpages-count"); if (badge) badge.textContent = ERROR_PAGES.length;
+    return j;
+  } catch (_) { return null; }
+}
+
+async function loadErrorPagesPage() {
+  if (!isAdmin()) return;
+  const j = await loadErrorPages();
+  if (j) renderErrorPagesList(ERROR_PAGES);
+}
+
+// Mapping form: one checkbox per uploaded page. `selected` (edit) or the
+// currently ticked keys (refresh) survive a re-render.
+function renderErrorPagePicker(selected) {
+  const box = $("#error-pages-pick"); if (!box) return;
+  const keep = new Set(selected || [...box.querySelectorAll("input:checked")].map((i) => i.value));
+  if (!ERROR_PAGES.length) {
+    box.innerHTML = '<span class="text-xs text-slate-400">No custom error pages uploaded yet — add some on <b>Snippets → Error pages</b>.</span>';
+    return;
+  }
+  box.innerHTML = ERROR_PAGES.map((p) => `
+    <label class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs cursor-pointer hover:border-emerald-300 ${p.nginx_codes === 0 ? "opacity-50" : ""}" ${p.nginx_codes === 0 ? 'title="Only codes 300-599 can be served by nginx"' : ""}>
+      <input type="checkbox" name="error_pages" value="${escapeHtml(p.key)}" class="rounded" ${keep.has(p.key) ? "checked" : ""} ${p.nginx_codes === 0 ? "disabled" : ""}>
+      <span class="font-mono font-semibold text-slate-700">${escapeHtml(p.key)}</span>
+    </label>`).join("");
 }
 
 // --- Snippets page: Log formats / Error pages tabs --------------------------
@@ -4383,11 +4419,16 @@ let LOGFMT_VARS = {};
 
 function startSnippets() {
   loadLogFormats();
+  loadConfigSnippets();
   loadErrorPagesPage();
   if (!_snippetsReady) {
     _snippetsReady = true;
+    $("#cfgsnip-form").addEventListener("submit", saveConfigSnippet);
+    $("#cfgsnip-cancel").addEventListener("click", resetConfigSnippetForm);
+    $("#cfgsnip-preset").addEventListener("change", applyConfigSnippetPreset);
+    $("#cfgsnip-name").addEventListener("input", renderConfigSnippetPreview);
     $$(".snip-tab").forEach((btn) => btn.addEventListener("click", () => showSnipTab(btn.dataset.sniptab)));
-    $("#snippets-refresh").addEventListener("click", () => { loadLogFormats(); loadErrorPagesPage(); });
+    $("#snippets-refresh").addEventListener("click", () => { loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage(); });
     $("#logfmt-form").addEventListener("submit", saveLogFormat);
     $("#logfmt-cancel").addEventListener("click", resetLogFormatForm);
     $("#logfmt-preset").addEventListener("change", applyLogFormatPreset);
@@ -4551,6 +4592,156 @@ async function deleteLogFormat(name) {
   loadLogFormats();
 }
 
+// --- Config snippets (raw nginx include blocks) ------------------------------
+let CONFIG_SNIPPETS = [];
+let CFGSNIP_PRESETS = [];
+let CFGSNIP_DIR = "";
+
+async function loadConfigSnippets() {
+  try {
+    const j = await (await fetch("/api/config-snippets")).json();
+    if (!j.ok) return;
+    CONFIG_SNIPPETS = j.snippets || [];
+    CFGSNIP_PRESETS = j.presets || [];
+    CFGSNIP_DIR = j.dir || "";
+    renderConfigSnippetsList();
+    $$(".snippet-pick").forEach(fillSnippetPicker);
+    const badge = $("#snip-config-count"); if (badge) badge.textContent = CONFIG_SNIPPETS.length;
+    const dir = $("#cfgsnip-dir"); if (dir) dir.textContent = CFGSNIP_DIR;
+    const presetSel = $("#cfgsnip-preset");
+    if (presetSel && presetSel.options.length <= 1) {
+      CFGSNIP_PRESETS.forEach((p) => {
+        const o = document.createElement("option"); o.value = p.name; o.textContent = p.label; presetSel.appendChild(o);
+      });
+    }
+    renderConfigSnippetPreview();
+  } catch (_) { /* non-fatal */ }
+}
+
+function renderConfigSnippetPreview() {
+  const pre = $("#cfgsnip-preview"); if (!pre) return;
+  const name = ($("#cfgsnip-name").value || "").trim();
+  pre.textContent = name ? `include ${CFGSNIP_DIR || "<snippet dir>"}/${name}.inc;   # snippet: ${name}` : "include …";
+}
+
+function applyConfigSnippetPreset() {
+  const p = CFGSNIP_PRESETS.find((x) => x.name === $("#cfgsnip-preset").value);
+  if (!p) return;
+  $("#cfgsnip-scope").value = p.scope;
+  $("#cfgsnip-content").value = p.content;
+  if (!$("#cfgsnip-name").value.trim()) $("#cfgsnip-name").value = p.name;
+  if (!$("#cfgsnip-description").value.trim()) $("#cfgsnip-description").value = p.description || "";
+  renderConfigSnippetPreview();
+}
+
+function resetConfigSnippetForm() {
+  $("#cfgsnip-form").reset();
+  $("#cfgsnip-name").readOnly = false;
+  $("#cfgsnip-form-title").textContent = "New config snippet";
+  $("#cfgsnip-cancel").classList.add("hidden");
+  $("#cfgsnip-steps").classList.add("hidden");
+  renderConfigSnippetPreview();
+}
+
+function editConfigSnippet(name) {
+  const r = CONFIG_SNIPPETS.find((x) => x.name === name); if (!r) return;
+  $("#cfgsnip-name").value = r.name; $("#cfgsnip-name").readOnly = true;
+  $("#cfgsnip-scope").value = r.scope || "any";
+  $("#cfgsnip-content").value = r.content;
+  $("#cfgsnip-description").value = r.description || "";
+  $("#cfgsnip-form-title").textContent = `Edit config snippet: ${r.name}`;
+  $("#cfgsnip-cancel").classList.remove("hidden");
+  renderConfigSnippetPreview();
+  $("#cfgsnip-form").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderConfigSnippetsList() {
+  const rows = $("#cfgsnip-rows"); if (!rows) return;
+  rows.innerHTML = "";
+  $("#cfgsnip-empty").classList.toggle("hidden", CONFIG_SNIPPETS.length > 0);
+  const scopeCls = { server: "bg-sky-50 text-sky-700", location: "bg-violet-50 text-violet-700", any: "bg-slate-100 text-slate-600" };
+  CONFIG_SNIPPETS.forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50 align-top";
+    const used = r.in_use || [];
+    tr.innerHTML = `
+      <td class="px-6 py-3 whitespace-nowrap"><div class="font-mono font-semibold text-slate-800">${escapeHtml(r.name)}</div>${r.description ? `<div class="text-xs text-slate-400 mt-0.5">${escapeHtml(r.description)}</div>` : ""}</td>
+      <td class="px-6 py-3 whitespace-nowrap"><span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${scopeCls[r.scope] || scopeCls.any}">${escapeHtml(r.scope || "any")}</span></td>
+      <td class="px-6 py-3"><pre class="font-mono text-[11px] text-slate-600 whitespace-pre-wrap break-all max-w-md max-h-32 overflow-auto">${escapeHtml(r.content)}</pre></td>
+      <td class="px-6 py-3 text-xs text-slate-500">${used.length ? used.map((u) => `<div class="font-mono">${escapeHtml(u)}</div>`).join("") : '<span class="text-slate-300">—</span>'}</td>
+      <td class="px-6 py-3 text-right whitespace-nowrap">
+        <button data-name="${escapeHtml(r.name)}" class="cfgsnip-copy text-xs font-medium text-slate-500 hover:text-slate-800 mr-3" title="Copy the include line">Copy include</button>
+        <button data-name="${escapeHtml(r.name)}" class="cfgsnip-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+        <button data-name="${escapeHtml(r.name)}" class="cfgsnip-del text-xs font-medium text-red-600 hover:text-red-800 ${used.length ? "opacity-40 cursor-not-allowed" : ""}" ${used.length ? 'title="Included by a mapping"' : ""}>Delete</button>
+      </td>`;
+    rows.appendChild(tr);
+  });
+  rows.querySelectorAll(".cfgsnip-copy").forEach((b) => b.addEventListener("click", () => {
+    const r = CONFIG_SNIPPETS.find((x) => x.name === b.dataset.name);
+    if (r) navigator.clipboard.writeText(r.include).then(() => toast("Include line copied")).catch(() => {});
+  }));
+  rows.querySelectorAll(".cfgsnip-edit").forEach((b) => b.addEventListener("click", () => editConfigSnippet(b.dataset.name)));
+  rows.querySelectorAll(".cfgsnip-del").forEach((b) => b.addEventListener("click", () => deleteConfigSnippet(b.dataset.name)));
+}
+
+async function saveConfigSnippet(e) {
+  e.preventDefault();
+  const btn = $("#cfgsnip-save"), out = $("#cfgsnip-steps");
+  btn.disabled = true;
+  try {
+    const fd = new FormData($("#cfgsnip-form"));
+    const j = await (await fetch("/api/config-snippets", { method: "POST", body: fd })).json();
+    toast(j.ok ? `Saved snippet ${fd.get("name")}.` : (j.error || "Could not save it."), j.ok);
+    if (j.steps && j.steps.length) {
+      out.classList.remove("hidden");
+      out.textContent = j.steps.map((st) => `${st.ok ? "✔" : "✘"} ${st.name}\n   ${st.detail || ""}`).join("\n");
+    }
+    if (j.ok) { const keep = out.textContent; resetConfigSnippetForm(); if (j.steps && j.steps.length) { out.textContent = keep; out.classList.remove("hidden"); } }
+    loadConfigSnippets();
+  } catch (err) {
+    toast("Request failed: " + err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteConfigSnippet(name) {
+  const r = CONFIG_SNIPPETS.find((x) => x.name === name);
+  if (r && (r.in_use || []).length) { toast(`"${name}" is included by ${r.in_use.join(", ")} — remove those include lines first.`, false); return; }
+  if (!confirm(`Delete config snippet "${name}"? Its include file is removed too.`)) return;
+  const j = await (await fetch(`/api/config-snippets/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
+  toast(j.ok ? `Deleted ${name}.` : (j.error || "Could not delete it."), j.ok);
+  loadConfigSnippets();
+}
+
+// "Insert snippet…" pickers on the mapping form (Advanced config + each custom
+// location). Filtered by scope: server pickers hide location-only snippets and
+// vice versa; "any" shows everywhere. Choosing one appends the include line.
+function fillSnippetPicker(sel) {
+  if (!sel) return;
+  const scope = sel.dataset.snippetScope || "any";
+  sel.innerHTML = '<option value="">Insert snippet…</option>';
+  CONFIG_SNIPPETS
+    .filter((r) => scope === "any" || !r.scope || r.scope === "any" || r.scope === scope)
+    .forEach((r) => {
+      const o = document.createElement("option"); o.value = r.name; o.textContent = `${r.name}${r.description ? " — " + r.description : ""}`;
+      sel.appendChild(o);
+    });
+  sel.disabled = sel.options.length <= 1;
+  if (sel.disabled) sel.options[0].textContent = "No snippets yet";
+}
+
+function insertSnippetInto(textarea, sel) {
+  const r = CONFIG_SNIPPETS.find((x) => x.name === sel.value);
+  sel.value = "";
+  if (!r || !textarea) return;
+  if (textarea.value.includes(r.path)) { toast(`${r.name} is already included here.`, false); return; }
+  const cur = textarea.value.replace(/\s+$/, "");
+  textarea.value = (cur ? cur + "\n" : "") + r.include + "\n";
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  toast(`Inserted include for ${r.name}. Save / Apply to take effect.`);
+}
+
 // Mapping form's Log format dropdown — built-in default + every snippet,
 // labelled with its context. Preserves the current selection.
 function populateLogFormatDropdown() {
@@ -4577,9 +4768,10 @@ function renderErrorPagesList(pages) {
       <td class="px-6 py-3 font-mono font-semibold text-slate-800">${escapeHtml(p.key)}</td>
       <td class="px-6 py-3 text-slate-500">${fmtBytes(p.size || 0)}</td>
       <td class="px-6 py-3 text-slate-500 font-mono text-xs">${escapeHtml(p.mtime || "")}</td>
+      <td class="px-6 py-3 text-xs text-slate-500">${(p.in_use || []).length ? p.in_use.map((u) => `<div class="font-mono">${escapeHtml(u)}</div>`).join("") : '<span class="text-slate-300">—</span>'}</td>
       <td class="px-6 py-3 text-right whitespace-nowrap">
         <a href="/api/error-pages/${encodeURIComponent(p.key)}/preview" target="_blank" rel="noopener" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Preview</a>
-        <button data-key="${escapeHtml(p.key)}" class="errpages-del text-xs font-medium text-red-600 hover:text-red-800">Delete</button>
+        <button data-key="${escapeHtml(p.key)}" class="errpages-del text-xs font-medium text-red-600 hover:text-red-800 ${(p.in_use || []).length ? "opacity-40 cursor-not-allowed" : ""}" ${(p.in_use || []).length ? 'title="Selected on a mapping"' : ""}>Delete</button>
       </td>`;
     rows.appendChild(tr);
   });
@@ -4588,6 +4780,8 @@ function renderErrorPagesList(pages) {
 }
 
 async function deleteErrorPage(key) {
+  const p = ERROR_PAGES.find((x) => x.key === key);
+  if (p && (p.in_use || []).length) { toast(`${key} is selected on ${p.in_use.join(", ")} — untick it there first.`, false); return; }
   if (!confirm(`Remove the custom page for "${key}"? It'll fall back to the built-in default.`)) return;
   const j = await (await fetch(`/api/error-pages/${encodeURIComponent(key)}`, { method: "DELETE" })).json();
   toast(j.ok ? `Removed custom page for ${key}.` : (j.error || "Could not remove it."), j.ok);
@@ -5553,6 +5747,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const abd = $("#add-backend-docker"); if (abd) abd.addEventListener("click", toggleBackendDockerGrid);
   const bdgc = $("#backend-docker-grid-close"); if (bdgc) bdgc.addEventListener("click", closeBackendDockerGrid);
   $("#add-location").addEventListener("click", () => addLocationRow());
+  const advPick = $("#advanced-snippet-pick");
+  if (advPick) advPick.addEventListener("change", () => insertSnippetInto($(advPick.dataset.snippetTarget), advPick));
   $("#ssl_forced").addEventListener("change", syncHstsUI);
   $("#hsts_enabled").addEventListener("change", syncHstsUI);
   // Docker page
