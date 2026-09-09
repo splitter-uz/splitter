@@ -1153,6 +1153,61 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
             </div>
           </div>
 
+          <!-- nginx stub_status (http layer: Reverse Proxy / WAF) -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 mt-[var(--gap)]">
+            <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-rose-500"></span> NGINX
+                <span class="normal-case tracking-normal font-mono text-[10px] text-slate-400">stub_status</span>
+                <button type="button" class="info-tip" aria-label="More info" data-tip="Live counters from nginx's built-in stub_status module for the HTTP layer (Reverse Proxy / WAF mappings).&#10;Active = open client connections. Reading = reading a request header, Writing = sending a response, Waiting = idle keep-alive.&#10;Accepts / handled / requests are totals since nginx started; dropped = accepts minus handled (worker_connections exhausted).&#10;Layer-4 stream mappings are not counted here — see the Traffic column on the mappings page.">i</button>
+              </div>
+              <span id="mon-nginx-updated" class="text-xs text-slate-400">—</span>
+            </div>
+
+            <div id="mon-nginx-unavailable" class="hidden rounded-lg bg-slate-50 border border-dashed border-slate-300 p-4 text-sm text-slate-500">
+              <div id="mon-nginx-reason">stub_status is not available.</div>
+              <button type="button" id="mon-nginx-provision" class="mt-3 bg-slate-900 hover:bg-slate-700 text-white text-xs font-semibold rounded-lg px-3 py-2 transition">Enable stub_status</button>
+              <pre id="mon-nginx-steps" class="hidden mt-3 max-h-40 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+            </div>
+
+            <div id="mon-nginx-stats" class="hidden">
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-2">
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">Active connections</div>
+                  <div id="mon-nginx-active" class="text-2xl font-extrabold tabular-nums text-slate-900">—</div>
+                </div>
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">Requests / s</div>
+                  <div id="mon-nginx-rps" class="text-2xl font-extrabold tabular-nums text-rose-700">—</div>
+                </div>
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">Connections / s</div>
+                  <div id="mon-nginx-cps" class="text-2xl font-extrabold tabular-nums text-sky-700">—</div>
+                </div>
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">Requests / connection</div>
+                  <div id="mon-nginx-rpc" class="text-2xl font-extrabold tabular-nums text-slate-700">—</div>
+                </div>
+              </div>
+
+              <div class="mt-3 grid grid-cols-3 gap-3">
+                <div class="rounded-lg border border-slate-200 p-3">
+                  <div class="flex items-center justify-between text-xs text-slate-400"><span>Reading</span><span id="mon-nginx-reading" class="font-bold tabular-nums text-slate-800">—</span></div>
+                  <div class="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div id="mon-nginx-reading-bar" class="h-full w-0 rounded-full bg-amber-500 transition-all duration-500"></div></div>
+                </div>
+                <div class="rounded-lg border border-slate-200 p-3">
+                  <div class="flex items-center justify-between text-xs text-slate-400"><span>Writing</span><span id="mon-nginx-writing" class="font-bold tabular-nums text-slate-800">—</span></div>
+                  <div class="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div id="mon-nginx-writing-bar" class="h-full w-0 rounded-full bg-emerald-500 transition-all duration-500"></div></div>
+                </div>
+                <div class="rounded-lg border border-slate-200 p-3">
+                  <div class="flex items-center justify-between text-xs text-slate-400"><span>Waiting <span class="text-slate-300">(keep-alive)</span></span><span id="mon-nginx-waiting" class="font-bold tabular-nums text-slate-800">—</span></div>
+                  <div class="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div id="mon-nginx-waiting-bar" class="h-full w-0 rounded-full bg-sky-500 transition-all duration-500"></div></div>
+                </div>
+              </div>
+              <div id="mon-nginx-meta" class="mt-2 text-xs text-slate-400">—</div>
+            </div>
+          </div>
+
           <!-- Live per-interface throughput (moved from Sub-interfaces page) -->
           <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 mt-[var(--gap)]">
             <div class="flex items-center justify-between mb-1">

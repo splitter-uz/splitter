@@ -506,6 +506,7 @@ happened.
 | `GET` | `/api/activity` | admin | Audit log (logins, mapping/user changes). |
 | `GET` | `/api/logs` · `/logs/<domain>/<port>/<kind>` | admin | Per‑mapping access/error logs. |
 | `GET` | `/api/metrics` · `/api/traffic` | any | Host CPU/RAM/disk/network + per‑mapping traffic. |
+| `GET`·`POST` | `/api/nginx/status` · `/nginx/status/provision` | any / admin | nginx `stub_status` counters (http layer) + (re)provision the loopback status endpoint. |
 | `GET` | `/api/random-mac` | any | Generate a random locally‑administered MAC. |
 | `POST` | `/api/system/reboot` | admin | Reboot the host (native install only). |
 

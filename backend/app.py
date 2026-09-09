@@ -36,6 +36,7 @@ import metrics
 import net_detect
 import net_settings
 import nginx_manager as nm
+import nginx_status
 import storage
 import waf
 
@@ -279,6 +280,20 @@ try:
     nm.migrate_conf_files(storage.list_mappings())
 except Exception as _exc:  # never let a migration hiccup stop the server
     app.logger.warning("conf-file migration skipped: %s", _exc)
+
+# Make sure nginx exposes its stub_status counters for the Monitoring page.
+# Best-effort: a failure here is logged, never fatal — the page shows an
+# "Enable" button that re-runs the same provisioning on demand.
+try:
+    if not nginx_status.provisioned():
+        _ok, _steps = nginx_status.ensure_conf()
+        if _ok:
+            app.logger.info("nginx stub_status provisioned at %s", nginx_status.URL)
+        else:
+            app.logger.warning("nginx stub_status not provisioned: %s",
+                               "; ".join(f"{st['name']}: {st['detail']}" for st in _steps if not st["ok"]))
+except Exception as _exc:
+    app.logger.warning("nginx stub_status provisioning skipped: %s", _exc)
 
 
 # Every HTTP error status (routing 404/405, an aborted request, an
@@ -1335,6 +1350,25 @@ def backend_health():
 def host_metrics():
     """Current host resource usage: CPU, memory, storage and network."""
     return jsonify({"ok": True, "metrics": metrics.snapshot()})
+
+
+@app.get("/api/nginx/status")
+@require_role(*ANY_ROLE)
+def nginx_stub_status():
+    """Live nginx stub_status counters (http layer): active / reading / writing /
+    waiting connections, accepts / handled / requests totals and per-second rates."""
+    return jsonify({"ok": True, **nginx_status.snapshot()})
+
+
+@app.post("/api/nginx/status/provision")
+@require_role("admin")
+def nginx_stub_status_provision():
+    """(Re)write the loopback-only stub_status server block, validate with
+    nginx -t and reload. Idempotent."""
+    ok, steps = nginx_status.ensure_conf(force=_truthy(request.form.get("force")))
+    _audit("nginx.status.provision", detail="ok" if ok else "failed")
+    return jsonify({"ok": ok, "steps": steps, "url": nginx_status.URL,
+                    "error": None if ok else "Provisioning failed — see steps."})
 
 
 @app.get("/api/interfaces/traffic")

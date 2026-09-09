@@ -2028,9 +2028,73 @@ function setBar(barId, pctId, pct, defaultColor) {
 function startMonitoring() {
   loadMetrics();
   loadIfaceTraffic();
+  loadNginxStatus();
   renderIfaceTree();
   clearInterval(MON_TIMER);
-  MON_TIMER = setInterval(() => { if (!document.hidden) { loadMetrics(); loadIfaceTraffic(); } }, 2000);
+  MON_TIMER = setInterval(() => { if (!document.hidden) { loadMetrics(); loadIfaceTraffic(); loadNginxStatus(); } }, 2000);
+}
+
+// --- nginx stub_status card -------------------------------------------------
+async function loadNginxStatus() {
+  try {
+    const j = await (await fetch("/api/nginx/status")).json();
+    if (!j.ok) return;
+    renderNginxStatus(j);
+  } catch (_) { /* non-fatal — keep last values */ }
+}
+
+function fmtCount(n) {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString();
+}
+
+function renderNginxStatus(j) {
+  const unavailable = $("#mon-nginx-unavailable"), statsBox = $("#mon-nginx-stats");
+  if (!unavailable || !statsBox) return;
+  unavailable.classList.toggle("hidden", !!j.available);
+  statsBox.classList.toggle("hidden", !j.available);
+  if (!j.available) {
+    $("#mon-nginx-reason").textContent = j.provisioned
+      ? `nginx isn't answering on its status endpoint (${j.reason || "unreachable"}). Reload nginx or re-provision.`
+      : "nginx's stub_status endpoint isn't provisioned on this host yet. Enabling writes a loopback-only server block into conf.d and reloads nginx.";
+    $("#mon-nginx-provision").classList.toggle("hidden", !isAdmin());
+    $("#mon-nginx-provision").textContent = j.provisioned ? "Re-provision" : "Enable stub_status";
+    $("#mon-nginx-updated").textContent = new Date().toLocaleTimeString();
+    return;
+  }
+  const s = j.stats || {};
+  $("#mon-nginx-active").textContent = fmtCount(s.active);
+  $("#mon-nginx-rps").textContent = s.requests_rate == null ? "…" : s.requests_rate.toFixed(1);
+  $("#mon-nginx-cps").textContent = s.accepts_rate == null ? "…" : s.accepts_rate.toFixed(1);
+  $("#mon-nginx-rpc").textContent = s.requests_per_connection == null ? "—" : s.requests_per_connection.toFixed(2);
+  const active = Math.max(1, s.active || 0);
+  [["reading", "amber"], ["writing", "emerald"], ["waiting", "sky"]].forEach(([k]) => {
+    $(`#mon-nginx-${k}`).textContent = fmtCount(s[k]);
+    $(`#mon-nginx-${k}-bar`).style.width = Math.min(100, 100 * (s[k] || 0) / active) + "%";
+  });
+  $("#mon-nginx-meta").textContent =
+    `since start: ${fmtCount(s.accepts)} accepted · ${fmtCount(s.handled)} handled · ${fmtCount(s.requests)} requests`
+    + (s.dropped ? ` · ${fmtCount(s.dropped)} dropped` : "")
+    + ` · ${j.url || ""}`;
+  $("#mon-nginx-updated").textContent = (j.simulated ? "simulated · " : "") + new Date().toLocaleTimeString();
+}
+
+async function provisionNginxStatus() {
+  const btn = $("#mon-nginx-provision"), out = $("#mon-nginx-steps");
+  btn.disabled = true;
+  out.classList.remove("hidden");
+  out.textContent = "Provisioning…";
+  try {
+    const fd = new FormData(); fd.set("force", "1");
+    const j = await (await fetch("/api/nginx/status/provision", { method: "POST", body: fd })).json();
+    out.textContent = (j.steps || []).map((st) => `${st.ok ? "✔" : "✘"} ${st.name}\n   ${st.detail || ""}`).join("\n");
+    if (j.ok) { toast("stub_status enabled"); setTimeout(loadNginxStatus, 500); }
+    else toast(j.error || "Provisioning failed", false);
+  } catch (err) {
+    out.textContent = "Request failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 function stopMonitoring() { clearInterval(MON_TIMER); MON_TIMER = null; }
 
@@ -5374,7 +5438,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   // n8n-style node dragging (reset to default layout on any refresh/re-render)
   window.addEventListener("mousemove", onRouteNodeMove);
   window.addEventListener("mouseup", onRouteNodeUp);
-  $("#mon-refresh").addEventListener("click", () => { loadMetrics(); loadIfaceTraffic(); });
+  $("#mon-refresh").addEventListener("click", () => { loadMetrics(); loadIfaceTraffic(); loadNginxStatus(); });
+  $("#mon-nginx-provision").addEventListener("click", provisionNginxStatus);
   $("#network-refresh").addEventListener("click", refreshNetworkTab);
   $("#subiface-toggle").addEventListener("change", (e) => saveSubifaceSetting(e.target.checked));
   $("#dns-add").addEventListener("click", () => addDnsRow(""));
