@@ -706,14 +706,6 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                         <span><b>HTTP/1.1 to backend</b> — send <span class="font-mono">proxy_http_version 1.1</span> instead of nginx's 1.0 default. Needed for keep-alive/chunked backends; always on automatically when WebSocket support is on.</span>
                       </label>
 
-                      <!-- Uploaded error pages nginx should serve on this mapping -->
-                      <div>
-                        <label class="block text-xs font-semibold mb-1.5">Error pages <span class="font-normal text-slate-400">served by nginx for these status codes</span><button type="button" class="info-tip" aria-label="More info" data-tip="Pages uploaded on Snippets → Error pages. Ticking one adds proxy_intercept_errors on plus an error_page line for its status codes, so backend responses with those codes — and nginx's own 502 / 504 when the backend is down — show that page instead of the raw error.">i</button></label>
-                        <div id="error-pages-pick" class="flex flex-wrap gap-1.5">
-                          <span class="text-xs text-slate-400">No custom error pages uploaded yet — add some on <b>Snippets → Error pages</b>.</span>
-                        </div>
-                      </div>
-
                       <div>
                         <div class="flex items-center justify-between mb-1.5">
                           <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path-specific config</span><button type="button" class="info-tip" aria-label="More info" data-tip="Extra nginx location blocks for specific paths, e.g. /api with different headers or timeouts. The proxy target is added for you.">i</button></label>
@@ -734,6 +726,16 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                       </div>
                     </div>
                   </details>
+
+                  <!-- Error pages nginx serves for this mapping (uploaded on Snippets → Error pages) -->
+                  <div id="error-pages-block" class="rounded-lg border border-slate-200 p-3">
+                    <label class="block text-sm font-medium mb-1.5">Error pages<button type="button" class="info-tip" aria-label="More info" data-tip="Pages uploaded on Snippets → Error pages. Tick one and nginx serves it for that page's status codes on this mapping: backend responses with those codes, and nginx's own 502 / 504 when the backend is down. Works on Reverse Proxy / WAF mappings (the HTTP layer).">i</button></label>
+                    <div id="error-pages-pick" class="flex flex-wrap gap-1.5">
+                      <span class="text-xs text-slate-400">No custom error pages uploaded yet — add some on <b>Snippets → Error pages</b>.</span>
+                    </div>
+                    <p id="error-pages-mode-note" class="hidden text-[11px] text-amber-600 mt-1.5">Stored now, applied once this mapping is bound to the Reverse Proxy / WAF — a plain Layer-4 stream can't serve HTTP error pages.</p>
+                    <p class="text-[11px] text-slate-400 mt-1.5">Adds <span class="font-mono">proxy_intercept_errors on</span> and an <span class="font-mono">error_page</span> line per selected page to the generated config.</p>
+                  </div>
 
                   <!-- SSL -->
                   <div id="ssl-section">

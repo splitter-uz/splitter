@@ -1823,6 +1823,10 @@ function applyIntentModeUI() {
   const isProxy = FORM_INTENT_MODE === "proxy";
   const l7 = $("#l7-advanced-details");
   if (l7) l7.classList.toggle("hidden", !isProxy);
+  // Error pages stay visible in both modes (they're stored on every mapping);
+  // on a Stream mapping just say when they kick in.
+  const epNote = $("#error-pages-mode-note");
+  if (epNote) epNote.classList.toggle("hidden", isProxy);
   const forceHttpsRow = $("#ssl_forced") && $("#ssl_forced").closest("label");
   if (forceHttpsRow) forceHttpsRow.classList.toggle("hidden", !isProxy);
   if (!isProxy) {
