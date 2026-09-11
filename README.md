@@ -152,6 +152,13 @@ termination via Nginx `stream {}`. **Reverse Proxy**: HTTP with WebSocket,
 HTTP/2, per‑path `location` blocks, and — front it with ModSecurity/CRS in one
 click, no separate config to write.
 
+**🗺️ Path & method routing**
+On a Reverse Proxy mapping each custom location can point at its **own backend
+pool** and restrict that to certain **HTTP methods** — `/api` GET stays on the
+main pool while POST/PUT go to a write node, DELETE to a third. Several rows
+may share a path for a multi‑way split; a `/` row splits the whole site by
+method. Rendered as one `upstream` per pool and a `map $request_method`.
+
 **⚖️ Load‑balancing pool**
 One or many backends rendered as `upstream {}`, with a selectable method:
 round‑robin, `least_conn`, `hash $remote_addr` (+`consistent`), `random`, or
@@ -178,9 +185,21 @@ Upload your own cert/key, generate a SAN self‑signed cert with `openssl`,
 **request one from Let's Encrypt** (HTTP‑01 via `certbot`, with background
 auto‑renewal), or **reuse** an existing managed cert across mappings.
 
-**🚦 Rate limiting**
-Per‑mapping caps on **simultaneous connections per client IP** (`limit_conn`) and
-**per‑connection bandwidth** (`proxy_download_rate` / `proxy_upload_rate`).
+**🧩 Snippets — reusable settings, picked per mapping**
+One **Snippets** page with a section per kind: **rate limits** (connections per
+client IP, per‑connection bandwidth), **timeouts**, **log formats** (custom
+`log_format` bodies incl. JSON), **error pages** (uploaded HTML nginx serves via
+`error_page`), **config snippets** (raw nginx blocks as `include` files) and
+**log rotation** policies. The mapping form has a single **Snippets** picker
+instead of per‑mapping fields; custom locations get their own picker for one
+path. Nothing selected = built‑in defaults; editing a snippet re‑applies every
+mapping that uses it (`nginx -t` guarded), and a snippet in use can't be deleted.
+
+**📜 Logs with history**
+Per‑mapping access/error logs, rotated daily by `logrotate` (dated, gzip,
+retention per mapping or a global default). The Logs page tails live, and a
+**time‑range search** reads the live file *and* every rotated archive — "what
+hit this mapping two days ago at 15:40?" — with per‑archive downloads.
 
 **🛑 Access lists (allow/deny)**
 Named IP/CIDR allow lists rendered to Nginx snippets; a built‑in **tas‑ix
@@ -207,10 +226,14 @@ as timestamped zips with scheduled auto‑backups and one‑click rollback.
 </tr>
 </table>
 
-Plus a **Monitoring page** (CPU/RAM/disk/network from `/proc`), a **network
-Tools page** (ping, port test, port scanner/nmap, DNS lookup, traceroute, tcpdump, WHOIS, SSL
-check), and a **live routing map** (n8n‑style canvas of every mapping with
-red/✗ flagging when a backend is down).
+Plus a **Monitoring page** (CPU/RAM/disk/network from `/proc`, and live
+**nginx `stub_status`** counters — active / reading / writing / waiting
+connections, requests per second — from a loopback‑only status endpoint Splitter
+provisions itself), a **network Tools page** (ping, port test, **port scanner /
+nmap**, DNS lookup, traceroute, tcpdump, WHOIS, SSL check), and a **live routing
+map** (n8n‑style canvas of every mapping with red/✗ flagging when a backend is
+down, plus the same nginx counters in its header). Every option on the mapping
+form carries an **ⓘ tooltip** explaining what it does.
 
 ---
 
@@ -415,6 +438,74 @@ WAF — no separate step. The WAF page also lists every bound mapping under
 Stream‑only.)
 </details>
 
+<details>
+<summary>🧩 <strong>Snippets</strong> — rate limits, timeouts, log formats, error pages, config blocks, log rotation</summary>
+
+<br>
+
+The **Snippets** page (admin) holds every reusable setting as a named item, one
+tab per kind:
+
+| Kind | What it holds | Rendered as |
+|---|---|---|
+| **Rate limits** | max connections per client IP, download / upload rate | Stream: `limit_conn`, `proxy_download_rate`, `proxy_upload_rate` · Reverse Proxy: `limit_conn`, `limit_rate` |
+| **Timeouts** | `proxy_timeout`, `proxy_connect_timeout` | Stream as‑is · Reverse Proxy: `proxy_read/send_timeout`, `proxy_connect_timeout` |
+| **Log formats** | a `log_format` body (presets incl. JSON), stream or http context | `log_format <mapping>_fmt …` |
+| **Error pages** | uploaded HTML/Jinja2 for a status code or range | `proxy_intercept_errors on` + `error_page` + an internal location serving a static export |
+| **Config snippets** | raw nginx directives, server / location scope | an `include` file under `conf.d/splitter-snippets/` |
+| **Log rotation** | keep N days, gzip, optional max size | a logrotate stanza (see Logs) |
+
+On a mapping (Stream, Reverse Proxy or Docker — same form) pick what you need
+under **Snippets**: one rate limit, one timeouts set, one log format, one
+rotation policy, any error pages and config snippets. Each **custom location**
+row has its own picker (config / rate limit / timeouts for that path only).
+Nothing selected keeps the built‑in defaults. Error pages and config snippets
+only take effect on Reverse Proxy / WAF mappings; the rest apply to both kinds.
+Editing a snippet re‑applies every mapping that uses it (a broken change is
+rolled back by `nginx -t`), and a snippet still in use can't be deleted.
+Mappings saved before this existed keep their inline values until re‑saved.
+</details>
+
+<details>
+<summary>🗺️ <strong>Path & method routing</strong> — send /api POSTs somewhere else</summary>
+
+<br>
+
+In a Reverse Proxy mapping's **Custom locations**, each row has a path, optional
+**backends for this path** (`host:port` list → its own `upstream`), optional
+**methods** (only those go to that pool; the rest stay on the main pool) and
+optional extra directives. Several rows may share a path for a multi‑way split:
+
+| Path | Backends | Methods | Result |
+|---|---|---|---|
+| `/api` | — | — | main pool |
+| `/api` | `10.0.0.21:8080` | `POST, PUT` | write node |
+| `/api` | `10.0.0.22:8080` | `DELETE` | another node |
+
+A row with path `/` splits the whole site by method. **Preview** on the Reverse
+Proxy form shows the generated server block (routing, snippets, error pages).
+</details>
+
+<details>
+<summary>📜 <strong>Logs</strong> — live tail, time‑range search, rotation & retention</summary>
+
+<br>
+
+Every mapping writes `/var/log/splitter/<domain>.<port>/…-access.log` and
+`…-error.log`. The **Logs** page tails them live with search, and a **Time
+range** row searches a window ("last 24h", or *2 days ago 15:30 → 16:00*)
+across the live file **and every rotated archive** (gzip included), matching
+each line's own timestamp. Results are prefixed with the archive date; **Files &
+rotation** lists the archives with downloads.
+
+Rotation runs through the real `logrotate` (installed with Splitter): daily,
+`-YYYYMMDD` suffix, gzip, deleted after the retention period, `nginx -s reopen`
+afterwards. Splitter regenerates the config and runs it hourly from a background
+thread, so no cron is needed in the container; **Rotate now** forces a run. The
+defaults (7 days, gzip, optional max size) are on the Logs page; a **Log
+rotation** snippet on a mapping overrides them for that mapping.
+</details>
+
 ---
 
 ## ⚙️ Configuration
@@ -442,6 +533,8 @@ live on the host.
 | `SPLITTER_IP_NONLOCAL_BIND` | `1` | Bind an address that isn't fully up yet. |
 | `SPLITTER_LETSENCRYPT_RENEW_DAYS` | `30` | Auto‑renew a Let's Encrypt cert within this many days of expiring. |
 | `SPLITTER_HOST` / `SPLITTER_PORT` | `0.0.0.0` / `8088` | UI bind. |
+| `SPLITTER_STATUS_PORT` | `8090` | Loopback port of the nginx `stub_status` endpoint Splitter provisions for Monitoring. |
+| `SPLITTER_SNIPPET_DIR` | `/etc/nginx/conf.d/splitter-snippets` | Where config‑snippet `include` files are written. |
 | `SPLITTER_SIMULATE` | auto | `1` = dry‑run; auto‑on when not on a Linux nginx host. |
 
 </details>
@@ -507,7 +600,8 @@ happened.
 | `GET` | `/api/logs` · `/logs/<domain>/<port>/<kind>` | admin | Per‑mapping access/error logs. |
 | `GET` | `/api/metrics` · `/api/traffic` | any | Host CPU/RAM/disk/network + per‑mapping traffic. |
 | `GET`·`POST` | `/api/nginx/status` · `/nginx/status/provision` | any / admin | nginx `stub_status` counters (http layer) + (re)provision the loopback status endpoint. |
-| `GET`·`POST`·`DELETE` | `/api/log-formats[/<name>]` | any / admin | Log‑format snippets (Snippets page) a mapping can select via its `log_format` field. |
+| `GET`·`POST`·`DELETE` | `/api/error-pages[/<key>]` (+ `/preview`) | any / admin | Uploaded error pages: dashboard errors and, when picked on a mapping, nginx `error_page`. |
+| `GET`·`POST`·`DELETE` | `/api/log-formats[/<name>]` | any / admin | Log‑format snippets (Snippets page); picked on a mapping as `logformat:<name>`. |
 | `GET`·`POST`·`DELETE` | `/api/config-snippets[/<name>]` | any / admin | Config snippets: raw nginx blocks written as include files a mapping pulls into its Advanced config / custom locations. |
 | `GET` · `GET`·`POST`·`DELETE` | `/api/snippets` · `/api/snippets/{ratelimit,timeouts,logrotate}[/<name>]` | any / admin | Snippet catalogue for the mapping form's picker (all kinds), plus rate‑limit, timeout and log‑rotation snippets. A mapping stores `snippets` refs like `ratelimit:api`. |
 | `GET` · `POST` | `/api/logs/<domain>/<port>/<kind>/{search,files}` · `/api/logs/rotate` · `/api/logs/rotation` | admin | Time‑range search across live + rotated (.gz) logs, archive listing/download (`/download?file=`), run logrotate now, rotation status. |
@@ -541,6 +635,11 @@ splitter/
 │   ├── docker_events.py      #   real-time Docker events -> instant reconcile
 │   ├── activity.py           #   audit log
 │   ├── metrics.py            #   host CPU/RAM/disk/network for Monitoring
+│   ├── nginx_status.py       #   provisions + polls nginx stub_status (Monitoring / live map)
+│   ├── snippets.py           #   snippet kinds, "kind:name" refs -> rendered fields
+│   ├── config_snippets.py    #   raw nginx include files (Snippets page)
+│   ├── error_pages.py        #   custom error pages (dashboard + nginx static exports)
+│   ├── logrotate.py          #   per-mapping log rotation + time-range log search
 │   ├── storage.py            #   atomic JSON persistence
 │   └── … (auth, config, validators, backup, net_*)
 ├── frontend/                 # Tailwind single-page UI
@@ -557,6 +656,11 @@ On‑host state (survives redeploys):
 /var/lib/splitter/backups/*.zip     # full-system snapshots
 /etc/nginx/stream.d/<domain>.conf   # generated Stream configs
 /etc/nginx/conf.d/*.conf            # generated Reverse Proxy / WAF configs
+/etc/nginx/conf.d/splitter-snippets/*.inc   # config-snippet include files
+/etc/nginx/conf.d/splitter-status.conf      # loopback stub_status server (Monitoring)
+/var/lib/splitter/error_pages_nginx/*.html  # static exports of error pages for nginx
+/var/lib/splitter/logrotate.{conf,state}    # generated rotation config + logrotate state
+/var/log/splitter/<domain>.<port>/          # per-mapping access/error logs + rotated .gz archives
 /etc/nginx/ssl/<domain>.{crt,key}   # managed certificates (upload, self-signed, Let's Encrypt)
 /etc/letsencrypt/live/<domain>/     # certbot's own copy (source for the above)
 ```
