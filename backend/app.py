@@ -38,6 +38,7 @@ import net_settings
 import nginx_manager as nm
 import nginx_status
 import config_snippets
+import logrotate
 import snippets
 import storage
 import waf
@@ -639,6 +640,18 @@ def update_settings():
     steps = []
     if "subinterface_enabled" in form:
         patch["subinterface_enabled"] = _truthy(form.get("subinterface_enabled"))
+    if "log_keep_days" in form:
+        try:
+            patch["log_keep_days"] = clean_uint(form.get("log_keep_days"), "keep days", lo=1) or 7
+            if patch["log_keep_days"] > 365:
+                return _err("keep days must be 1-365.")
+        except ValidationError as exc:
+            return _err(str(exc))
+        patch["log_compress"] = _truthy(form.get("log_compress"))
+        ms = (form.get("log_max_size") or "").strip()
+        if ms and not re.match(r"^\d+[kKmMgG]?$", ms):
+            return _err("max size must be a number with an optional k/M/G suffix, e.g. 100M.")
+        patch["log_max_size"] = ms
     if "default_access_list" in form:
         sel = (form.get("default_access_list") or "").strip()
         if sel and not storage.access_get(sel):
@@ -2251,12 +2264,102 @@ def logs_overview():
                 size = os.path.getsize(path) if os.path.exists(path) else None
             except OSError:
                 size = None
+            archives = [f for f in logrotate.log_files(path) if not f["live"]]
             entry["logs"][kind] = {"path": path, "exists": size is not None,
-                                   "size": size}
+                                   "size": size, "archives": len(archives),
+                                   "archived_bytes": sum(f["size"] for f in archives)}
+        pol = logrotate.policy_for(m)
+        entry["rotation"] = {**pol, "text": logrotate.describe(pol)}
         items.append(entry)
     items.sort(key=lambda e: (e["domain"], e["port"]))
     return jsonify({"ok": True, "dir": config.LOG_DIR,
-                    "simulate": config.SIMULATE, "mappings": items})
+                    "simulate": config.SIMULATE, "mappings": items,
+                    "rotation": logrotate.status()})
+
+
+def _logs_target(domain, port, kind):
+    """Shared guard for the per-mapping log endpoints: the path comes from the
+    STORED mapping, never from user input. Returns (mapping, path) or raises."""
+    domain = clean_domain(domain)
+    if kind not in ("access", "error"):
+        raise ValidationError("kind must be 'access' or 'error'.")
+    mapping = storage.get(domain, port)
+    if not mapping:
+        raise LookupError("No such mapping.")
+    return mapping, nm.log_paths_for(domain, port)[kind]
+
+
+def _parse_when(raw):
+    """ISO-8601 (with offset or Z) => aware UTC datetime; None if blank."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValidationError(f"Bad timestamp {raw!r} — use ISO 8601, e.g. 2026-09-09T15:40:00+05:00")
+    if dt.tzinfo is None:
+        dt = dt.astimezone()   # treat as server-local
+    return dt.astimezone(datetime.timezone.utc)
+
+
+@app.get("/api/logs/<domain>/<int:port>/<kind>/search")
+@require_role("admin")
+def logs_search(domain, port, kind):
+    """Lines between ?from= and ?to= (ISO 8601) across the live log AND its
+    rotated archives (plain or .gz), optional ?q= substring, ?limit= cap."""
+    try:
+        _m, path = _logs_target(domain, port, kind)
+        start, end = _parse_when(request.args.get("from")), _parse_when(request.args.get("to"))
+    except ValidationError as exc:
+        return _err(str(exc))
+    except LookupError as exc:
+        return _err(str(exc), code=404)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    end = end or now
+    start = start or (end - datetime.timedelta(hours=1))
+    if start > end:
+        return _err("'from' must be before 'to'.")
+    if end - start > datetime.timedelta(days=62):
+        return _err("Window too large — search at most 62 days at a time.")
+    try:
+        limit = max(50, min(int(request.args.get("limit", 2000)), 10000))
+    except (TypeError, ValueError):
+        limit = 2000
+    q = (request.args.get("q") or "").strip() or None
+    res = logrotate.search(path, start, end, query=q, limit=limit)
+    return jsonify({"ok": True, "domain": domain, "port": port, "kind": kind,
+                    "from": start.isoformat(), "to": end.isoformat(), **res})
+
+
+@app.get("/api/logs/<domain>/<int:port>/<kind>/files")
+@require_role("admin")
+def logs_files(domain, port, kind):
+    """The live log and its rotated archives, oldest first."""
+    try:
+        mapping, path = _logs_target(domain, port, kind)
+    except ValidationError as exc:
+        return _err(str(exc))
+    except LookupError as exc:
+        return _err(str(exc), code=404)
+    pol = logrotate.policy_for(mapping)
+    return jsonify({"ok": True, "files": logrotate.log_files(path),
+                    "rotation": {**pol, "text": logrotate.describe(pol)}})
+
+
+@app.post("/api/logs/rotate")
+@require_role("admin")
+def logs_rotate_now():
+    """Run logrotate now (?force=1 rotates even if not due)."""
+    res = logrotate.run_once(force=_truthy(request.form.get("force")))
+    _audit("logs.rotate", detail="forced" if res.get("forced") else "scheduled")
+    return jsonify({"ok": bool(res.get("ok")), **res})
+
+
+@app.get("/api/logs/rotation")
+@require_role("admin")
+def logs_rotation_status():
+    return jsonify({"ok": True, **logrotate.status(), "conf": logrotate.render_conf()})
 
 
 @app.get("/api/logs/<domain>/<int:port>/<kind>")
@@ -2299,6 +2402,14 @@ def logs_download(domain, port, kind):
     if not storage.get(domain, port):
         return _err("No such mapping.", code=404)
     path = nm.log_paths_for(domain, port)[kind]
+    # ?file=<name> picks one of the rotated archives (validated against the
+    # listing, so it can only ever be a sibling of this mapping's own log).
+    want = (request.args.get("file") or "").strip()
+    if want:
+        match = next((f for f in logrotate.log_files(path) if f["name"] == want), None)
+        if not match:
+            return _err("No such archived log file.", code=404)
+        path = match["path"]
     if not os.path.exists(path):
         return _err("Log file not written yet.", code=404)
     try:
@@ -2306,7 +2417,11 @@ def logs_download(domain, port, kind):
             raw = fh.read()
     except OSError as exc:
         return _err(f"Could not read log file: {exc}", code=500)
-    fname = f"{domain}-{port}-{kind}.log"
+    fname = want or f"{domain}-{port}-{kind}.log"
+    if want.endswith(".gz"):
+        _audit("logs.download", target=f"{domain}:{port}", detail=want)
+        return Response(raw, mimetype="application/gzip",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
     _audit("logs.download", target=f"{domain}:{port}", detail=kind)
     return Response(raw, mimetype="text/plain",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
@@ -2564,6 +2679,7 @@ def snippets_catalog():
     kinds = {
         "ratelimit": [_snip_public("ratelimit", r) for r in storage.snip_list("ratelimit")],
         "timeouts": [_snip_public("timeouts", r) for r in storage.snip_list("timeouts")],
+        "logrotate": [_snip_public("logrotate", r) for r in storage.snip_list("logrotate")],
         "logformat": [{"name": r["name"], "ref": f"logformat:{r['name']}", "context": r["context"],
                        "summary": r["context"] + (f", escape={r['escape']}" if r.get("escape") not in (None, "default") else "")}
                       for r in storage.logfmt_list()],
@@ -2578,8 +2694,8 @@ def snippets_catalog():
 
 
 def _snip_kind_or_404(kind):
-    if kind not in ("ratelimit", "timeouts"):
-        return _err("Unknown snippet kind — this endpoint serves ratelimit and timeouts.", code=404)
+    if kind not in ("ratelimit", "timeouts", "logrotate"):
+        return _err("Unknown snippet kind — this endpoint serves ratelimit, timeouts and logrotate.", code=404)
     return None
 
 
@@ -2610,11 +2726,20 @@ def snippets_kind_save(kind):
             rec["proxy_upload_rate"] = clean_rate(form.get("proxy_upload_rate"), "upload rate")
             if not any(rec[k] for k in snippets.RATE_FIELDS):
                 return _err("Set at least one limit (max connections, download or upload rate).")
-        else:
+        elif kind == "timeouts":
             rec["proxy_timeout"] = clean_time(form.get("proxy_timeout"), "proxy_timeout")
             rec["proxy_connect_timeout"] = clean_time(form.get("proxy_connect_timeout"), "proxy_connect_timeout")
             if not any(rec[k] for k in snippets.TIMEOUT_FIELDS):
                 return _err("Set at least one timeout.")
+        else:   # logrotate
+            rec["keep_days"] = clean_uint(form.get("keep_days"), "keep days", lo=1)
+            if not rec["keep_days"] or rec["keep_days"] > 365:
+                return _err("keep days must be 1-365.")
+            rec["compress"] = _truthy(form.get("compress"))
+            ms = (form.get("max_size") or "").strip()
+            if ms and not re.match(r"^\d+[kKmMgG]?$", ms):
+                return _err("max size must be a number with an optional k/M/G suffix, e.g. 100M.")
+            rec["max_size"] = ms or None
     except ValidationError as exc:
         return _err(str(exc))
     existing = storage.snip_get(kind, name)
@@ -2622,6 +2747,8 @@ def snippets_kind_save(kind):
     rec["updated"] = _now()
     storage.snip_add(kind, rec)
     _audit(f"snippet.{kind}.save", target=name, detail=snippets.describe(kind, rec))
+    if kind == "logrotate":
+        return jsonify({"ok": True, "item": _snip_public(kind, rec), "steps": []})   # picked up on the next rotation run
     steps, failed = _reapply_mappings(storage.snip_usage(f"{kind}:{name}"))
     resp = {"ok": not failed, "item": _snip_public(kind, rec), "steps": steps}
     if failed:
@@ -3573,6 +3700,7 @@ if __name__ == "__main__":
     access.sync_all()          # materialise acl.d snippets (self-healing on boot)
     access.start_scheduler()   # background re-fetch of auto-refreshing lists
     failover.start_scheduler() # active-passive priority failover orchestration
+    logrotate.start_scheduler() # per-mapping nginx log rotation (hourly check, daily rotate)
     docker_reconcile.start_scheduler()  # keep docker-backed backends' IPs current (poll)
     docker_events.start_watcher()       # + react instantly to Docker events (Traefik-style)
     firewall.sync_all()        # re-apply per-interface iptables rules (self-healing on boot)

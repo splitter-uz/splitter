@@ -26,6 +26,7 @@ KINDS = {
     "logformat": {"label": "Log format", "single": True},
     "errorpage": {"label": "Error page", "single": False},
     "config":    {"label": "Config snippet", "single": False},
+    "logrotate": {"label": "Log rotation", "single": True},
 }
 LOCATION_KINDS = ("config", "ratelimit", "timeouts")
 RATE_FIELDS = ("limit_conn", "proxy_download_rate", "proxy_upload_rate")
@@ -38,7 +39,7 @@ def parse_ref(ref):
 
 
 def exists(kind, name):
-    if kind in ("ratelimit", "timeouts"):
+    if kind in ("ratelimit", "timeouts", "logrotate"):
         return storage.snip_get(kind, name) is not None
     if kind == "logformat":
         return storage.logfmt_get(name) is not None
@@ -155,4 +156,9 @@ def describe(kind, rec):
         return ", ".join(bits) or "no limits"
     if kind == "timeouts":
         return f"{rec.get('proxy_timeout') or 'default'} / {rec.get('proxy_connect_timeout') or 'default'}"
+    if kind == "logrotate":
+        bits = [f"keep {rec.get('keep_days')} days", "gzip" if rec.get("compress") else "no compression"]
+        if rec.get("max_size"):
+            bits.append(f"or over {rec['max_size']}")
+        return ", ".join(bits)
     return rec.get("description") or ""

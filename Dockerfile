@@ -34,7 +34,7 @@ RUN apt-get update \
       nginx libnginx-mod-stream \
       python3 python3-venv \
       iproute2 isc-dhcp-client openssl iptables \
-      procps iputils-ping traceroute tcpdump whois dnsutils net-tools nmap \
+      procps iputils-ping traceroute tcpdump whois dnsutils net-tools nmap logrotate \
       ca-certificates certbot \
  && rm -rf /var/lib/apt/lists/*
 

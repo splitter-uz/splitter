@@ -303,6 +303,13 @@ _SETTINGS_DEFAULTS = {
     # Name of the access list applied to mappings set to "use global default"
     # ("" => no default; those mappings stay open). See access.py.
     "default_access_list": "",
+    # Default per-mapping log rotation (logrotate.py); a "logrotate" snippet on
+    # a mapping overrides it. keep_days: rotated files older than this are
+    # deleted; compress: gzip rotated files; max_size: also rotate when the
+    # live file exceeds this (e.g. "100M"), blank = daily only.
+    "log_keep_days": 7,
+    "log_compress": True,
+    "log_max_size": "",
     # WAF (ModSecurity) server-block settings, editable on the WAF page. Engine
     # mode is NOT here — it lives in the ModSecurity config on the host (see
     # waf.py). These only drive the rendered nginx server block.

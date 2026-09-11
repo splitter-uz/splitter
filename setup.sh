@@ -120,13 +120,13 @@ install_deps() {
       apt-get install -y --no-install-recommends \
         nginx libnginx-mod-stream python3 python3-venv \
         iproute2 isc-dhcp-client openssl iptables certbot \
-        iputils-ping traceroute tcpdump whois dnsutils net-tools nmap
+        iputils-ping traceroute tcpdump whois dnsutils net-tools nmap logrotate
       ;;
     dnf|yum)
       "$PM" install -y nginx python3 iproute openssl iptables certbot || true
       "$PM" install -y nginx-mod-stream || c_y "nginx-mod-stream not found — your nginx may already include stream."
       "$PM" install -y dhcp-client || "$PM" install -y dhclient || c_y "no dhcp client (DHCP allocation will be unavailable)."
-      "$PM" install -y iputils traceroute tcpdump whois bind-utils net-tools nmap || \
+      "$PM" install -y iputils traceroute tcpdump whois bind-utils net-tools nmap logrotate || \
         c_y "Some diagnostic tools could not be installed — Tools page features may be limited."
       ;;
     pacman)
@@ -135,12 +135,12 @@ install_deps() {
       pacman -Sy --noconfirm dhclient || c_y "no dhcp client (DHCP allocation unavailable)."
       pacman -Sy --noconfirm iptables-nft || pacman -Sy --noconfirm iptables || \
         c_y "iptables not installed — the Firewall page will be unavailable."
-      pacman -Sy --noconfirm iputils traceroute tcpdump whois bind-tools net-tools nmap || \
+      pacman -Sy --noconfirm iputils traceroute tcpdump whois bind-tools net-tools nmap logrotate || \
         c_y "Some diagnostic tools could not be installed — Tools page features may be limited."
       ;;
     zypper)
       zypper --non-interactive install nginx python3 iproute2 openssl dhcp-client iptables certbot || true
-      zypper --non-interactive install iputils traceroute tcpdump whois bind-utils net-tools nmap || \
+      zypper --non-interactive install iputils traceroute tcpdump whois bind-utils net-tools nmap logrotate || \
         c_y "Some diagnostic tools could not be installed — Tools page features may be limited."
       ;;
     "")
@@ -153,7 +153,7 @@ install_deps() {
 check_tools() {
   step "Checking diagnostic tool availability"
   local missing=()
-  for cmd in ping traceroute tcpdump whois dig netstat nmap; do
+  for cmd in ping traceroute tcpdump whois dig netstat nmap logrotate; do
     command -v "$cmd" >/dev/null 2>&1 && c_g "  [ok] $cmd" || missing+=("$cmd")
   done
   if [ ${#missing[@]} -gt 0 ]; then

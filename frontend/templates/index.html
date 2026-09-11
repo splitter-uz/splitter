@@ -1988,6 +1988,28 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
           </div>
 
           <!-- mapping picker -->
+          <!-- Default log rotation (admin). A "logrotate" snippet on a mapping overrides it. -->
+          <div id="logs-rotation-card" class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-5">
+            <div class="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <div class="text-sm font-semibold text-slate-800">Log rotation<button type="button" class="info-tip" aria-label="More info" data-tip="Every mapping's access and error logs are rotated daily by logrotate (run from Splitter every hour, rotating once a day, or sooner when a file exceeds the max size). Rotated files get a -YYYYMMDD suffix, are gzip-compressed when enabled, and are deleted after the retention period. A Log rotation snippet picked on a mapping overrides these defaults for that mapping.">i</button></div>
+                <p class="text-xs text-slate-500 mt-0.5">Default policy for every mapping. Pick a <b>Log rotation</b> snippet on a mapping to give it its own.</p>
+              </div>
+              <div class="flex items-center gap-2 text-xs">
+                <span id="logs-rotation-last" class="text-slate-400"></span>
+                <button id="logs-rotate-now" class="bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-lg px-3 py-2 transition">Rotate now</button>
+              </div>
+            </div>
+            <form id="logs-rotation-form" class="mt-3 flex items-end gap-3 flex-wrap text-sm">
+              <label class="block"><span class="block text-xs font-medium text-slate-600 mb-1">Keep (days)</span><input name="log_keep_days" id="log_keep_days" type="number" min="1" max="365" value="7" class="w-24 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></label>
+              <label class="block"><span class="block text-xs font-medium text-slate-600 mb-1">Also rotate when over <span class="text-slate-400 font-normal">(optional)</span></span><input name="log_max_size" id="log_max_size" placeholder="e.g. 100M" class="w-28 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></label>
+              <label class="flex items-center gap-2 pb-2.5"><input type="checkbox" name="log_compress" id="log_compress" value="1" class="rounded" checked /> gzip rotated files</label>
+              <button type="submit" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save defaults</button>
+              <span id="logs-rotation-status" class="text-xs text-slate-400"></span>
+            </form>
+            <pre id="logs-rotate-output" class="hidden mt-3 max-h-40 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+          </div>
+
           <div id="logs-list-card" class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
             <div class="overflow-x-auto">
               <table class="w-full text-sm">
@@ -2039,6 +2061,29 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                   <input type="checkbox" id="logs-auto" class="rounded" /> auto (5s)
                 </label>
               </div>
+              <!-- Time-range search: live log + rotated archives (.gz) -->
+              <div class="flex items-center gap-2 flex-wrap text-xs border-t border-slate-100 pt-3">
+                <span class="font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Time range</span>
+                <input type="datetime-local" id="logs-from" step="60" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs bg-white outline-none focus:ring-2 focus:ring-emerald-500" />
+                <span class="text-slate-400">→</span>
+                <input type="datetime-local" id="logs-to" step="60" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs bg-white outline-none focus:ring-2 focus:ring-emerald-500" />
+                <button type="button" data-range="60" class="logs-quick rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">last 1h</button>
+                <button type="button" data-range="1440" class="logs-quick rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">24h</button>
+                <button type="button" data-range="10080" class="logs-quick rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">7d</button>
+                <button type="button" id="logs-search-range" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg px-3 py-1.5">Search range</button>
+                <button type="button" id="logs-live" class="hidden rounded-lg border border-slate-300 px-3 py-1.5 font-semibold text-slate-600 hover:bg-slate-50">← Live tail</button>
+                <span class="text-slate-400">Searches the live log and every rotated archive for this mapping — e.g. an incident two days ago at 15:40.<button type="button" class="info-tip" aria-label="More info" data-tip="Times are entered in your browser's time zone and matched against each line's own timestamp. Rotated files, including gzip-compressed ones, are read too, so anything within the retention window is reachable. Each result is prefixed with the archive date it came from (live = current file).">i</button></span>
+              </div>
+              <details id="logs-files-details" class="group text-xs">
+                <summary class="cursor-pointer select-none text-slate-500 hover:text-slate-800 font-medium">Files &amp; rotation <span id="logs-rotation-text" class="font-normal text-slate-400"></span></summary>
+                <div class="mt-2 overflow-x-auto">
+                  <table class="w-full text-xs">
+                    <thead class="text-slate-400 uppercase tracking-wide"><tr><th class="text-left py-1 pr-3 font-medium">File</th><th class="text-left py-1 pr-3 font-medium">Date</th><th class="text-left py-1 pr-3 font-medium">Size</th><th class="py-1"></th></tr></thead>
+                    <tbody id="logs-files-rows" class="divide-y divide-slate-100 font-mono"></tbody>
+                  </table>
+                  <div id="logs-files-empty" class="hidden py-2 text-slate-400">No rotated archives yet — the first rotation happens on the next daily run.</div>
+                </div>
+              </details>
               <div id="logs-meta" class="text-xs text-slate-400 font-mono"></div>
               <pre id="logs-output" class="bg-slate-900 text-slate-200 text-xs font-mono rounded-xl p-4 overflow-x-auto max-h-[32rem] overflow-y-auto whitespace-pre leading-5"></pre>
             </div>
@@ -2483,6 +2528,7 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
           <div class="flex overflow-x-auto bg-slate-50/70 border border-slate-200 rounded-xl px-2 pt-2 gap-0.5">
             <button data-sniptab="ratelimit" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Rate limits <span id="snip-ratelimit-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
             <button data-sniptab="timeouts" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Timeouts <span id="snip-timeouts-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+            <button data-sniptab="logrotate" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Log rotation <span id="snip-logrotate-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
             <button data-sniptab="logformats" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Log formats <span id="snip-logformats-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
             <button data-sniptab="config" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Config snippets <span id="snip-config-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
             <button data-sniptab="errorpages" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Error pages <span id="snip-errorpages-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
@@ -2576,6 +2622,52 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                 <tbody id="to-rows" class="divide-y divide-slate-100"></tbody>
               </table></div>
               <div id="to-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No timeouts yet.</div>
+            </div>
+          </div>
+
+          <!-- ── Log rotation ── -->
+          <div id="snippanel-logrotate" class="snip-panel hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="lr-form-title" class="text-sm font-semibold text-slate-800">New rotation policy</div>
+                  <button type="button" id="lr-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">How long a mapping's access / error logs are kept and whether rotated files are gzip-compressed. Without a snippet a mapping uses the defaults on the Logs page.</p>
+                <form id="lr-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">Name</label><input id="lr-name" name="name" required pattern="[A-Za-z][A-Za-z0-9_-]{0,39}" placeholder="keep-5-days" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label><input id="lr-description" name="description" maxlength="200" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                    <div><label class="block text-xs font-medium mb-1">Keep (days)</label><input name="keep_days" id="lr-keep_days" type="number" min="1" max="365" placeholder="5" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Also rotate when over <span class="text-slate-400 font-normal">(optional)</span></label><input name="max_size" id="lr-max_size" placeholder="e.g. 100M" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <label class="flex items-center gap-2 text-sm pb-2"><input type="checkbox" name="compress" id="lr-compress" value="1" class="rounded" checked /> gzip rotated files</label>
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">LOGROTATE STANZA</div>
+                    <pre id="lr-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all min-h-[3rem]">…</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="lr-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save</button>
+                    <span class="text-[11px] text-slate-400">Takes effect on the next rotation run (hourly check).</span>
+                  </div>
+                </form>
+                <pre id="lr-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4"><li>Save a policy, e.g. <b>keep-5-days</b>: 5 days, gzip.</li><li>Pick it under <b>Snippets → Log rotation</b> on a mapping.</li><li>Rotated files (<span class="font-mono">…-access.log-20260909.gz</span>) stay searchable from the Logs page until they expire.</li></ol>
+                <p class="text-xs text-amber-600 mt-3">A snippet can't be deleted while a mapping uses it.</p>
+              </div>
+            </div>
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100"><h3 class="text-sm font-semibold">Saved rotation policies</h3></div>
+              <div class="overflow-x-auto"><table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide"><tr><th class="text-left px-6 py-3 font-medium">Name</th><th class="text-left px-6 py-3 font-medium">Policy</th><th class="text-left px-6 py-3 font-medium">Used by</th><th class="px-6 py-3"></th></tr></thead>
+                <tbody id="lr-rows" class="divide-y divide-slate-100"></tbody>
+              </table></div>
+              <div id="lr-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No rotation policies yet — every mapping uses the defaults on the Logs page.</div>
             </div>
           </div>
 

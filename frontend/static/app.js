@@ -4276,6 +4276,7 @@ async function loadLogsPage() {
     const j = await (await fetch("/api/logs")).json();
     if (!j.ok) return;
     $("#logs-dir").textContent = j.dir || "";
+    renderLogsRotation(j.rotation);
     const rows = $("#logs-list-rows");
     rows.innerHTML = "";
     const maps = j.mappings || [];
@@ -4302,6 +4303,8 @@ async function loadLogsPage() {
   } catch (_) { /* non-fatal */ }
 }
 
+let LOGS_MODE = "tail";   // "tail" (live, last N lines) | "range" (time-range search across archives)
+
 function openLogsViewer(domain, port) {
   LOGS_CURRENT = { domain, port };
   LOGS_KIND = "access";
@@ -4312,7 +4315,105 @@ function openLogsViewer(domain, port) {
   $("#logs-meta").textContent = "";
   $("#logs-list-card").classList.add("hidden");
   $("#logs-viewer").classList.remove("hidden");
+  setLogsMode("tail");
   refreshLogs();
+  loadLogFiles();
+}
+
+function setLogsMode(mode) {
+  LOGS_MODE = mode;
+  $("#logs-live").classList.toggle("hidden", mode !== "range");
+  $("#logs-lines").disabled = mode === "range";
+  $("#logs-auto").disabled = mode === "range";
+  if (mode === "range") stopLogsAuto();
+}
+
+// datetime-local value (browser tz) -> ISO with offset; blank -> null.
+function localInputToIso(v) { return v ? new Date(v).toISOString() : null; }
+function isoToLocalInput(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function setQuickRange(minutes) {
+  const to = new Date(), from = new Date(to.getTime() - minutes * 60000);
+  $("#logs-from").value = isoToLocalInput(from);
+  $("#logs-to").value = isoToLocalInput(to);
+}
+
+async function searchLogsRange() {
+  if (!LOGS_CURRENT) return;
+  const { domain, port } = LOGS_CURRENT, kind = LOGS_KIND;
+  const from = localInputToIso($("#logs-from").value), to = localInputToIso($("#logs-to").value);
+  if (!from && !to) { setQuickRange(60); return searchLogsRange(); }
+  setLogsMode("range");
+  const q = $("#logs-search").value.trim();
+  const out = $("#logs-output");
+  out.textContent = "Searching live log and archives…";
+  const url = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}/search?limit=5000`
+    + (from ? `&from=${encodeURIComponent(from)}` : "") + (to ? `&to=${encodeURIComponent(to)}` : "") + (q ? `&q=${encodeURIComponent(q)}` : "");
+  try {
+    const j = await (await fetch(url)).json();
+    if (!LOGS_CURRENT || LOGS_CURRENT.domain !== domain || LOGS_CURRENT.port !== port || LOGS_KIND !== kind) return;
+    if (!j.ok) { $("#logs-meta").textContent = ""; out.textContent = j.error || "Search failed."; return; }
+    const n = (j.lines || []).length;
+    const files = (j.files || []).map((f) => `${f.date || "live"}${f.compressed ? ".gz" : ""}:${f.matched}`).join(" ");
+    $("#logs-meta").textContent = `${new Date(j.from).toLocaleString()} → ${new Date(j.to).toLocaleString()}  ·  ${n} line${n === 1 ? "" : "s"}${q ? " matched" : ""}  ·  ${j.scanned} scanned  ·  files: ${files || "none"}${j.truncated ? "  ·  TRUNCATED at " + n + " — narrow the window" : ""}`;
+    out.textContent = (j.lines || []).join("\n") || "No lines in this window" + (q ? " match the search." : ".") + ((j.files || []).length ? "" : " No log file covers this period — check retention on the Logs page.");
+    out.scrollTop = 0;
+  } catch (err) { out.textContent = "Request failed: " + err.message; }
+}
+
+async function loadLogFiles() {
+  if (!LOGS_CURRENT) return;
+  const { domain, port } = LOGS_CURRENT, kind = LOGS_KIND;
+  try {
+    const j = await (await fetch(`/api/logs/${encodeURIComponent(domain)}/${port}/${kind}/files`)).json();
+    if (!j.ok) return;
+    const rows = $("#logs-files-rows"); rows.innerHTML = "";
+    const files = j.files || [];
+    $("#logs-files-empty").classList.toggle("hidden", files.some((f) => !f.live));
+    $("#logs-rotation-text").textContent = `· ${j.rotation.text} (${j.rotation.source === "default" ? "default policy" : j.rotation.source})`;
+    files.slice().reverse().forEach((f) => {
+      const tr = document.createElement("tr");
+      const dl = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}/download` + (f.live ? "" : `?file=${encodeURIComponent(f.name)}`);
+      tr.innerHTML = `<td class="py-1 pr-3">${escapeHtml(f.name)}${f.live ? ' <span class="text-emerald-600">(live)</span>' : ""}</td><td class="py-1 pr-3 text-slate-500">${f.date ? f.date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : "—"}</td><td class="py-1 pr-3 text-slate-500">${fmtBytes(f.size)}${f.compressed ? " gz" : ""}</td><td class="py-1 text-right"><a href="${dl}" download class="text-emerald-700 hover:text-emerald-900 font-sans font-medium">Download</a></td>`;
+      rows.appendChild(tr);
+    });
+  } catch (_) { /* non-fatal */ }
+}
+
+// Logs list page: default rotation policy + rotate-now.
+function renderLogsRotation(rot) {
+  if (!rot) return;
+  const d = rot.default || {};
+  if (!$("#log_keep_days").matches(":focus")) $("#log_keep_days").value = d.keep_days || 7;
+  $("#log_compress").checked = d.compress !== false;
+  $("#log_max_size").value = d.max_size || "";
+  $("#logs-rotation-last").textContent = rot.installed === false ? "logrotate is not installed on this host"
+    : rot.ran ? `last run ${new Date(rot.ran).toLocaleString()} · ${rot.ok ? "ok" : "FAILED"}` : "not run yet (hourly check, daily rotation)";
+}
+
+async function saveLogsRotation(e) {
+  e.preventDefault();
+  const fd = new FormData($("#logs-rotation-form"));
+  if (!fd.has("log_compress")) fd.set("log_compress", "0");
+  const j = await (await fetch("/api/settings", { method: "POST", body: fd })).json();
+  toast(j.ok ? "Log rotation defaults saved." : (j.error || "Could not save."), j.ok);
+  if (j.ok) loadLogsPage();
+}
+
+async function rotateLogsNow() {
+  const btn = $("#logs-rotate-now"), out = $("#logs-rotate-output");
+  btn.disabled = true; out.classList.remove("hidden"); out.textContent = "Running logrotate…";
+  try {
+    const fd = new FormData(); fd.set("force", "1");
+    const j = await (await fetch("/api/logs/rotate", { method: "POST", body: fd })).json();
+    out.textContent = (j.ok ? "✔ " : "✘ ") + (j.output || "(no output)");
+    toast(j.ok ? "Logs rotated." : "logrotate failed — see output.", j.ok);
+    loadLogsPage();
+  } catch (err) { out.textContent = "Request failed: " + err.message; }
+  finally { btn.disabled = false; }
 }
 
 function syncLogsTabs() {
@@ -4325,6 +4426,7 @@ function syncLogsTabs() {
 
 async function refreshLogs() {
   if (!LOGS_CURRENT) return;
+  if (LOGS_MODE === "range") return searchLogsRange();
   const { domain, port } = LOGS_CURRENT;
   const q = $("#logs-search").value.trim();
   const kind = LOGS_KIND;
@@ -4500,7 +4602,7 @@ function makeSnippetPanel(spec) {
     el("form").addEventListener("submit", P.save);
     el("cancel").addEventListener("click", P.reset);
     el("preset")?.addEventListener("change", P.applyPreset);
-    (spec.previewInputs || []).forEach((id) => el(id).addEventListener("input", P.preview));
+    (spec.previewInputs || []).forEach((id) => { el(id).addEventListener("input", P.preview); el(id).addEventListener("change", P.preview); });
     spec.wire?.(P);
   };
   return P;
@@ -4600,7 +4702,7 @@ function editLogFormat(name) { LOGFMT.edit(name); }
 function editConfigSnippet(name) { CFGSNIP.edit(name); }
 
 function loadAllSnippetPanels() {
-  RATELIMIT.load(); TIMEOUTS.load(); loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage();
+  RATELIMIT.load(); TIMEOUTS.load(); LOGROTATE.load(); loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage();
 }
 
 function startSnippets() {
@@ -4609,7 +4711,7 @@ function startSnippets() {
     _snippetsReady = true;
     $$(".snip-tab").forEach((btn) => btn.addEventListener("click", () => showSnipTab(btn.dataset.sniptab)));
     $("#snippets-refresh").addEventListener("click", loadAllSnippetPanels);
-    RATELIMIT.wire(); TIMEOUTS.wire(); LOGFMT.wire(); CFGSNIP.wire();
+    RATELIMIT.wire(); TIMEOUTS.wire(); LOGROTATE.wire(); LOGFMT.wire(); CFGSNIP.wire();
   }
   showSnipTab(SNIP_TAB);
 }
@@ -4682,6 +4784,24 @@ const TIMEOUTS = makeSnippetPanel({
   rowCells: (r) => snippetNameCell(r) + `<td class="px-6 py-3 text-xs font-mono text-slate-600">${escapeHtml(`${r.proxy_timeout || "default"} / ${r.proxy_connect_timeout || "default"}`)}</td>`,
 });
 
+const LOGROTATE = makeSnippetPanel({
+  prefix: "lr", tab: "logrotate", api: "/api/snippets/logrotate", listKey: "items",
+  newTitle: "New rotation policy", editTitle: "Edit rotation policy",
+  inUseTitle: "Used by a mapping", inUseHint: "pick another policy there first.",
+  confirmDelete: (n) => `Delete rotation policy "${n}"?`,
+  previewInputs: ["keep_days", "max_size", "compress"],
+  onLoaded: () => loadSnippetCatalog(),
+  fillForm: (P, r) => {
+    $("#lr-name").value = r.name; $("#lr-description").value = r.description || "";
+    $("#lr-keep_days").value = r.keep_days || ""; $("#lr-max_size").value = r.max_size || ""; $("#lr-compress").checked = !!r.compress;
+  },
+  preview: () => {
+    const d = $("#lr-keep_days").value, ms = $("#lr-max_size").value.trim(), gz = $("#lr-compress").checked;
+    $("#lr-preview").textContent = d ? ["daily", "dateext", `rotate ${d}`, `maxage ${d}`, ms ? `maxsize ${ms}` : null, gz ? "compress" : "nocompress", "postrotate → nginx -s reopen"].filter(Boolean).join("\n") : "…";
+  },
+  rowCells: (r) => snippetNameCell(r) + `<td class="px-6 py-3 text-xs font-mono text-slate-600">${escapeHtml(`keep ${r.keep_days} days, ${r.compress ? "gzip" : "no compression"}${r.max_size ? ", or over " + r.max_size : ""}`)}</td>`,
+});
+
 // ---- The Snippets picker on the mapping form + custom locations ------------------
 // One catalogue (/api/snippets) feeds both. Values are refs like "ratelimit:api".
 let SNIPPET_CATALOG = { kinds: {}, labels: {} };
@@ -4732,6 +4852,7 @@ function snippetPickerHtml(selected, kinds, name, compact) {
   if (kinds.includes("ratelimit")) single("ratelimit", "Rate limit", "None — no limit", (it) => `${it.name} — ${it.summary}`);
   if (kinds.includes("timeouts")) single("timeouts", "Timeouts", "Defaults", (it) => `${it.name} — ${it.summary}`);
   if (kinds.includes("logformat")) single("logformat", "Log format", "Built-in line", (it) => `${it.name} (${it.summary})`);
+  if (kinds.includes("logrotate")) single("logrotate", "Log rotation", "Default policy (Logs page)", (it) => `${it.name} — ${it.summary}`);
   if (kinds.includes("errorpage")) multi("errorpage", "Error pages", K.errorpage || [], "none uploaded yet");
   if (kinds.includes("config")) multi("config", compact ? "Config" : "Config snippets",
     (K.config || []).filter((it) => compact ? it.scope !== "server" : it.scope !== "location"), "none yet");
@@ -4741,7 +4862,7 @@ function snippetPickerHtml(selected, kinds, name, compact) {
 function renderSnippetsPicker(selected) {
   const box = $("#snippets-pick"); if (!box) return;
   const keep = selected || selectedRefs(box);
-  box.innerHTML = snippetPickerHtml(keep, ["ratelimit", "timeouts", "logformat", "errorpage", "config"], "snippets", false);
+  box.innerHTML = snippetPickerHtml(keep, ["ratelimit", "timeouts", "logformat", "logrotate", "errorpage", "config"], "snippets", false);
 }
 
 function renderLocationSnippetPicker(box) {
@@ -5793,10 +5914,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#logs-list-refresh").addEventListener("click", loadLogsPage);
   $("#logs-back").addEventListener("click", loadLogsPage);
   $("#logs-refresh").addEventListener("click", refreshLogs);
+  $("#logs-search-range").addEventListener("click", searchLogsRange);
+  $("#logs-live").addEventListener("click", () => { setLogsMode("tail"); refreshLogs(); });
+  $$(".logs-quick").forEach((b) => b.addEventListener("click", () => { setQuickRange(Number(b.dataset.range)); searchLogsRange(); }));
+  ["logs-from", "logs-to"].forEach((id) => $("#" + id).addEventListener("keydown", (e) => { if (e.key === "Enter") searchLogsRange(); }));
+  $("#logs-rotation-form").addEventListener("submit", saveLogsRotation);
+  $("#logs-rotate-now").addEventListener("click", rotateLogsNow);
   $$(".logs-tab").forEach((b) => b.addEventListener("click", () => {
     LOGS_KIND = b.dataset.kind;
     syncLogsTabs();
     refreshLogs();
+    loadLogFiles();
   }));
   let logsSearchTimer;
   $("#logs-search").addEventListener("input", () => {
