@@ -232,9 +232,13 @@ def sync_static():
 
 
 def usage(key):
-    """Mappings that selected error page `key`."""
+    """Mappings that selected error page `key` — directly, or through a
+    profile that sets it (and the mapping doesn't override it)."""
     import storage
-    return [m for m in storage.export_all().values() if key in (m.get("error_pages") or [])]
+    via = set(storage.profiles_referencing("error_pages", key))
+    return [m for m in storage.export_all().values()
+            if key in (m.get("error_pages") or [])
+            or (not m.get("error_pages") and m.get("profile") in via)]
 
 
 def preview_custom(key):

@@ -20,6 +20,7 @@ import tempfile
 import time
 
 import config
+import profiles
 import storage
 
 
@@ -670,6 +671,7 @@ def log_format_lines(mapping, fmt_name, context, default_lines):
 
 
 def render_conf(mapping):
+    mapping = profiles.merge(mapping)   # profile fills in what the mapping leaves blank
     backends = _apply_failover(mapping, _normalize_backends(mapping))
     name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT)
     port = mapping.get("listen_port") or config.LISTEN_PORT
@@ -1010,6 +1012,7 @@ def render_http_conf(mapping):
     only apply once `has_cert` is set (TLS termination) except WebSocket/HTTP2/
     custom-locations/advanced-config, which apply regardless.
     """
+    mapping = profiles.merge(mapping)   # profile fills in what the mapping leaves blank
     backends = _apply_failover(mapping, _normalize_backends(mapping))
     name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT) + "_http"
     port = mapping.get("listen_port") or config.LISTEN_PORT
@@ -1042,6 +1045,17 @@ def render_http_conf(mapping):
     for b in backends:
         lines.append(_server_line(b, method))
     lines += ["}", ""]
+
+    # Rate limit (HTTP equivalents of the stream directives): a per-IP
+    # connection cap needs an http{}-level zone — this file is included from
+    # conf.d inside http{}, so declare it here, scoped to this mapping.
+    rate_limit = bool(mapping.get("rate_limit"))
+    limit_conn = mapping.get("limit_conn") if rate_limit else None
+    down_rate = mapping.get("proxy_download_rate") if rate_limit else None
+    conn_zone = f"{name}_conn"
+    if limit_conn:
+        lines.append(f"limit_conn_zone $binary_remote_addr zone={conn_zone}:10m;")
+        lines.append("")
 
     # Path / method routing. Rows are grouped by path: every row with its own
     # backend pool becomes an upstream; rows with a method list feed one
@@ -1120,6 +1134,16 @@ def render_http_conf(mapping):
     lines.append("server {")
     lines.append(f"    access_log {log_paths['access']} {name}_fmt;")
     lines.append(f"    error_log  {log_paths['error']} warn;")
+    if limit_conn:
+        lines.append(f"    limit_conn {conn_zone} {limit_conn};   # max connections per client IP")
+    if down_rate:
+        lines.append(f"    limit_rate {down_rate};   # bytes/sec per connection (download)")
+    # Upload rate has no per-connection HTTP counterpart; it only applies to stream.
+    if mapping.get("proxy_connect_timeout"):
+        lines.append(f"    proxy_connect_timeout {mapping['proxy_connect_timeout']};")
+    if mapping.get("proxy_timeout"):
+        lines.append(f"    proxy_read_timeout {mapping['proxy_timeout']};")
+        lines.append(f"    proxy_send_timeout {mapping['proxy_timeout']};")
     if terminate:
         # The `listen ... http2;` parameter (rather than the newer standalone
         # `http2 on;` directive, which needs nginx 1.25.1+) works unchanged on

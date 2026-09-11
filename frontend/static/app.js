@@ -167,6 +167,7 @@ let MAPPING_FORM_SOURCE = "map";   // "map" | "docker"
 
 function showMappingForm() {
   MAPPING_FORM_SOURCE = "map";
+  loadProfiles();
   loadLogFormats();
   loadConfigSnippets();
   loadErrorPages();
@@ -217,6 +218,7 @@ function dockerNewMapping() {
 
 function dockerShowMappingForm() {
   MAPPING_FORM_SOURCE = "docker";
+  loadProfiles();
   loadLogFormats();
   loadConfigSnippets();
   loadErrorPages();
@@ -1868,6 +1870,8 @@ function resetForm() {
   selectSsl("none");
   onMethodChange();
   onLbChange();
+  const od = $("#overrides-details"); if (od) od.open = false;
+  renderProfileSummary();
   toggleRateSection();   // collapse rate-limit panel (reset() unchecked the toggle)
   syncHealthUI();        // collapse health-check panel
   syncHstsUI();          // collapse force-SSL/HSTS panel (reset() unchecked the toggles)
@@ -2006,6 +2010,17 @@ function editMapping(domain, port) {
     ? m.access_list : "__default__";
   if (![...$("#access_list").options].some((o) => o.value === $("#access_list").value))
     $("#access_list").value = "__default__";
+
+  // Settings profile — keep the stored name even if the list hasn't loaded yet.
+  const pf = $("#profile");
+  if (pf) {
+    const want = m.profile || "";
+    if (want && ![...pf.options].some((o) => o.value === want)) pf.add(new Option(want, want));
+    pf.value = want;
+    renderProfileSummary();
+  }
+  const od = $("#overrides-details");
+  if (od) od.open = !!(m.rate_limit || m.proxy_timeout || m.proxy_connect_timeout || m.log_format || (m.error_pages || []).length);
 
   // Log format snippet — keep the stored name even if the list hasn't loaded yet.
   const lf = $("#log_format");
@@ -4405,6 +4420,7 @@ async function loadErrorPages() {
     if (!j.ok) return null;
     ERROR_PAGES = j.pages || [];
     renderErrorPagePicker();
+    renderProfileEditorChoices();
     const badge = $("#snip-errorpages-count"); if (badge) badge.textContent = ERROR_PAGES.length;
     return j;
   } catch (_) { return null; }
@@ -4544,7 +4560,7 @@ function makeSnippetPanel(spec) {
   P.wire = function () {
     el("form").addEventListener("submit", P.save);
     el("cancel").addEventListener("click", P.reset);
-    el("preset").addEventListener("change", P.applyPreset);
+    el("preset")?.addEventListener("change", P.applyPreset);
     (spec.previewInputs || []).forEach((id) => el(id).addEventListener("input", P.preview));
     spec.wire?.(P);
   };
@@ -4587,7 +4603,7 @@ const LOGFMT = makeSnippetPanel({
   confirmDelete: (n) => `Delete log format "${n}"?`,
   previewInputs: ["name", "context", "escape", "format"],
   wire: (P) => $("#logfmt-context").addEventListener("change", () => renderLogFormatVars(P)),
-  onLoaded: (P) => { populateLogFormatDropdown(); renderLogFormatVars(P); },
+  onLoaded: (P) => { populateLogFormatDropdown(); renderLogFormatVars(P); renderProfileEditorChoices(); },
   afterReset: (P) => renderLogFormatVars(P),
   fillForm: (P, r, isPreset) => {
     $("#logfmt-context").value = r.context;
@@ -4613,6 +4629,7 @@ const CFGSNIP = makeSnippetPanel({
   onLoaded: (P) => {
     $$(".snippet-pick").forEach(fillSnippetPicker);
     const dir = $("#cfgsnip-dir"); if (dir) dir.textContent = P.meta.dir || "";
+    renderProfileEditorChoices();
   },
   fillForm: (P, r, isPreset) => {
     $("#cfgsnip-scope").value = r.scope || "any";
@@ -4638,6 +4655,109 @@ const CFGSNIP = makeSnippetPanel({
   })),
 });
 
+// ---- Profiles (settings bundles) -------------------------------------------
+// Editor choices (log format select, error page + snippet checkboxes) come
+// from the other panels, so they're (re)rendered whenever any of them loads.
+function renderProfileEditorChoices() {
+  const lf = $("#profile-log_format");
+  if (lf) {
+    const cur = lf.value;
+    lf.innerHTML = "";
+    lf.add(new Option("Built-in default", ""));
+    LOGFMT.items.forEach((r) => lf.add(new Option(`${r.name} (${r.context})`, r.name)));
+    lf.value = [...lf.options].some((o) => o.value === cur) ? cur : "";
+  }
+  const chips = (box, items, name, label) => {
+    if (!box) return;
+    const keep = new Set([...box.querySelectorAll("input:checked")].map((i) => i.value));
+    box.innerHTML = items.length ? items.map((it) => `
+      <label class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs cursor-pointer hover:border-emerald-300">
+        <input type="checkbox" name="${name}" value="${escapeHtml(it.value)}" class="rounded" ${keep.has(it.value) ? "checked" : ""}>
+        <span class="font-mono font-semibold text-slate-700">${escapeHtml(it.value)}</span>${it.hint ? `<span class="text-slate-400">${escapeHtml(it.hint)}</span>` : ""}
+      </label>`).join("") : `<span class="text-xs text-slate-400">${label}</span>`;
+    box.querySelectorAll("input").forEach((i) => i.addEventListener("change", () => PROFILE.preview()));
+  };
+  chips($("#profile-error-pages"), ERROR_PAGES.filter((p) => p.nginx_codes !== 0).map((p) => ({ value: p.key })), "error_pages", "No custom error pages uploaded yet.");
+  chips($("#profile-snippets"), CFGSNIP.items.filter((r) => r.scope !== "location").map((r) => ({ value: r.name, hint: r.description })), "snippets", "No server-scope config snippets yet.");
+}
+
+// Human summary of what a profile sets (mirrors profiles.summary() in Python).
+function profileSummary(p) {
+  const parts = [];
+  if (p.rate_limit) {
+    const bits = [];
+    if (p.limit_conn) bits.push(`${p.limit_conn} conn/IP`);
+    if (p.proxy_download_rate) bits.push(`down ${p.proxy_download_rate}`);
+    if (p.proxy_upload_rate) bits.push(`up ${p.proxy_upload_rate}`);
+    parts.push("rate limit " + (bits.length ? bits.join(", ") : "on"));
+  }
+  if (p.proxy_timeout || p.proxy_connect_timeout) parts.push(`timeouts ${p.proxy_timeout || "default"} / ${p.proxy_connect_timeout || "default"}`);
+  if (p.log_format) parts.push(`log format ${p.log_format}`);
+  if ((p.error_pages || []).length) parts.push("error pages " + p.error_pages.join(", "));
+  if ((p.snippets || []).length) parts.push("includes " + p.snippets.join(", "));
+  return parts;
+}
+
+// The profile form as a record (for the live preview).
+function profileFormRecord() {
+  const fd = new FormData($("#profile-form"));
+  return {
+    rate_limit: fd.get("rate_limit") === "1", limit_conn: fd.get("limit_conn"), proxy_download_rate: fd.get("proxy_download_rate"), proxy_upload_rate: fd.get("proxy_upload_rate"),
+    proxy_timeout: fd.get("proxy_timeout"), proxy_connect_timeout: fd.get("proxy_connect_timeout"), log_format: fd.get("log_format"),
+    error_pages: fd.getAll("error_pages"), snippets: fd.getAll("snippets"),
+  };
+}
+
+const PROFILE = makeSnippetPanel({
+  prefix: "profile", tab: "profiles", api: "/api/profiles", listKey: "profiles",
+  newTitle: "New profile", editTitle: "Edit profile",
+  inUseTitle: "Used by a mapping", inUseHint: "switch those mappings to another profile first.",
+  confirmDelete: (n) => `Delete profile "${n}"?`,
+  previewInputs: ["rate_limit", "limit_conn", "proxy_download_rate", "proxy_upload_rate", "proxy_timeout", "proxy_connect_timeout"],
+  wire: () => $("#profile-log_format").addEventListener("change", () => PROFILE.preview()),
+  onLoaded: () => { renderProfileEditorChoices(); populateProfileDropdown(); },
+  afterReset: () => renderProfileEditorChoices(),
+  fillForm: (P, r) => {
+    $("#profile-name").value = r.name;
+    $("#profile-description").value = r.description || "";
+    $("#profile-rate_limit").checked = !!r.rate_limit;
+    ["limit_conn", "proxy_download_rate", "proxy_upload_rate", "proxy_timeout", "proxy_connect_timeout"].forEach((k) => { $(`#profile-${k}`).value = r[k] || ""; });
+    renderProfileEditorChoices();
+    $("#profile-log_format").value = r.log_format || "";
+    $$("#profile-error-pages input").forEach((i) => { i.checked = (r.error_pages || []).includes(i.value); });
+    $$("#profile-snippets input").forEach((i) => { i.checked = (r.snippets || []).includes(i.value); });
+  },
+  preview: () => {
+    const pre = $("#profile-preview"); if (!pre) return;
+    const parts = profileSummary(profileFormRecord());
+    pre.textContent = parts.length ? parts.map((x) => "• " + x).join("\n") : "nothing yet — enable at least one setting";
+  },
+  rowCells: (r) => snippetNameCell(r)
+    + `<td class="px-6 py-3 text-xs text-slate-600">${(r.summary || []).map((x) => `<div>• ${escapeHtml(x)}</div>`).join("") || "—"}</td>`,
+});
+
+// Mapping form: the profile select + its summary line.
+function populateProfileDropdown() {
+  const sel = $("#profile"); if (!sel) return;
+  const cur = sel.value || "";
+  sel.innerHTML = "";
+  sel.add(new Option("None — built-in defaults", ""));
+  PROFILE.items.forEach((p) => sel.add(new Option(p.name + (p.description ? " — " + p.description : ""), p.name)));
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "";
+  renderProfileSummary();
+}
+
+function renderProfileSummary() {
+  const sel = $("#profile"), out = $("#profile-summary"); if (!sel || !out) return;
+  const p = PROFILE.items.find((x) => x.name === sel.value);
+  const parts = p ? (p.summary || profileSummary(p)) : [];
+  out.classList.toggle("hidden", !parts.length);
+  out.textContent = parts.length ? "This profile sets: " + parts.join(" · ") + ". Blank overrides below inherit these." : "";
+}
+
+function loadProfiles() { return PROFILE.load(); }
+function editProfile(name) { PROFILE.edit(name); }
+
 // Thin named entry points used elsewhere (page switch, mapping form).
 function loadLogFormats() { return LOGFMT.load(); }
 function loadConfigSnippets() { return CFGSNIP.load(); }
@@ -4648,12 +4768,14 @@ function startSnippets() {
   loadLogFormats();
   loadConfigSnippets();
   loadErrorPagesPage();
+  loadProfiles();
   if (!_snippetsReady) {
     _snippetsReady = true;
     $$(".snip-tab").forEach((btn) => btn.addEventListener("click", () => showSnipTab(btn.dataset.sniptab)));
-    $("#snippets-refresh").addEventListener("click", () => { loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage(); });
+    $("#snippets-refresh").addEventListener("click", () => { loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage(); loadProfiles(); });
     LOGFMT.wire();
     CFGSNIP.wire();
+    PROFILE.wire();
   }
   showSnipTab(SNIP_TAB);
 }
@@ -5709,6 +5831,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const abd = $("#add-backend-docker"); if (abd) abd.addEventListener("click", toggleBackendDockerGrid);
   const bdgc = $("#backend-docker-grid-close"); if (bdgc) bdgc.addEventListener("click", closeBackendDockerGrid);
   $("#add-location").addEventListener("click", () => addLocationRow());
+  $("#profile").addEventListener("change", renderProfileSummary);
   const advPick = $("#advanced-snippet-pick");
   if (advPick) advPick.addEventListener("change", () => insertSnippetInto($(advPick.dataset.snippetTarget), advPick));
   $("#ssl_forced").addEventListener("change", syncHstsUI);

@@ -611,9 +611,13 @@ def logfmt_remove(name):
 
 
 def logfmt_usage(name):
-    """Mappings that selected log format `name` (full records)."""
+    """Mappings using log format `name` — selected directly, or through a
+    profile that sets it (and the mapping doesn't override it)."""
     with _lock:
-        return [m for m in _read_all().values() if m.get("log_format") == name]
+        via = {p["name"] for p in _read_profiles().values() if p.get("log_format") == name}
+        return [m for m in _read_all().values()
+                if m.get("log_format") == name
+                or (not m.get("log_format") and m.get("profile") in via)]
 
 
 # --------------------------------------------------------------------------
@@ -681,6 +685,77 @@ def cfgsnip_usage(token):
             if any(token in t for t in texts):
                 out.append(m)
         return out
+
+
+# --------------------------------------------------------------------------
+# Settings profiles (Snippets page) — a named bundle (rate limit, timeouts,
+# log format, error pages, config-snippet includes) a mapping selects as one.
+# --------------------------------------------------------------------------
+_PROFILE_FILE = os.path.join(config.DATA_DIR, "profiles.json")
+
+
+def _read_profiles():
+    try:
+        with open(_PROFILE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_profiles(data):
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=config.DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+        os.replace(tmp, _PROFILE_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def profile_list():
+    with _lock:
+        return sorted(_read_profiles().values(), key=lambda r: r["name"])
+
+
+def profile_get(name):
+    with _lock:
+        return _read_profiles().get(name)
+
+
+def profile_add(rec):
+    with _lock:
+        data = _read_profiles()
+        data[rec["name"]] = rec
+        _write_profiles(data)
+        return rec
+
+
+def profile_remove(name):
+    with _lock:
+        data = _read_profiles()
+        removed = data.pop(name, None)
+        _write_profiles(data)
+        return removed
+
+
+def profile_usage(name):
+    """Mappings that selected profile `name` (full records)."""
+    with _lock:
+        return [m for m in _read_all().values() if m.get("profile") == name]
+
+
+def profiles_referencing(field, value):
+    """Names of profiles whose `field` is `value` (scalar) or contains it (list)."""
+    with _lock:
+        out = []
+        for p in _read_profiles().values():
+            v = p.get(field)
+            if (isinstance(v, list) and value in v) or (not isinstance(v, list) and v == value):
+                out.append(p["name"])
+        return sorted(out)
 
 
 def export_all():

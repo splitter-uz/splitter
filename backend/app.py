@@ -38,6 +38,7 @@ import net_settings
 import nginx_manager as nm
 import nginx_status
 import config_snippets
+import profiles
 import storage
 import waf
 
@@ -128,11 +129,11 @@ def _parse_lb(form):
         "hash_key": clean_hash_key(form.get("hash_key")),
         "hash_consistent": _truthy(form.get("hash_consistent")),
         "random_two": _truthy(form.get("random_two")),
-        "proxy_timeout": clean_time(form.get("proxy_timeout"), "proxy_timeout")
-                         or config.PROXY_TIMEOUT,
+        # Blank => None ("inherit": the profile's value if it sets one, else
+        # the built-in default at render time — see profiles.merge()).
+        "proxy_timeout": clean_time(form.get("proxy_timeout"), "proxy_timeout"),
         "proxy_connect_timeout": clean_time(
-            form.get("proxy_connect_timeout"), "proxy_connect_timeout")
-                         or config.PROXY_CONNECT_TIMEOUT,
+            form.get("proxy_connect_timeout"), "proxy_connect_timeout"),
     }
     return cfg
 
@@ -1970,6 +1971,11 @@ def create_mapping():
     if log_format and not storage.logfmt_get(log_format):
         return _err(f"No such log format snippet: {log_format}")
 
+    # Settings profile: "" => none, "<name>" => fills blank fields at render time.
+    profile = (form.get("profile") or "").strip()
+    if profile and not storage.profile_get(profile):
+        return _err(f"No such profile: {profile}")
+
     # --- assemble mapping & sub-interface naming ----------------------------
     if existing and isinstance(existing.get("subiface_index"), int):
         idx = existing["subiface_index"]
@@ -2003,6 +2009,7 @@ def create_mapping():
         "sni_guard": sni_guard,   # only serve this hostname (passthrough)
         "access_list": access_list,   # "" | "__default__" | "<name>" allow/deny list
         "log_format": log_format,     # "" (built-in) | "<snippet name>" from the Snippets page
+        "profile": profile,           # "" | settings profile name (Snippets → Profiles)
         # Whether this app is bound to the WAF (L7 HTTP reverse proxy + ModSecurity)
         # instead of the default L4 stream proxy. Preserved across edits; toggled
         # from the WAF page's "Protected apps" list.
@@ -2374,9 +2381,13 @@ LOG_FORMAT_VARIABLES = {
 }
 
 
+def _mapping_labels(mappings):
+    return [f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in mappings]
+
+
 def _logfmt_public(rec):
-    used = storage.logfmt_usage(rec["name"])
-    return {**rec, "in_use": [f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used]}
+    return {**rec, "in_use": _mapping_labels(storage.logfmt_usage(rec["name"]))
+            + [f"profile:{n}" for n in storage.profiles_referencing("log_format", rec["name"])]}
 
 
 @app.get("/api/log-formats")
@@ -2423,17 +2434,7 @@ def log_formats_save():
     # Re-apply every enabled mapping that uses this snippet so its access_log
     # switches to the new line now. A format nginx rejects fails that mapping's
     # nginx -t and apply_mapping rolls it back to the previous config.
-    steps, failed = [], []
-    for m in storage.logfmt_usage(name):
-        if not m.get("enabled", True):
-            continue
-        label = f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}"
-        try:
-            for st in nm.apply_mapping(m):
-                steps.append({**st, "name": f"[{label}] {st['name']}"})
-        except nm.ProvisionError as exc:
-            failed.append(f"{label}: {exc}")
-            steps.extend({**st, "name": f"[{label}] {st['name']}"} for st in (exc.steps or []))
+    steps, failed = _reapply_mappings(storage.logfmt_usage(name))
     resp = {"ok": not failed, "format": _logfmt_public(rec), "steps": steps}
     if failed:
         resp["error"] = ("Saved, but re-applying failed for: " + "; ".join(failed)
@@ -2444,11 +2445,11 @@ def log_formats_save():
 @app.delete("/api/log-formats/<name>")
 @require_role("admin")
 def log_formats_delete(name):
-    used = storage.logfmt_usage(name)
+    used = _mapping_labels(storage.logfmt_usage(name)) + \
+        [f"profile:{n}" for n in storage.profiles_referencing("log_format", name)]
     if used:
-        who = ", ".join(f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used)
-        return _err(f"'{name}' is used by {who} — switch those mappings to another "
-                    "log format first.", code=409)
+        return _err(f"'{name}' is used by {', '.join(used)} — switch those mappings / "
+                    "profiles to another log format first.", code=409)
     if not storage.logfmt_remove(name):
         return _err("No such log format snippet.", code=404)
     _audit("logformat.delete", target=name)
@@ -2464,7 +2465,8 @@ def _cfgsnip_public(rec):
     return {**rec,
             "path": config_snippets.path_for(rec["name"]),
             "include": config_snippets.include_line(rec["name"]),
-            "in_use": [f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used]}
+            "in_use": _mapping_labels(used)
+                      + [f"profile:{n}" for n in storage.profiles_referencing("snippets", rec["name"])]}
 
 
 @app.get("/api/config-snippets")
@@ -2515,15 +2517,114 @@ def config_snippets_save():
 def config_snippets_delete(name):
     if not storage.cfgsnip_get(name):
         return _err("No such config snippet.", code=404)
-    used = config_snippets.usage(name)
+    used = _mapping_labels(config_snippets.usage(name)) + \
+        [f"profile:{n}" for n in storage.profiles_referencing("snippets", name)]
     if used:
-        who = ", ".join(f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used)
-        return _err(f"'{name}' is included by {who} — remove the include line from "
-                    "those mappings first.", code=409)
+        return _err(f"'{name}' is included by {', '.join(used)} — remove it from "
+                    "those mappings / profiles first.", code=409)
     storage.cfgsnip_remove(name)
     step = config_snippets.remove_snippet_file(name)
     _audit("snippet.delete", target=name)
     return jsonify({"ok": True, "steps": [step]})
+
+
+# --------------------------------------------------------------------------
+# Settings profiles (Snippets page): one named bundle — rate limit, timeouts,
+# log format, error pages, config-snippet includes — a mapping selects as a
+# whole. See profiles.py for the merge rules.
+# --------------------------------------------------------------------------
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+
+
+def _profile_public(rec):
+    return {**rec, "in_use": _mapping_labels(storage.profile_usage(rec["name"])),
+            "summary": profiles.summary(rec)}
+
+
+def _reapply_mappings(mappings):
+    """Re-apply enabled mappings (after something they render from changed).
+    Returns (steps, failed_labels)."""
+    steps, failed = [], []
+    for m in mappings:
+        if not m.get("enabled", True):
+            continue
+        label = f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}"
+        try:
+            steps.extend({**st, "name": f"[{label}] {st['name']}"} for st in nm.apply_mapping(m))
+        except nm.ProvisionError as exc:
+            failed.append(f"{label}: {exc}")
+            steps.extend({**st, "name": f"[{label}] {st['name']}"} for st in (exc.steps or []))
+    return steps, failed
+
+
+@app.get("/api/profiles")
+@require_role(*ANY_ROLE)
+def profiles_list():
+    return jsonify({"ok": True, "profiles": [_profile_public(r) for r in storage.profile_list()]})
+
+
+@app.post("/api/profiles")
+@require_role("admin")
+def profiles_save():
+    form = request.form
+    name = (form.get("name") or "").strip()
+    if not _PROFILE_NAME_RE.match(name):
+        return _err("Name must start with a letter and use only letters, digits, _ or - (max 40).")
+    try:
+        rate = _parse_rate(form)
+        proxy_timeout = clean_time(form.get("proxy_timeout"), "proxy_timeout")
+        proxy_connect_timeout = clean_time(form.get("proxy_connect_timeout"), "proxy_connect_timeout")
+        error_keys = _parse_error_page_keys(form)
+    except ValidationError as exc:
+        return _err(str(exc))
+    log_format = (form.get("log_format") or "").strip()
+    if log_format and not storage.logfmt_get(log_format):
+        return _err(f"No such log format snippet: {log_format}")
+    snippets = []
+    for sn in form.getlist("snippets"):
+        sn = sn.strip()
+        if not sn:
+            continue
+        if not storage.cfgsnip_get(sn):
+            return _err(f"No such config snippet: {sn}")
+        if sn not in snippets:
+            snippets.append(sn)
+    existing = storage.profile_get(name)
+    rec = {
+        "name": name,
+        "description": (form.get("description") or "").strip()[:200],
+        **rate,
+        "proxy_timeout": proxy_timeout,
+        "proxy_connect_timeout": proxy_connect_timeout,
+        "log_format": log_format,
+        "error_pages": error_keys,
+        "snippets": snippets,
+        "created": (existing or {}).get("created", _now()), "updated": _now(),
+    }
+    if not profiles.summary(rec):
+        return _err("This profile sets nothing — enable at least one setting.")
+    storage.profile_add(rec)
+    _audit("profile.save", target=name, detail="; ".join(profiles.summary(rec)))
+    steps, failed = _reapply_mappings(storage.profile_usage(name))
+    resp = {"ok": not failed, "profile": _profile_public(rec), "steps": steps}
+    if failed:
+        resp["error"] = ("Saved, but re-applying failed for: " + "; ".join(failed)
+                         + ". Those mappings were rolled back to their previous config.")
+    return jsonify(resp)
+
+
+@app.delete("/api/profiles/<name>")
+@require_role("admin")
+def profiles_delete(name):
+    if not storage.profile_get(name):
+        return _err("No such profile.", code=404)
+    used = _mapping_labels(storage.profile_usage(name))
+    if used:
+        return _err(f"Profile '{name}' is used by {', '.join(used)} — switch those mappings "
+                    "to another profile (or none) first.", code=409)
+    storage.profile_remove(name)
+    _audit("profile.delete", target=name)
+    return jsonify({"ok": True})
 
 
 # Custom error pages (admin only) — see error_pages.py. A key is either an
@@ -2535,7 +2636,8 @@ def error_pages_list():
     pages = []
     for e in error_pages.list_custom():
         used = error_pages.usage(e["key"])
-        pages.append({**e, "in_use": [f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used],
+        pages.append({**e, "in_use": _mapping_labels(used)
+                      + [f"profile:{n}" for n in storage.profiles_referencing("error_pages", e["key"])],
                       "nginx_codes": len(error_pages.nginx_codes(e["key"]))})
     return jsonify({"ok": True, "pages": pages, "builtin": error_pages.builtin_codes(),
                     "uri": config.ERROR_PAGES_URI})
@@ -2569,10 +2671,10 @@ def error_pages_delete(key):
         key = clean_error_page_key(key)
     except ValidationError as exc:
         return _err(str(exc))
-    used = error_pages.usage(key)
+    used = _mapping_labels(error_pages.usage(key)) + \
+        [f"profile:{n}" for n in storage.profiles_referencing("error_pages", key)]
     if used:
-        who = ", ".join(f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in used)
-        return _err(f"Error page {key} is selected on {who} — untick it there first.", code=409)
+        return _err(f"Error page {key} is selected on {', '.join(used)} — untick it there first.", code=409)
     removed = error_pages.delete_custom(key)
     if not removed:
         return _err("No custom page for that key.", code=404)
@@ -2854,6 +2956,7 @@ def preview_conf():
         "sni_guard": _truthy(form.get("sni_guard")),
         "access_list": (form.get("access_list") or "").strip(),
         "log_format": (form.get("log_format") or "").strip(),
+        "profile": (form.get("profile") or "").strip(),
         "upstream_name": nm.upstream_name(domain, listen_port),
     }
     mapping.update(lb)
