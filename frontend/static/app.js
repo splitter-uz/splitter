@@ -46,7 +46,7 @@ function escapeHtml(s) {
 }
 
 // --- page navigation -------------------------------------------------------
-const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall", "errorpages"];
+const PAGES = ["map", "users", "activity", "logs", "monitoring", "livemap", "network", "docker", "tools", "ssl", "backup", "waf", "firewall", "snippets"];
 // Pages whose data is loaded lazily on first visit (see showPage).
 const PAGE_LOADED = new Set();
 function showPage(name) {
@@ -54,6 +54,8 @@ function showPage(name) {
   // on the Map page with that tab selected, rather than 404-ing to the default.
   let requestedTab = null;
   if (MAP_TABS.includes(name)) { requestedTab = name; name = "map"; }
+  // Error Pages moved into the Snippets page — old #errorpages links still land there.
+  if (name === "errorpages") { SNIP_TAB = "errorpages"; name = "snippets"; }
   if (!PAGES.includes(name)) name = "map";
   history.replaceState(null, "", "#" + (name === "map" ? MAP_MODE : name));
   PAGES.forEach((p) => {
@@ -68,7 +70,7 @@ function showPage(name) {
   if (name === "waf") loadWaf();
   if (name === "ssl") loadSslCerts();
   if (name === "firewall") loadFirewall();
-  if (name === "errorpages") loadErrorPagesPage();
+  if (name === "snippets") startSnippets();
   if (name === "docker") loadDocker();
   if (name === "map") startMapPage(requestedTab || MAP_MODE);
   else stopTrafficPolling();
@@ -165,6 +167,7 @@ let MAPPING_FORM_SOURCE = "map";   // "map" | "docker"
 
 function showMappingForm() {
   MAPPING_FORM_SOURCE = "map";
+  loadSnippetCatalog();
   const home = $("#mappanel-mappings"), form = $("#mapping-form-view");
   if (home && form && form.parentElement !== home) home.appendChild(form);
   const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
@@ -212,6 +215,7 @@ function dockerNewMapping() {
 
 function dockerShowMappingForm() {
   MAPPING_FORM_SOURCE = "docker";
+  loadSnippetCatalog();
   const slot = $("#docker-form-slot"), form = $("#mapping-form-view");
   if (slot && form) slot.appendChild(form);
   if (form) form.classList.remove("hidden");
@@ -945,24 +949,51 @@ function addLocationRow(loc) {
         placeholder="/api" value="${escapeHtml(loc.path || "")}" />
       <button type="button" class="rm-location px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
     </div>
-    <textarea class="loc-config w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" rows="3"
-      placeholder="proxy_set_header X-Api-Key mykey;">${escapeHtml(loc.config || "")}</textarea>`;
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <div>
+        <label class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-0.5">Backends for this path <span class="normal-case font-normal">(optional)</span><button type="button" class="info-tip" aria-label="More info" data-tip="Route this path to its own servers instead of the mapping's main pool. host:port, several separated by commas — they become a dedicated upstream. Leave empty to keep using the main pool.">i</button></label>
+        <input class="loc-backends w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+          placeholder="10.0.0.20:8080, 10.0.0.21:8080" value="${escapeHtml((loc.backends || []).join(", "))}" />
+      </div>
+      <div>
+        <label class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-0.5">Only these methods <span class="normal-case font-normal">(optional)</span><button type="button" class="info-tip" aria-label="More info" data-tip="Method split: only requests with these HTTP methods go to the backends on the left; every other method on this path keeps using the main pool. Example: POST, PUT, DELETE to a write node while GET stays on the read replicas. Use path / to split the whole site by method.">i</button></label>
+        <input class="loc-methods w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+          placeholder="POST, PUT, DELETE" value="${escapeHtml((loc.methods || []).join(", "))}" />
+      </div>
+    </div>
+    <div class="loc-snips rounded-md border border-dashed border-slate-200 p-2 space-y-1.5" data-selected="${escapeHtml(JSON.stringify(loc.snippets || []))}"></div>
+    <textarea class="loc-config w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" rows="2"
+      placeholder="proxy_set_header X-Api-Key mykey;   (optional extra directives for this path)">${escapeHtml(loc.config || "")}</textarea>`;
   wrap.querySelector(".rm-location").addEventListener("click", () => wrap.remove());
+  renderLocationSnippetPicker(wrap.querySelector(".loc-snips"));
   $("#locations").appendChild(wrap);
 }
 
 function serializeLocations() {
+  const split = (v) => (v || "").split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
   return $$("#locations .loc-row").map((row) => ({
     path: row.querySelector(".loc-path").value.trim(),
     config: row.querySelector(".loc-config").value,
-  })).filter((l) => l.path && l.config.trim());
+    backends: split(row.querySelector(".loc-backends").value),
+    methods: split(row.querySelector(".loc-methods").value).map((m) => m.toUpperCase()),
+    snippets: selectedRefs(row.querySelector(".loc-snips")),
+  })).filter((l) => l.path && (l.config.trim() || l.backends.length || l.snippets.length));
 }
 
 // --- load-balancing method panels -----------------------------------------
+const LB_METHOD_DESC = {
+  round_robin: "Each new connection goes to the next backend in turn (weights respected). A good default for similar, stateless backends.",
+  least_conn:  "Each new connection goes to the backend with the fewest active connections. Best when sessions are long-lived or uneven in cost.",
+  hash:        "The same client (by hash key, default its IP) always lands on the same backend — sticky sessions without cookies.",
+  random:      "Picks a backend at random; with \"two\" enabled it picks 2 and uses the less loaded one, which balances much better.",
+};
+
 function onLbChange() {
   const m = $("#lb_method").value;
   $("#lb-hash").classList.toggle("hidden", m !== "hash");
   $("#lb-random").classList.toggle("hidden", m !== "random");
+  const desc = $("#lb-method-desc");
+  if (desc) desc.textContent = LB_METHOD_DESC[m] || "";
 }
 
 function backendCount() { return $$("#backends .be-row").length; }
@@ -982,9 +1013,6 @@ function syncLbAuto() {
   toggleLbSection();
 }
 
-function toggleRateSection() {
-  $("#rate-section").classList.toggle("hidden", !$("#rate_limit_enabled").checked);
-}
 
 // --- SSL tabs --------------------------------------------------------------
 function selectSsl(mode) {
@@ -1656,6 +1684,9 @@ async function toggleMapping(domain, port, currentlyEnabled) {
 async function preview() {
   const fd = formData();
   fd.delete("cert"); fd.delete("key");
+  // Reverse Proxy form => preview the L7 server block (custom locations,
+  // path/method routing, error pages); Stream form => the L4 stream block.
+  fd.set("l7", FORM_INTENT_MODE === "proxy" ? "1" : "0");
   const r = await fetch("/api/preview", { method: "POST", body: fd });
   const j = await r.json();
   if (!j.ok) return toast(j.error || "Cannot preview.", false);
@@ -1802,6 +1833,10 @@ function applyIntentModeUI() {
   const isProxy = FORM_INTENT_MODE === "proxy";
   const l7 = $("#l7-advanced-details");
   if (l7) l7.classList.toggle("hidden", !isProxy);
+  // Error pages stay visible in both modes (they're stored on every mapping);
+  // on a Stream mapping just say when they kick in.
+  const epNote = $("#error-pages-mode-note");
+  if (epNote) epNote.classList.toggle("hidden", isProxy);
   const forceHttpsRow = $("#ssl_forced") && $("#ssl_forced").closest("label");
   if (forceHttpsRow) forceHttpsRow.classList.toggle("hidden", !isProxy);
   if (!isProxy) {
@@ -1825,7 +1860,8 @@ function resetForm() {
   selectSsl("none");
   onMethodChange();
   onLbChange();
-  toggleRateSection();   // collapse rate-limit panel (reset() unchecked the toggle)
+  renderSnippetsPicker([]);
+  $("#snippets-legacy-note").classList.add("hidden");
   syncHealthUI();        // collapse health-check panel
   syncHstsUI();          // collapse force-SSL/HSTS panel (reset() unchecked the toggles)
   applyIntentModeUI();   // hide L7-only fields (locations, WS, HTTP/2, Force-HTTPS…) for Stream
@@ -1922,19 +1958,9 @@ function editMapping(domain, port) {
   setVal("health_expect", m.health_expect || "");
   syncHealthUI();
 
-  // rate limit
-  $("#rate_limit_enabled").checked = !!m.rate_limit;
-  setVal("limit_conn", m.limit_conn || "");
-  setVal("proxy_download_rate", m.proxy_download_rate || "");
-  setVal("proxy_upload_rate", m.proxy_upload_rate || "");
-  toggleRateSection();
-
-  // timeouts (open the panel if customised)
-  setVal("proxy_timeout", m.proxy_timeout || "");
-  setVal("proxy_connect_timeout", m.proxy_connect_timeout || "");
-  if (m.proxy_timeout || m.proxy_connect_timeout) {
-    const d = document.querySelector("details"); if (d) d.open = true;
-  }
+  // Snippets (rate limit / timeouts / log format / error pages / config).
+  renderSnippetsPicker(m.snippets || []);
+  renderLegacyInlineNote(m);
 
   $("#sni_guard").checked = !!m.sni_guard;
 
@@ -2019,17 +2045,117 @@ function setBar(barId, pctId, pct, defaultColor) {
 function startMonitoring() {
   loadMetrics();
   loadIfaceTraffic();
+  loadNginxStatus();
   renderIfaceTree();
   clearInterval(MON_TIMER);
-  MON_TIMER = setInterval(() => { if (!document.hidden) { loadMetrics(); loadIfaceTraffic(); } }, 2000);
+  MON_TIMER = setInterval(() => { if (!document.hidden) { loadMetrics(); loadIfaceTraffic(); loadNginxStatus(); } }, 2000);
+}
+
+// --- nginx stub_status card -------------------------------------------------
+async function fetchNginxStatus() {
+  try {
+    const j = await (await fetch("/api/nginx/status")).json();
+    return j.ok ? j : null;
+  } catch (_) { return null; }   // non-fatal — callers keep their last values
+}
+
+async function loadNginxStatus() {
+  const j = await fetchNginxStatus();
+  if (j) renderNginxStatus(j);
+}
+
+function fmtCount(n) {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString();
+}
+
+function renderNginxStatus(j) {
+  const unavailable = $("#mon-nginx-unavailable"), statsBox = $("#mon-nginx-stats");
+  if (!unavailable || !statsBox) return;
+  unavailable.classList.toggle("hidden", !!j.available);
+  statsBox.classList.toggle("hidden", !j.available);
+  if (!j.available) {
+    $("#mon-nginx-reason").textContent = j.provisioned
+      ? `nginx isn't answering on its status endpoint (${j.reason || "unreachable"}). Reload nginx or re-provision.`
+      : "nginx's stub_status endpoint isn't provisioned on this host yet. Enabling writes a loopback-only server block into conf.d and reloads nginx.";
+    $("#mon-nginx-provision").classList.toggle("hidden", !isAdmin());
+    $("#mon-nginx-provision").textContent = j.provisioned ? "Re-provision" : "Enable stub_status";
+    $("#mon-nginx-updated").textContent = new Date().toLocaleTimeString();
+    return;
+  }
+  const s = j.stats || {};
+  $("#mon-nginx-active").textContent = fmtCount(s.active);
+  $("#mon-nginx-rps").textContent = s.requests_rate == null ? "…" : s.requests_rate.toFixed(1);
+  $("#mon-nginx-cps").textContent = s.accepts_rate == null ? "…" : s.accepts_rate.toFixed(1);
+  $("#mon-nginx-rpc").textContent = s.requests_per_connection == null ? "—" : s.requests_per_connection.toFixed(2);
+  const active = Math.max(1, s.active || 0);
+  [["reading", "amber"], ["writing", "emerald"], ["waiting", "sky"]].forEach(([k]) => {
+    $(`#mon-nginx-${k}`).textContent = fmtCount(s[k]);
+    $(`#mon-nginx-${k}-bar`).style.width = Math.min(100, 100 * (s[k] || 0) / active) + "%";
+  });
+  $("#mon-nginx-meta").textContent =
+    `since start: ${fmtCount(s.accepts)} accepted · ${fmtCount(s.handled)} handled · ${fmtCount(s.requests)} requests`
+    + (s.dropped ? ` · ${fmtCount(s.dropped)} dropped` : "")
+    + ` · ${j.url || ""}`;
+  $("#mon-nginx-updated").textContent = (j.simulated ? "simulated · " : "") + new Date().toLocaleTimeString();
+}
+
+async function provisionNginxStatus() {
+  const btn = $("#mon-nginx-provision"), out = $("#mon-nginx-steps");
+  btn.disabled = true;
+  out.classList.remove("hidden");
+  out.textContent = "Provisioning…";
+  try {
+    const fd = new FormData(); fd.set("force", "1");
+    const j = await (await fetch("/api/nginx/status/provision", { method: "POST", body: fd })).json();
+    out.textContent = (j.steps || []).map((st) => `${st.ok ? "✔" : "✘"} ${st.name}\n   ${st.detail || ""}`).join("\n");
+    if (j.ok) { toast("stub_status enabled"); setTimeout(loadNginxStatus, 500); }
+    else toast(j.error || "Provisioning failed", false);
+  } catch (err) {
+    out.textContent = "Request failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 function stopMonitoring() { clearInterval(MON_TIMER); MON_TIMER = null; }
+
+let LIVEMAP_NGX_TIMER = null;
 
 function startLivemap() {
   renderRouteMap(true);   // draw with whatever we have…
   loadMappings();         // …then refresh from the API (re-renders if changed)
+  loadLivemapNginx();
+  clearInterval(LIVEMAP_NGX_TIMER);
+  LIVEMAP_NGX_TIMER = setInterval(() => { if (!document.hidden) loadLivemapNginx(); }, 2000);
 }
-function stopLivemap() { /* nothing to tear down */ }
+function stopLivemap() { clearInterval(LIVEMAP_NGX_TIMER); LIVEMAP_NGX_TIMER = null; }
+
+// nginx stub_status strip under the routing-map header (same endpoint as the
+// Monitoring card, compact rendering).
+async function loadLivemapNginx() {
+  const j = await fetchNginxStatus();
+  if (j) renderLivemapNginx(j);
+}
+
+function renderLivemapNginx(j) {
+  const unavailable = $("#livemap-nginx-unavailable"), stats = $("#livemap-nginx-stats");
+  if (!unavailable || !stats) return;
+  unavailable.classList.toggle("hidden", !!j.available);
+  stats.classList.toggle("hidden", !j.available);
+  $("#lm-ngx-updated").textContent = (j.simulated ? "simulated · " : "") + new Date().toLocaleTimeString();
+  if (!j.available) return;
+  const s = j.stats || {};
+  $("#lm-ngx-active").textContent = fmtCount(s.active);
+  $("#lm-ngx-rps").textContent = s.requests_rate == null ? "…" : s.requests_rate.toFixed(1);
+  $("#lm-ngx-cps").textContent = s.accepts_rate == null ? "…" : s.accepts_rate.toFixed(1);
+  $("#lm-ngx-reading").textContent = fmtCount(s.reading);
+  $("#lm-ngx-writing").textContent = fmtCount(s.writing);
+  $("#lm-ngx-waiting").textContent = fmtCount(s.waiting);
+  $("#lm-ngx-requests").textContent = fmtCount(s.requests);
+  const dropped = $("#lm-ngx-dropped");
+  dropped.classList.toggle("hidden", !s.dropped);
+  dropped.textContent = s.dropped ? ` · ${fmtCount(s.dropped)} dropped` : "";
+}
 
 // --- live routing map (built from real mappings) ---------------------------
 let ROUTE_SIG = null;
@@ -4150,6 +4276,7 @@ async function loadLogsPage() {
     const j = await (await fetch("/api/logs")).json();
     if (!j.ok) return;
     $("#logs-dir").textContent = j.dir || "";
+    renderLogsRotation(j.rotation);
     const rows = $("#logs-list-rows");
     rows.innerHTML = "";
     const maps = j.mappings || [];
@@ -4176,6 +4303,8 @@ async function loadLogsPage() {
   } catch (_) { /* non-fatal */ }
 }
 
+let LOGS_MODE = "tail";   // "tail" (live, last N lines) | "range" (time-range search across archives)
+
 function openLogsViewer(domain, port) {
   LOGS_CURRENT = { domain, port };
   LOGS_KIND = "access";
@@ -4186,7 +4315,105 @@ function openLogsViewer(domain, port) {
   $("#logs-meta").textContent = "";
   $("#logs-list-card").classList.add("hidden");
   $("#logs-viewer").classList.remove("hidden");
+  setLogsMode("tail");
   refreshLogs();
+  loadLogFiles();
+}
+
+function setLogsMode(mode) {
+  LOGS_MODE = mode;
+  $("#logs-live").classList.toggle("hidden", mode !== "range");
+  $("#logs-lines").disabled = mode === "range";
+  $("#logs-auto").disabled = mode === "range";
+  if (mode === "range") stopLogsAuto();
+}
+
+// datetime-local value (browser tz) -> ISO with offset; blank -> null.
+function localInputToIso(v) { return v ? new Date(v).toISOString() : null; }
+function isoToLocalInput(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function setQuickRange(minutes) {
+  const to = new Date(), from = new Date(to.getTime() - minutes * 60000);
+  $("#logs-from").value = isoToLocalInput(from);
+  $("#logs-to").value = isoToLocalInput(to);
+}
+
+async function searchLogsRange() {
+  if (!LOGS_CURRENT) return;
+  const { domain, port } = LOGS_CURRENT, kind = LOGS_KIND;
+  const from = localInputToIso($("#logs-from").value), to = localInputToIso($("#logs-to").value);
+  if (!from && !to) { setQuickRange(60); return searchLogsRange(); }
+  setLogsMode("range");
+  const q = $("#logs-search").value.trim();
+  const out = $("#logs-output");
+  out.textContent = "Searching live log and archives…";
+  const url = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}/search?limit=5000`
+    + (from ? `&from=${encodeURIComponent(from)}` : "") + (to ? `&to=${encodeURIComponent(to)}` : "") + (q ? `&q=${encodeURIComponent(q)}` : "");
+  try {
+    const j = await (await fetch(url)).json();
+    if (!LOGS_CURRENT || LOGS_CURRENT.domain !== domain || LOGS_CURRENT.port !== port || LOGS_KIND !== kind) return;
+    if (!j.ok) { $("#logs-meta").textContent = ""; out.textContent = j.error || "Search failed."; return; }
+    const n = (j.lines || []).length;
+    const files = (j.files || []).map((f) => `${f.date || "live"}${f.compressed ? ".gz" : ""}:${f.matched}`).join(" ");
+    $("#logs-meta").textContent = `${new Date(j.from).toLocaleString()} → ${new Date(j.to).toLocaleString()}  ·  ${n} line${n === 1 ? "" : "s"}${q ? " matched" : ""}  ·  ${j.scanned} scanned  ·  files: ${files || "none"}${j.truncated ? "  ·  TRUNCATED at " + n + " — narrow the window" : ""}`;
+    out.textContent = (j.lines || []).join("\n") || "No lines in this window" + (q ? " match the search." : ".") + ((j.files || []).length ? "" : " No log file covers this period — check retention on the Logs page.");
+    out.scrollTop = 0;
+  } catch (err) { out.textContent = "Request failed: " + err.message; }
+}
+
+async function loadLogFiles() {
+  if (!LOGS_CURRENT) return;
+  const { domain, port } = LOGS_CURRENT, kind = LOGS_KIND;
+  try {
+    const j = await (await fetch(`/api/logs/${encodeURIComponent(domain)}/${port}/${kind}/files`)).json();
+    if (!j.ok) return;
+    const rows = $("#logs-files-rows"); rows.innerHTML = "";
+    const files = j.files || [];
+    $("#logs-files-empty").classList.toggle("hidden", files.some((f) => !f.live));
+    $("#logs-rotation-text").textContent = `· ${j.rotation.text} (${j.rotation.source === "default" ? "default policy" : j.rotation.source})`;
+    files.slice().reverse().forEach((f) => {
+      const tr = document.createElement("tr");
+      const dl = `/api/logs/${encodeURIComponent(domain)}/${port}/${kind}/download` + (f.live ? "" : `?file=${encodeURIComponent(f.name)}`);
+      tr.innerHTML = `<td class="py-1 pr-3">${escapeHtml(f.name)}${f.live ? ' <span class="text-emerald-600">(live)</span>' : ""}</td><td class="py-1 pr-3 text-slate-500">${f.date ? f.date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : "—"}</td><td class="py-1 pr-3 text-slate-500">${fmtBytes(f.size)}${f.compressed ? " gz" : ""}</td><td class="py-1 text-right"><a href="${dl}" download class="text-emerald-700 hover:text-emerald-900 font-sans font-medium">Download</a></td>`;
+      rows.appendChild(tr);
+    });
+  } catch (_) { /* non-fatal */ }
+}
+
+// Logs list page: default rotation policy + rotate-now.
+function renderLogsRotation(rot) {
+  if (!rot) return;
+  const d = rot.default || {};
+  if (!$("#log_keep_days").matches(":focus")) $("#log_keep_days").value = d.keep_days || 7;
+  $("#log_compress").checked = d.compress !== false;
+  $("#log_max_size").value = d.max_size || "";
+  $("#logs-rotation-last").textContent = rot.installed === false ? "logrotate is not installed on this host"
+    : rot.ran ? `last run ${new Date(rot.ran).toLocaleString()} · ${rot.ok ? "ok" : "FAILED"}` : "not run yet (hourly check, daily rotation)";
+}
+
+async function saveLogsRotation(e) {
+  e.preventDefault();
+  const fd = new FormData($("#logs-rotation-form"));
+  if (!fd.has("log_compress")) fd.set("log_compress", "0");
+  const j = await (await fetch("/api/settings", { method: "POST", body: fd })).json();
+  toast(j.ok ? "Log rotation defaults saved." : (j.error || "Could not save."), j.ok);
+  if (j.ok) loadLogsPage();
+}
+
+async function rotateLogsNow() {
+  const btn = $("#logs-rotate-now"), out = $("#logs-rotate-output");
+  btn.disabled = true; out.classList.remove("hidden"); out.textContent = "Running logrotate…";
+  try {
+    const fd = new FormData(); fd.set("force", "1");
+    const j = await (await fetch("/api/logs/rotate", { method: "POST", body: fd })).json();
+    out.textContent = (j.ok ? "✔ " : "✘ ") + (j.output || "(no output)");
+    toast(j.ok ? "Logs rotated." : "logrotate failed — see output.", j.ok);
+    loadLogsPage();
+  } catch (err) { out.textContent = "Request failed: " + err.message; }
+  finally { btn.disabled = false; }
 }
 
 function syncLogsTabs() {
@@ -4199,6 +4426,7 @@ function syncLogsTabs() {
 
 async function refreshLogs() {
   if (!LOGS_CURRENT) return;
+  if (LOGS_MODE === "range") return searchLogsRange();
   const { domain, port } = LOGS_CURRENT;
   const q = $("#logs-search").value.trim();
   const kind = LOGS_KIND;
@@ -4241,13 +4469,421 @@ function stopLogsAuto() {
 // validators.py, which the backend also enforces.
 let ERRPAGES_FILE = null;   // File chosen via "Choose file…", or null
 
-async function loadErrorPagesPage() {
-  if (!isAdmin()) return;
+let ERROR_PAGES = [];   // uploaded custom pages (any role may list them)
+
+// Fetch the uploaded pages; feeds both the Snippets tab and the mapping
+// form's error-page picker.
+async function loadErrorPages() {
   try {
     const j = await (await fetch("/api/error-pages")).json();
-    if (!j.ok) return;
-    renderErrorPagesList(j.pages || []);
-  } catch (_) { /* non-fatal */ }
+    if (!j.ok) return null;
+    ERROR_PAGES = j.pages || [];
+    const badge = $("#snip-errorpages-count"); if (badge) badge.textContent = ERROR_PAGES.length;
+    return j;
+  } catch (_) { return null; }
+}
+
+async function loadErrorPagesPage() {
+  if (!isAdmin()) return;
+  const j = await loadErrorPages();
+  if (j) renderErrorPagesList(ERROR_PAGES);
+}
+
+// --- Snippets page: Log formats / Config snippets / Error pages tabs --------
+let SNIP_TAB = "ratelimit";
+let _snippetsReady = false;
+
+// Provisioning steps (from a save) into a <pre>; hidden when there are none.
+function showSteps(pre, steps) {
+  if (!pre) return;
+  const has = Array.isArray(steps) && steps.length > 0;
+  pre.classList.toggle("hidden", !has);
+  if (has) pre.textContent = steps.map((st) => `${st.ok ? "✔" : "✘"} ${st.name}\n   ${st.detail || ""}`).join("\n");
+}
+
+const scopeBadge = (label, cls) => `<span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${cls}">${escapeHtml(label)}</span>`;
+const snippetNameCell = (r) => `<td class="px-6 py-3 whitespace-nowrap"><div class="font-mono font-semibold text-slate-800">${escapeHtml(r.name)}</div>${r.description ? `<div class="text-xs text-slate-400 mt-0.5">${escapeHtml(r.description)}</div>` : ""}</td>`;
+const usedByCell = (used) => `<td class="px-6 py-3 text-xs text-slate-500">${used.length ? used.map((u) => `<div class="font-mono">${escapeHtml(u)}</div>`).join("") : '<span class="text-slate-300">—</span>'}</td>`;
+
+// One editor + list panel per snippet kind (log formats, config snippets).
+// `spec` supplies what differs (ids prefix, API, form fields, row cells,
+// preview); loading, listing, edit/reset, save (with steps) and delete (with
+// the in-use guard) are shared.
+function makeSnippetPanel(spec) {
+  const P = { items: [], presets: [], meta: {}, spec };
+  const el = (suffix) => $(`#${spec.prefix}-${suffix}`);
+
+  P.load = async function () {
+    try {
+      const j = await (await fetch(spec.api)).json();
+      if (!j.ok) return;
+      P.items = j[spec.listKey] || [];
+      P.presets = j.presets || [];
+      P.meta = j;
+      P.renderList();
+      const badge = $(`#snip-${spec.tab}-count`); if (badge) badge.textContent = P.items.length;
+      const presetSel = el("preset");
+      if (presetSel && presetSel.options.length <= 1) P.presets.forEach((p) => presetSel.add(new Option(p.label, p.name)));
+      spec.onLoaded?.(P);
+      P.preview();
+    } catch (_) { /* non-fatal — keep what we have */ }
+  };
+  P.preview = () => spec.preview?.(P);
+  P.applyPreset = function () {
+    const p = P.presets.find((x) => x.name === el("preset").value);
+    if (p) { spec.fillForm(P, p, true); P.preview(); }
+  };
+  P.reset = function () {
+    el("form").reset();
+    el("name").readOnly = false;
+    el("form-title").textContent = spec.newTitle;
+    el("cancel").classList.add("hidden");
+    el("steps").classList.add("hidden");
+    spec.afterReset?.(P);
+    P.preview();
+  };
+  P.edit = function (name) {
+    const r = P.items.find((x) => x.name === name);
+    if (!r) return;
+    spec.fillForm(P, r, false);
+    el("name").readOnly = true;
+    el("form-title").textContent = `${spec.editTitle}: ${r.name}`;
+    el("cancel").classList.remove("hidden");
+    P.preview();
+    el("form").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  P.renderList = function () {
+    const rows = el("rows");
+    if (!rows) return;
+    rows.innerHTML = "";
+    el("empty").classList.toggle("hidden", P.items.length > 0);
+    for (const r of P.items) {
+      const used = r.in_use || [];
+      const tr = document.createElement("tr");
+      tr.className = "hover:bg-slate-50 align-top";
+      tr.innerHTML = spec.rowCells(r) + usedByCell(used) + `
+        <td class="px-6 py-3 text-right whitespace-nowrap">
+          ${spec.extraActions ? spec.extraActions(r) : ""}
+          <button data-name="${escapeHtml(r.name)}" class="snip-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+          <button data-name="${escapeHtml(r.name)}" class="snip-del text-xs font-medium text-red-600 hover:text-red-800 ${used.length ? "opacity-40 cursor-not-allowed" : ""}" ${used.length ? `title="${spec.inUseTitle}"` : ""}>Delete</button>
+        </td>`;
+      rows.appendChild(tr);
+    }
+    rows.querySelectorAll(".snip-edit").forEach((b) => b.addEventListener("click", () => P.edit(b.dataset.name)));
+    rows.querySelectorAll(".snip-del").forEach((b) => b.addEventListener("click", () => P.remove(b.dataset.name)));
+    spec.afterList?.(P, rows);
+  };
+  P.save = async function (e) {
+    e.preventDefault();
+    const btn = el("save");
+    btn.disabled = true;
+    try {
+      const fd = new FormData(el("form"));
+      const j = await (await fetch(spec.api, { method: "POST", body: fd })).json();
+      toast(j.ok ? `Saved ${fd.get("name")}.` : (j.error || "Could not save it."), j.ok);
+      if (j.ok) P.reset();
+      showSteps(el("steps"), j.steps);   // after reset, so the steps stay visible
+      P.load();
+    } catch (err) {
+      toast("Request failed: " + err.message, false);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  P.remove = async function (name) {
+    const r = P.items.find((x) => x.name === name);
+    if (r && (r.in_use || []).length) { toast(`"${name}" is used by ${r.in_use.join(", ")} — ${spec.inUseHint}`, false); return; }
+    if (!confirm(spec.confirmDelete(name))) return;
+    const j = await (await fetch(`${spec.api}/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
+    toast(j.ok ? `Deleted ${name}.` : (j.error || "Could not delete it."), j.ok);
+    P.load();
+  };
+  P.wire = function () {
+    el("form").addEventListener("submit", P.save);
+    el("cancel").addEventListener("click", P.reset);
+    el("preset")?.addEventListener("change", P.applyPreset);
+    (spec.previewInputs || []).forEach((id) => { el(id).addEventListener("input", P.preview); el(id).addEventListener("change", P.preview); });
+    spec.wire?.(P);
+  };
+  return P;
+}
+
+// ---- Log formats -----------------------------------------------------------
+// The exact directive the backend will emit (mirrors log_format_lines() in
+// nginx_manager.py): one quoted string per non-empty line, joined by nginx.
+function nginxQuote(t) { return "'" + t.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'"; }
+
+function renderLogFormatPreview() {
+  const pre = $("#logfmt-preview"); if (!pre) return;
+  const name = ($("#logfmt-name").value || "").trim() || "<mapping>";
+  const esc = $("#logfmt-escape").value;
+  const parts = ($("#logfmt-format").value || "").split(/\r?\n/).filter((l) => l.trim());
+  if (!parts.length) { pre.textContent = "log_format …"; return; }
+  const head = `log_format ${name}_fmt${esc === "json" || esc === "none" ? " escape=" + esc : ""} `;
+  pre.textContent = parts.map((p, i) => (i ? " ".repeat(head.length) : head) + nginxQuote(p) + (i === parts.length - 1 ? ";" : "")).join("\n");
+}
+
+// Clickable variable chips for the selected context; a click inserts at the caret.
+function renderLogFormatVars(P) {
+  const box = $("#logfmt-vars"); if (!box) return;
+  const vars = (P.meta.variables || {})[$("#logfmt-context").value] || [];
+  box.innerHTML = vars.map((v) => `<button type="button" data-var="${escapeHtml(v)}" class="logfmt-var font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600">${escapeHtml(v)}</button>`).join("");
+  box.querySelectorAll(".logfmt-var").forEach((b) => b.addEventListener("click", () => {
+    const ta = $("#logfmt-format");
+    const at = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? at;
+    ta.value = ta.value.slice(0, at) + b.dataset.var + ta.value.slice(end);
+    ta.focus(); ta.selectionStart = ta.selectionEnd = at + b.dataset.var.length;
+    renderLogFormatPreview();
+  }));
+}
+
+const LOGFMT = makeSnippetPanel({
+  prefix: "logfmt", tab: "logformats", api: "/api/log-formats", listKey: "formats",
+  newTitle: "New log format", editTitle: "Edit log format",
+  inUseTitle: "In use by a mapping", inUseHint: "switch those mappings first.",
+  confirmDelete: (n) => `Delete log format "${n}"?`,
+  previewInputs: ["name", "context", "escape", "format"],
+  wire: (P) => $("#logfmt-context").addEventListener("change", () => renderLogFormatVars(P)),
+  onLoaded: (P) => { renderLogFormatVars(P); loadSnippetCatalog(); },
+  afterReset: (P) => renderLogFormatVars(P),
+  fillForm: (P, r, isPreset) => {
+    $("#logfmt-context").value = r.context;
+    $("#logfmt-escape").value = r.escape || "default";
+    $("#logfmt-format").value = r.format;
+    if (!isPreset || !$("#logfmt-name").value.trim()) $("#logfmt-name").value = r.name;
+    if (!isPreset || !$("#logfmt-description").value.trim()) $("#logfmt-description").value = r.description || "";
+    renderLogFormatVars(P);
+  },
+  preview: renderLogFormatPreview,
+  rowCells: (r) => snippetNameCell(r)
+    + `<td class="px-6 py-3 whitespace-nowrap">${scopeBadge(r.context, r.context === "http" ? "bg-sky-50 text-sky-700" : "bg-violet-50 text-violet-700")}${r.escape && r.escape !== "default" ? `<span class="ml-1 text-[11px] text-slate-400 font-mono">escape=${escapeHtml(r.escape)}</span>` : ""}</td>`
+    + `<td class="px-6 py-3"><pre class="font-mono text-[11px] text-slate-600 whitespace-pre-wrap break-all max-w-md">${escapeHtml(r.format)}</pre></td>`,
+});
+
+// ---- Config snippets (raw nginx include blocks) -----------------------------
+const CFGSNIP = makeSnippetPanel({
+  prefix: "cfgsnip", tab: "config", api: "/api/config-snippets", listKey: "snippets",
+  newTitle: "New config snippet", editTitle: "Edit config snippet",
+  inUseTitle: "Included by a mapping", inUseHint: "remove those include lines first.",
+  confirmDelete: (n) => `Delete config snippet "${n}"? Its include file is removed too.`,
+  previewInputs: ["name"],
+  onLoaded: (P) => {
+    const dir = $("#cfgsnip-dir"); if (dir) dir.textContent = P.meta.dir || "";
+    loadSnippetCatalog();
+  },
+  fillForm: (P, r, isPreset) => {
+    $("#cfgsnip-scope").value = r.scope || "any";
+    $("#cfgsnip-content").value = r.content;
+    if (!isPreset || !$("#cfgsnip-name").value.trim()) $("#cfgsnip-name").value = r.name;
+    if (!isPreset || !$("#cfgsnip-description").value.trim()) $("#cfgsnip-description").value = r.description || "";
+  },
+  preview: (P) => {
+    const pre = $("#cfgsnip-preview"); if (!pre) return;
+    const name = ($("#cfgsnip-name").value || "").trim();
+    pre.textContent = name ? `include ${P.meta.dir || "<snippet dir>"}/${name}.inc;   # snippet: ${name}` : "include …";
+  },
+  rowCells: (r) => {
+    const cls = { server: "bg-sky-50 text-sky-700", location: "bg-violet-50 text-violet-700" }[r.scope] || "bg-slate-100 text-slate-600";
+    return snippetNameCell(r)
+      + `<td class="px-6 py-3 whitespace-nowrap">${scopeBadge(r.scope || "any", cls)}</td>`
+      + `<td class="px-6 py-3"><pre class="font-mono text-[11px] text-slate-600 whitespace-pre-wrap break-all max-w-md max-h-32 overflow-auto">${escapeHtml(r.content)}</pre></td>`;
+  },
+  extraActions: (r) => `<button data-name="${escapeHtml(r.name)}" class="cfgsnip-copy text-xs font-medium text-slate-500 hover:text-slate-800 mr-3" title="Copy the include line">Copy include</button>`,
+  afterList: (P, rows) => rows.querySelectorAll(".cfgsnip-copy").forEach((b) => b.addEventListener("click", () => {
+    const r = P.items.find((x) => x.name === b.dataset.name);
+    if (r) navigator.clipboard.writeText(r.include).then(() => toast("Include line copied")).catch(() => {});
+  })),
+});
+
+// Thin named entry points used elsewhere (page switch, mapping form).
+function loadLogFormats() { return LOGFMT.load(); }
+function loadConfigSnippets() { return CFGSNIP.load(); }
+function editLogFormat(name) { LOGFMT.edit(name); }
+function editConfigSnippet(name) { CFGSNIP.edit(name); }
+
+function loadAllSnippetPanels() {
+  RATELIMIT.load(); TIMEOUTS.load(); LOGROTATE.load(); loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage();
+}
+
+function startSnippets() {
+  loadAllSnippetPanels();
+  if (!_snippetsReady) {
+    _snippetsReady = true;
+    $$(".snip-tab").forEach((btn) => btn.addEventListener("click", () => showSnipTab(btn.dataset.sniptab)));
+    $("#snippets-refresh").addEventListener("click", loadAllSnippetPanels);
+    RATELIMIT.wire(); TIMEOUTS.wire(); LOGROTATE.wire(); LOGFMT.wire(); CFGSNIP.wire();
+  }
+  showSnipTab(SNIP_TAB);
+}
+
+function showSnipTab(name) {
+  SNIP_TAB = name;
+  $$(".snip-tab").forEach((btn) => {
+    const active = btn.dataset.sniptab === name;
+    btn.classList.toggle("bg-white", active);
+    btn.classList.toggle("border-slate-200", active);
+    btn.classList.toggle("text-emerald-700", active);
+    btn.classList.toggle("shadow-sm", active);
+    btn.classList.toggle("text-slate-500", !active);
+    btn.classList.toggle("border-transparent", !active);
+  });
+  $$(".snip-panel").forEach((p) => p.classList.add("hidden"));
+  const panel = $("#snippanel-" + name);
+  if (panel) panel.classList.remove("hidden");
+}
+
+// ---- Rate limit / timeout snippet panels ----------------------------------------
+function describeRateLimit(r) {
+  const bits = [];
+  if (r.limit_conn) bits.push(`${r.limit_conn} conn/IP`);
+  if (r.proxy_download_rate) bits.push(`down ${r.proxy_download_rate}`);
+  if (r.proxy_upload_rate) bits.push(`up ${r.proxy_upload_rate}`);
+  return bits.join(", ");
+}
+
+const RATELIMIT = makeSnippetPanel({
+  prefix: "rl", tab: "ratelimit", api: "/api/snippets/ratelimit", listKey: "items",
+  newTitle: "New rate limit", editTitle: "Edit rate limit",
+  inUseTitle: "Used by a mapping", inUseHint: "pick another snippet there first.",
+  confirmDelete: (n) => `Delete rate limit "${n}"?`,
+  previewInputs: ["limit_conn", "proxy_download_rate", "proxy_upload_rate"],
+  onLoaded: () => loadSnippetCatalog(),
+  fillForm: (P, r) => {
+    $("#rl-name").value = r.name; $("#rl-description").value = r.description || "";
+    ["limit_conn", "proxy_download_rate", "proxy_upload_rate"].forEach((k) => { $(`#rl-${k}`).value = r[k] || ""; });
+  },
+  preview: () => {
+    const c = $("#rl-limit_conn").value, d = $("#rl-proxy_download_rate").value, u = $("#rl-proxy_upload_rate").value;
+    const out = [];
+    if (c) out.push(`limit_conn <mapping>_conn ${c};        # both`);
+    if (d) out.push(`proxy_download_rate ${d};   # stream`, `limit_rate ${d};             # reverse proxy`);
+    if (u) out.push(`proxy_upload_rate ${u};     # stream`);
+    $("#rl-preview").textContent = out.join("\n") || "…";
+  },
+  rowCells: (r) => snippetNameCell(r) + `<td class="px-6 py-3 text-xs font-mono text-slate-600">${escapeHtml(describeRateLimit(r) || "—")}</td>`,
+});
+
+const TIMEOUTS = makeSnippetPanel({
+  prefix: "to", tab: "timeouts", api: "/api/snippets/timeouts", listKey: "items",
+  newTitle: "New timeout set", editTitle: "Edit timeout set",
+  inUseTitle: "Used by a mapping", inUseHint: "pick another snippet there first.",
+  confirmDelete: (n) => `Delete timeouts "${n}"?`,
+  previewInputs: ["proxy_timeout", "proxy_connect_timeout"],
+  onLoaded: () => loadSnippetCatalog(),
+  fillForm: (P, r) => {
+    $("#to-name").value = r.name; $("#to-description").value = r.description || "";
+    ["proxy_timeout", "proxy_connect_timeout"].forEach((k) => { $(`#to-${k}`).value = r[k] || ""; });
+  },
+  preview: () => {
+    const t = $("#to-proxy_timeout").value, c = $("#to-proxy_connect_timeout").value;
+    const out = [];
+    if (c) out.push(`proxy_connect_timeout ${c};   # both`);
+    if (t) out.push(`proxy_timeout ${t};           # stream`, `proxy_read_timeout ${t};      # reverse proxy`, `proxy_send_timeout ${t};`);
+    $("#to-preview").textContent = out.join("\n") || "…";
+  },
+  rowCells: (r) => snippetNameCell(r) + `<td class="px-6 py-3 text-xs font-mono text-slate-600">${escapeHtml(`${r.proxy_timeout || "default"} / ${r.proxy_connect_timeout || "default"}`)}</td>`,
+});
+
+const LOGROTATE = makeSnippetPanel({
+  prefix: "lr", tab: "logrotate", api: "/api/snippets/logrotate", listKey: "items",
+  newTitle: "New rotation policy", editTitle: "Edit rotation policy",
+  inUseTitle: "Used by a mapping", inUseHint: "pick another policy there first.",
+  confirmDelete: (n) => `Delete rotation policy "${n}"?`,
+  previewInputs: ["keep_days", "max_size", "compress"],
+  onLoaded: () => loadSnippetCatalog(),
+  fillForm: (P, r) => {
+    $("#lr-name").value = r.name; $("#lr-description").value = r.description || "";
+    $("#lr-keep_days").value = r.keep_days || ""; $("#lr-max_size").value = r.max_size || ""; $("#lr-compress").checked = !!r.compress;
+  },
+  preview: () => {
+    const d = $("#lr-keep_days").value, ms = $("#lr-max_size").value.trim(), gz = $("#lr-compress").checked;
+    $("#lr-preview").textContent = d ? ["daily", "dateext", `rotate ${d}`, `maxage ${d}`, ms ? `maxsize ${ms}` : null, gz ? "compress" : "nocompress", "postrotate → nginx -s reopen"].filter(Boolean).join("\n") : "…";
+  },
+  rowCells: (r) => snippetNameCell(r) + `<td class="px-6 py-3 text-xs font-mono text-slate-600">${escapeHtml(`keep ${r.keep_days} days, ${r.compress ? "gzip" : "no compression"}${r.max_size ? ", or over " + r.max_size : ""}`)}</td>`,
+});
+
+// ---- The Snippets picker on the mapping form + custom locations ------------------
+// One catalogue (/api/snippets) feeds both. Values are refs like "ratelimit:api".
+let SNIPPET_CATALOG = { kinds: {}, labels: {} };
+let _catalogLoading = null;
+
+function loadSnippetCatalog() {
+  if (_catalogLoading) return _catalogLoading;
+  _catalogLoading = (async () => {
+    try {
+      const j = await (await fetch("/api/snippets")).json();
+      if (j.ok) SNIPPET_CATALOG = j;
+    } catch (_) { /* keep the previous catalogue */ }
+    _catalogLoading = null;
+    renderSnippetsPicker();
+    $$("#locations .loc-snips").forEach(renderLocationSnippetPicker);
+  })();
+  return _catalogLoading;
+}
+
+// Selected refs inside a picker box (selects + checkboxes, blanks skipped).
+function selectedRefs(box) {
+  if (!box) return [];
+  return [...box.querySelectorAll("select, input[type=checkbox]")]
+    .map((el) => (el.type === "checkbox" ? (el.checked ? el.value : "") : el.value))
+    .filter(Boolean);
+}
+
+// Picker markup. Single-valued kinds render as a select, the others as
+// checkbox chips. `name` (form field) is set for the mapping picker only; the
+// location pickers are read by serializeLocations().
+function snippetPickerHtml(selected, kinds, name, compact) {
+  const K = SNIPPET_CATALOG.kinds || {};
+  const sel = new Set(selected || []);
+  const nameAttr = name ? ` name="${name}"` : "";
+  const label = (t) => `<span class="${compact ? "w-20" : "w-28"} shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-400">${t}</span>`;
+  const rows = [];
+  const single = (kind, title, none, fmt) => {
+    const items = K[kind] || [];
+    rows.push(`<div class="flex items-center gap-2">${label(title)}<select${nameAttr} class="snip-${kind} flex-1 min-w-0 rounded-md border border-slate-300 px-2 py-1 text-xs bg-white">
+      <option value="">${none}</option>${items.map((it) => `<option value="${escapeHtml(it.ref)}" ${sel.has(it.ref) ? "selected" : ""}>${escapeHtml(fmt(it))}</option>`).join("")}</select></div>`);
+  };
+  const multi = (kind, title, items, empty) => {
+    rows.push(`<div class="flex items-start gap-2">${label(title)}<div class="flex flex-wrap gap-1.5 min-w-0">${items.length ? items.map((it) => `
+      <label class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs cursor-pointer hover:border-emerald-300">
+        <input type="checkbox"${nameAttr} value="${escapeHtml(it.ref)}" class="rounded" ${sel.has(it.ref) ? "checked" : ""}><span class="font-mono font-semibold text-slate-700">${escapeHtml(it.name)}</span>${it.summary ? `<span class="text-slate-400">${escapeHtml(it.summary)}</span>` : ""}
+      </label>`).join("") : `<span class="text-xs text-slate-400">${empty}</span>`}</div></div>`);
+  };
+  if (kinds.includes("ratelimit")) single("ratelimit", "Rate limit", "None — no limit", (it) => `${it.name} — ${it.summary}`);
+  if (kinds.includes("timeouts")) single("timeouts", "Timeouts", "Defaults", (it) => `${it.name} — ${it.summary}`);
+  if (kinds.includes("logformat")) single("logformat", "Log format", "Built-in line", (it) => `${it.name} (${it.summary})`);
+  if (kinds.includes("logrotate")) single("logrotate", "Log rotation", "Default policy (Logs page)", (it) => `${it.name} — ${it.summary}`);
+  if (kinds.includes("errorpage")) multi("errorpage", "Error pages", K.errorpage || [], "none uploaded yet");
+  if (kinds.includes("config")) multi("config", compact ? "Config" : "Config snippets",
+    (K.config || []).filter((it) => compact ? it.scope !== "server" : it.scope !== "location"), "none yet");
+  return rows.join("");
+}
+
+function renderSnippetsPicker(selected) {
+  const box = $("#snippets-pick"); if (!box) return;
+  const keep = selected || selectedRefs(box);
+  box.innerHTML = snippetPickerHtml(keep, ["ratelimit", "timeouts", "logformat", "logrotate", "errorpage", "config"], "snippets", false);
+}
+
+function renderLocationSnippetPicker(box) {
+  if (!box) return;
+  const keep = box.querySelector("select, input") ? selectedRefs(box) : JSON.parse(box.dataset.selected || "[]");
+  box.innerHTML = `<div class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Snippets for this path</div>`
+    + snippetPickerHtml(keep, ["ratelimit", "timeouts", "config"], null, true);
+}
+
+// Mappings saved before the picker existed carry inline rate-limit / timeout /
+// log-format / error-page values. They keep rendering until the mapping is
+// saved again — say so, so the user creates matching snippets first.
+function renderLegacyInlineNote(m) {
+  const note = $("#snippets-legacy-note"); if (!note) return;
+  const bits = [];
+  if (m.rate_limit) bits.push("rate limit " + (describeRateLimit(m) || "on"));
+  if (m.proxy_timeout || m.proxy_connect_timeout) bits.push(`timeouts ${m.proxy_timeout || "default"} / ${m.proxy_connect_timeout || "default"}`);
+  if (m.log_format) bits.push(`log format ${m.log_format}`);
+  if ((m.error_pages || []).length) bits.push("error pages " + m.error_pages.join(", "));
+  note.classList.toggle("hidden", !bits.length);
+  note.textContent = bits.length ? `This mapping still has inline settings from before snippets (${bits.join(" · ")}). They apply until you save; saving keeps only the snippets picked above — create matching snippets first if you still need them.` : "";
 }
 
 function renderErrorPagesList(pages) {
@@ -4262,9 +4898,10 @@ function renderErrorPagesList(pages) {
       <td class="px-6 py-3 font-mono font-semibold text-slate-800">${escapeHtml(p.key)}</td>
       <td class="px-6 py-3 text-slate-500">${fmtBytes(p.size || 0)}</td>
       <td class="px-6 py-3 text-slate-500 font-mono text-xs">${escapeHtml(p.mtime || "")}</td>
+      <td class="px-6 py-3 text-xs text-slate-500">${(p.in_use || []).length ? p.in_use.map((u) => `<div class="font-mono">${escapeHtml(u)}</div>`).join("") : '<span class="text-slate-300">—</span>'}</td>
       <td class="px-6 py-3 text-right whitespace-nowrap">
         <a href="/api/error-pages/${encodeURIComponent(p.key)}/preview" target="_blank" rel="noopener" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Preview</a>
-        <button data-key="${escapeHtml(p.key)}" class="errpages-del text-xs font-medium text-red-600 hover:text-red-800">Delete</button>
+        <button data-key="${escapeHtml(p.key)}" class="errpages-del text-xs font-medium text-red-600 hover:text-red-800 ${(p.in_use || []).length ? "opacity-40 cursor-not-allowed" : ""}" ${(p.in_use || []).length ? 'title="Selected on a mapping"' : ""}>Delete</button>
       </td>`;
     rows.appendChild(tr);
   });
@@ -4273,6 +4910,8 @@ function renderErrorPagesList(pages) {
 }
 
 async function deleteErrorPage(key) {
+  const p = ERROR_PAGES.find((x) => x.key === key);
+  if (p && (p.in_use || []).length) { toast(`${key} is selected on ${p.in_use.join(", ")} — untick it there first.`, false); return; }
   if (!confirm(`Remove the custom page for "${key}"? It'll fall back to the built-in default.`)) return;
   const j = await (await fetch(`/api/error-pages/${encodeURIComponent(key)}`, { method: "DELETE" })).json();
   toast(j.ok ? `Removed custom page for ${key}.` : (j.error || "Could not remove it."), j.ok);
@@ -4492,7 +5131,7 @@ async function loadMe() {
   toggleHidden("#nav-backup", !admin);
   toggleHidden("#nav-waf", !admin);
   toggleHidden("#nav-firewall", !admin);
-  toggleHidden("#nav-errorpages", !admin);
+  toggleHidden("#nav-snippets", !admin);
   // Network page: only admins can change the sub-interface policy / network.
   toggleHidden("#iface-settings-card", !admin);
   toggleHidden("#iface-network-card", !admin);
@@ -5125,6 +5764,50 @@ function applySavedSidebarCollapsed() {
   if (collapsed) setSidebarCollapsed(true);   // collapsed is the non-default state; skip the DOM write otherwise
 }
 
+// --- info tooltips ---------------------------------------------------------
+// Any element with class="info-tip" and a data-tip attribute shows its text in
+// a floating pop-up on hover / focus / tap. One shared pop-up lives on <body>
+// (position:fixed) so it never gets clipped by a card's overflow. The icons are
+// <button type="button">, which keeps a click on one from toggling the checkbox
+// of a <label> it sits inside.
+function initInfoTips() {
+  const pop = document.createElement("div");
+  pop.id = "info-tip-pop";
+  pop.setAttribute("role", "tooltip");
+  pop.hidden = true;
+  document.body.appendChild(pop);
+  let cur = null;
+
+  const show = (el) => {
+    const text = el.dataset.tip;
+    if (!text) return;
+    cur = el;
+    pop.textContent = text;
+    pop.classList.remove("below");
+    pop.hidden = false;
+    const r = el.getBoundingClientRect();
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let left = r.left + r.width / 2 - pw / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+    let top = r.top - ph - 8;
+    if (top < 8) { top = r.bottom + 8; pop.classList.add("below"); }
+    pop.style.left = left + "px";
+    pop.style.top = top + "px";
+    pop.style.setProperty("--arrow-x", (r.left + r.width / 2 - left) + "px");
+  };
+  const hide = () => { cur = null; pop.hidden = true; };
+  const tipOf = (e) => (e.target instanceof Element) ? e.target.closest(".info-tip") : null;
+
+  document.addEventListener("mouseover", (e) => { const t = tipOf(e); if (t && t !== cur) show(t); });
+  document.addEventListener("mouseout", (e) => { const t = tipOf(e); if (t && !(e.relatedTarget && t.contains(e.relatedTarget))) hide(); });
+  document.addEventListener("focusin", (e) => { const t = tipOf(e); if (t) show(t); });
+  document.addEventListener("focusout", (e) => { if (tipOf(e)) hide(); });
+  document.addEventListener("click", (e) => { const t = tipOf(e); if (t) { e.preventDefault(); show(t); } else hide(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") hide(); });
+  window.addEventListener("scroll", hide, true);
+  window.addEventListener("resize", hide);
+}
+
 function initSidebarToggle() {
   const btn = $("#sidebar-toggle");
   if (!btn) return;
@@ -5138,6 +5821,7 @@ function initSidebarToggle() {
 document.addEventListener("DOMContentLoaded", async () => {
   applySavedNavOrder();   // before first paint's active-class pass below
   applySavedSidebarCollapsed();
+  initInfoTips();
 
   // Pre-switch to the hash page immediately (pure CSS, no data needed) so the
   // correct section is visible from the first paint instead of flashing Map/Stream.
@@ -5193,6 +5877,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const abd = $("#add-backend-docker"); if (abd) abd.addEventListener("click", toggleBackendDockerGrid);
   const bdgc = $("#backend-docker-grid-close"); if (bdgc) bdgc.addEventListener("click", closeBackendDockerGrid);
   $("#add-location").addEventListener("click", () => addLocationRow());
+  $$(".nav-jump-snippets").forEach((b) => b.addEventListener("click", () => showPage("snippets")));
   $("#ssl_forced").addEventListener("change", syncHstsUI);
   $("#hsts_enabled").addEventListener("change", syncHstsUI);
   // Docker page
@@ -5209,11 +5894,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#gen-mac").addEventListener("click", generateMac);
   $("#interface").addEventListener("change", updateIfaceInfo);
   $("#lb_method").addEventListener("change", onLbChange);
+  onLbChange();
   $("#lb_enabled").addEventListener("change", () => {
     if (!$("#lb_enabled").checked) { $("#lb_method").value = "round_robin"; onLbChange(); }
     toggleLbSection();
   });
-  $("#rate_limit_enabled").addEventListener("change", toggleRateSection);
   $("#failover").addEventListener("change", syncFailoverUI);
   $("#health_check").addEventListener("change", syncHealthUI);
   $$('input[name="alloc_method"]').forEach((r) => r.addEventListener("change", onMethodChange));
@@ -5229,10 +5914,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#logs-list-refresh").addEventListener("click", loadLogsPage);
   $("#logs-back").addEventListener("click", loadLogsPage);
   $("#logs-refresh").addEventListener("click", refreshLogs);
+  $("#logs-search-range").addEventListener("click", searchLogsRange);
+  $("#logs-live").addEventListener("click", () => { setLogsMode("tail"); refreshLogs(); });
+  $$(".logs-quick").forEach((b) => b.addEventListener("click", () => { setQuickRange(Number(b.dataset.range)); searchLogsRange(); }));
+  ["logs-from", "logs-to"].forEach((id) => $("#" + id).addEventListener("keydown", (e) => { if (e.key === "Enter") searchLogsRange(); }));
+  $("#logs-rotation-form").addEventListener("submit", saveLogsRotation);
+  $("#logs-rotate-now").addEventListener("click", rotateLogsNow);
   $$(".logs-tab").forEach((b) => b.addEventListener("click", () => {
     LOGS_KIND = b.dataset.kind;
     syncLogsTabs();
     refreshLogs();
+    loadLogFiles();
   }));
   let logsSearchTimer;
   $("#logs-search").addEventListener("input", () => {
@@ -5319,7 +6011,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   // n8n-style node dragging (reset to default layout on any refresh/re-render)
   window.addEventListener("mousemove", onRouteNodeMove);
   window.addEventListener("mouseup", onRouteNodeUp);
-  $("#mon-refresh").addEventListener("click", () => { loadMetrics(); loadIfaceTraffic(); });
+  $("#mon-refresh").addEventListener("click", () => { loadMetrics(); loadIfaceTraffic(); loadNginxStatus(); });
+  $("#mon-nginx-provision").addEventListener("click", provisionNginxStatus);
+  $$(".nav-jump-monitoring").forEach((b) => b.addEventListener("click", () => showPage("monitoring")));
   $("#network-refresh").addEventListener("click", refreshNetworkTab);
   $("#subiface-toggle").addEventListener("change", (e) => saveSubifaceSetting(e.target.checked));
   $("#dns-add").addEventListener("click", () => addDnsRow(""));

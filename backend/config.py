@@ -67,6 +67,12 @@ DB_FILE = os.path.join(DATA_DIR, "mappings.json")
 # pages (see error_pages.py) — one file per status code or range, e.g.
 # "404.html" or "400-499.html".
 ERROR_PAGES_DIR = os.path.join(DATA_DIR, "error_pages")
+# Static renders of those pages for nginx to serve (a mapping's error_page
+# directives point here). Templates are Jinja2 for the dashboard; nginx can't
+# render them, so each is exported once with a generic context.
+ERROR_PAGES_NGINX_DIR = os.path.join(DATA_DIR, "error_pages_nginx")
+# URI prefix the L7 server block reserves for those pages (internal only).
+ERROR_PAGES_URI = "/__splitter_error/"
 
 # --- Network --------------------------------------------------------------
 # Network interface the new bind IPs are attached to (STEP A).
@@ -154,6 +160,13 @@ WAF_CONF = os.environ.get("SPLITTER_WAF_CONF",
 # a mapping "bound" to the WAF renders here instead of the stream.d directory.
 WAF_APP_CONF_DIR = os.environ.get("SPLITTER_WAF_APP_DIR",
                                   os.path.dirname(WAF_CONF))
+# Config snippets (Snippets page → Config snippets): each snippet is a file a
+# mapping's Advanced config / custom location pulls in with `include`. Lives
+# beside the L7 server blocks so the conf.d volume persists it. ".inc" files
+# are NOT matched by nginx.conf's conf.d/*.conf glob, so nothing is included
+# unless a mapping asks for it.
+SNIPPET_DIR = os.environ.get("SPLITTER_SNIPPET_DIR",
+                             os.path.join(WAF_APP_CONF_DIR, "splitter-snippets"))
 WAF_AUDIT_LOG = os.environ.get("SPLITTER_WAF_AUDIT_LOG",
                                "/var/log/modsec_audit.log")
 # Defaults for the rendered server block (all editable from the dashboard).

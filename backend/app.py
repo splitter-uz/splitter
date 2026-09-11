@@ -36,6 +36,10 @@ import metrics
 import net_detect
 import net_settings
 import nginx_manager as nm
+import nginx_status
+import config_snippets
+import logrotate
+import snippets
 import storage
 import waf
 
@@ -66,6 +70,9 @@ from validators import (
     clean_transport,
     clean_uint,
     clean_vlan_id,
+    clean_error_page_key,
+    clean_http_methods,
+    clean_backend,
 )
 
 
@@ -123,11 +130,11 @@ def _parse_lb(form):
         "hash_key": clean_hash_key(form.get("hash_key")),
         "hash_consistent": _truthy(form.get("hash_consistent")),
         "random_two": _truthy(form.get("random_two")),
-        "proxy_timeout": clean_time(form.get("proxy_timeout"), "proxy_timeout")
-                         or config.PROXY_TIMEOUT,
+        # Blank => None: a "timeouts" snippet (if picked) or the built-in
+        # default fills it at render time — see snippets.resolve().
+        "proxy_timeout": clean_time(form.get("proxy_timeout"), "proxy_timeout"),
         "proxy_connect_timeout": clean_time(
-            form.get("proxy_connect_timeout"), "proxy_connect_timeout")
-                         or config.PROXY_CONNECT_TIMEOUT,
+            form.get("proxy_connect_timeout"), "proxy_connect_timeout"),
     }
     return cfg
 
@@ -201,13 +208,43 @@ def _parse_http_opts(form):
                 continue
             path = (it.get("path") or "").strip()
             cfg = (it.get("config") or "").strip()
-            if not path or not cfg:
-                continue
+            # Optional per-location backend pool (host:port list) and the HTTP
+            # methods that should go to it — path- and method-based routing.
+            raw_be = it.get("backends") or []
+            if isinstance(raw_be, str):
+                raw_be = re.split(r"[\s,]+", raw_be)
+            backends = []
+            for be in raw_be:
+                if (be or "").strip():
+                    cleaned = clean_backend(be)
+                    if cleaned not in backends:
+                        backends.append(cleaned)
+            methods = clean_http_methods(it.get("methods") or [])
+            loc_snips = snippets.validate_refs(it.get("snippets") or [], allowed=snippets.LOCATION_KINDS)
+            if not path or (not cfg and not backends and not methods and not loc_snips):
+                continue   # empty row
             if not path.startswith("/") and not path.startswith("="):
                 raise ValidationError(f"Custom location path must start with '/' (got {path!r}).")
             if "\0" in path or "{" in path or "}" in path:
                 raise ValidationError(f"Invalid character in location path: {path!r}")
-            locations.append({"path": path, "config": cfg[:_LOCATION_CONFIG_MAX]})
+            if methods and not backends:
+                raise ValidationError(
+                    f"Location {path}: methods only choose which backend pool serves the "
+                    "request — add backends for this location (or clear the methods).")
+            # Several rows may share a path to split it by method (GET -> A,
+            # POST -> B, DELETE -> C): their method lists must not overlap, and
+            # at most one row per path may be the method-less default.
+            for other in locations:
+                if other["path"] != path:
+                    continue
+                if not methods and not other["methods"]:
+                    raise ValidationError(f"Location {path!r} is listed twice without methods — merge the two rows.")
+                clash = sorted(set(methods) & set(other["methods"]))
+                if clash:
+                    raise ValidationError(
+                        f"Location {path}: {', '.join(clash)} appears in two rows — each method can go to one pool only.")
+            locations.append({"path": path, "config": cfg[:_LOCATION_CONFIG_MAX],
+                              "backends": backends, "methods": methods, "snippets": loc_snips})
 
     return {
         "websocket_upgrade": _truthy(form.get("websocket_upgrade")),
@@ -226,7 +263,22 @@ def _parse_http_opts(form):
         "hsts_subdomains": hsts_subdomains,
         "advanced_config": (form.get("advanced_config") or "").strip()[:_ADVANCED_CONFIG_MAX],
         "locations": locations,
+        # Uploaded error pages (Snippets → Error pages) nginx should serve for
+        # their status codes on this L7 mapping. Keys as stored ("404", "500-599").
+        "error_pages": _parse_error_page_keys(form),
     }
+
+
+def _parse_error_page_keys(form):
+    available = {e["key"] for e in error_pages.list_custom()}
+    out = []
+    for raw in form.getlist("error_pages"):
+        key = clean_error_page_key(raw)
+        if key not in available:
+            raise ValidationError(f"No uploaded error page for {key!r} — add it on Snippets → Error pages first.")
+        if key not in out:
+            out.append(key)
+    return out
 
 
 def _truthy(v):
@@ -279,6 +331,36 @@ try:
     nm.migrate_conf_files(storage.list_mappings())
 except Exception as _exc:  # never let a migration hiccup stop the server
     app.logger.warning("conf-file migration skipped: %s", _exc)
+
+# Error pages selected on L7 mappings are served by nginx from static exports;
+# refresh them so a restored/fresh data dir has every file the configs expect.
+try:
+    error_pages.sync_static()
+except Exception as _exc:
+    app.logger.warning("error page export skipped: %s", _exc)
+
+# Config snippets are real nginx include files; re-create any that are missing
+# from conf.d (fresh volume, restore) so mappings that include them still load.
+try:
+    _written = config_snippets.sync_files()
+    if _written:
+        app.logger.info("config snippet files re-created: %s", ", ".join(_written))
+except Exception as _exc:
+    app.logger.warning("config snippet sync skipped: %s", _exc)
+
+# Make sure nginx exposes its stub_status counters for the Monitoring page.
+# Best-effort: a failure here is logged, never fatal — the page shows an
+# "Enable" button that re-runs the same provisioning on demand.
+try:
+    if not nginx_status.provisioned():
+        _ok, _steps = nginx_status.ensure_conf()
+        if _ok:
+            app.logger.info("nginx stub_status provisioned at %s", nginx_status.URL)
+        else:
+            app.logger.warning("nginx stub_status not provisioned: %s",
+                               "; ".join(f"{st['name']}: {st['detail']}" for st in _steps if not st["ok"]))
+except Exception as _exc:
+    app.logger.warning("nginx stub_status provisioning skipped: %s", _exc)
 
 
 # Every HTTP error status (routing 404/405, an aborted request, an
@@ -558,6 +640,18 @@ def update_settings():
     steps = []
     if "subinterface_enabled" in form:
         patch["subinterface_enabled"] = _truthy(form.get("subinterface_enabled"))
+    if "log_keep_days" in form:
+        try:
+            patch["log_keep_days"] = clean_uint(form.get("log_keep_days"), "keep days", lo=1) or 7
+            if patch["log_keep_days"] > 365:
+                return _err("keep days must be 1-365.")
+        except ValidationError as exc:
+            return _err(str(exc))
+        patch["log_compress"] = _truthy(form.get("log_compress"))
+        ms = (form.get("log_max_size") or "").strip()
+        if ms and not re.match(r"^\d+[kKmMgG]?$", ms):
+            return _err("max size must be a number with an optional k/M/G suffix, e.g. 100M.")
+        patch["log_max_size"] = ms
     if "default_access_list" in form:
         sel = (form.get("default_access_list") or "").strip()
         if sel and not storage.access_get(sel):
@@ -1337,6 +1431,25 @@ def host_metrics():
     return jsonify({"ok": True, "metrics": metrics.snapshot()})
 
 
+@app.get("/api/nginx/status")
+@require_role(*ANY_ROLE)
+def nginx_stub_status():
+    """Live nginx stub_status counters (http layer): active / reading / writing /
+    waiting connections, accepts / handled / requests totals and per-second rates."""
+    return jsonify({"ok": True, **nginx_status.snapshot()})
+
+
+@app.post("/api/nginx/status/provision")
+@require_role("admin")
+def nginx_stub_status_provision():
+    """(Re)write the loopback-only stub_status server block, validate with
+    nginx -t and reload. Idempotent."""
+    ok, steps = nginx_status.ensure_conf(force=_truthy(request.form.get("force")))
+    _audit("nginx.status.provision", detail="ok" if ok else "failed")
+    return jsonify({"ok": ok, "steps": steps, "url": nginx_status.URL,
+                    "error": None if ok else "Provisioning failed — see steps."})
+
+
 @app.get("/api/interfaces/traffic")
 @require_role(*ANY_ROLE)
 def interfaces_traffic():
@@ -1867,6 +1980,18 @@ def create_mapping():
     if access_list and access_list != "__default__" and not storage.access_get(access_list):
         return _err(f"No such access list: {access_list}")
 
+    # Log format snippet: "" => built-in access-log line, "<name>" => snippet.
+    log_format = (form.get("log_format") or "").strip()
+    if log_format and not storage.logfmt_get(log_format):
+        return _err(f"No such log format snippet: {log_format}")
+
+    # Snippets picked on the form ("kind:name"): rate limit, timeouts, log
+    # format, error pages, config snippets. Resolved at render time.
+    try:
+        snippet_refs = snippets.validate_refs(form.getlist("snippets"))
+    except ValidationError as exc:
+        return _err(str(exc))
+
     # --- assemble mapping & sub-interface naming ----------------------------
     if existing and isinstance(existing.get("subiface_index"), int):
         idx = existing["subiface_index"]
@@ -1899,6 +2024,8 @@ def create_mapping():
         "proxy_ssl": proxy_ssl,   # re-encrypt to backend
         "sni_guard": sni_guard,   # only serve this hostname (passthrough)
         "access_list": access_list,   # "" | "__default__" | "<name>" allow/deny list
+        "log_format": log_format,     # "" (built-in) | "<snippet name>" from the Snippets page
+        "snippets": snippet_refs,     # ["ratelimit:x", "timeouts:y", "logformat:z", "errorpage:404", "config:c"]
         # Whether this app is bound to the WAF (L7 HTTP reverse proxy + ModSecurity)
         # instead of the default L4 stream proxy. Preserved across edits; toggled
         # from the WAF page's "Protected apps" list.
@@ -1923,6 +2050,9 @@ def create_mapping():
     # `nginx -t` fail ("host not found in upstream") and rolls the mapping back.
     # Catch it here with an actionable message instead of that cryptic failure.
     bad_hosts = _unresolvable_backend_hosts(mapping.get("backends"))
+    bad_hosts += [h for h in _unresolvable_backend_hosts(
+        [b for loc in mapping.get("locations") or [] for b in loc.get("backends") or []])
+        if h not in bad_hosts]
     if bad_hosts:
         return _err(
             "Backend host(s) can't be resolved: " + ", ".join(bad_hosts) + ". "
@@ -2134,12 +2264,102 @@ def logs_overview():
                 size = os.path.getsize(path) if os.path.exists(path) else None
             except OSError:
                 size = None
+            archives = [f for f in logrotate.log_files(path) if not f["live"]]
             entry["logs"][kind] = {"path": path, "exists": size is not None,
-                                   "size": size}
+                                   "size": size, "archives": len(archives),
+                                   "archived_bytes": sum(f["size"] for f in archives)}
+        pol = logrotate.policy_for(m)
+        entry["rotation"] = {**pol, "text": logrotate.describe(pol)}
         items.append(entry)
     items.sort(key=lambda e: (e["domain"], e["port"]))
     return jsonify({"ok": True, "dir": config.LOG_DIR,
-                    "simulate": config.SIMULATE, "mappings": items})
+                    "simulate": config.SIMULATE, "mappings": items,
+                    "rotation": logrotate.status()})
+
+
+def _logs_target(domain, port, kind):
+    """Shared guard for the per-mapping log endpoints: the path comes from the
+    STORED mapping, never from user input. Returns (mapping, path) or raises."""
+    domain = clean_domain(domain)
+    if kind not in ("access", "error"):
+        raise ValidationError("kind must be 'access' or 'error'.")
+    mapping = storage.get(domain, port)
+    if not mapping:
+        raise LookupError("No such mapping.")
+    return mapping, nm.log_paths_for(domain, port)[kind]
+
+
+def _parse_when(raw):
+    """ISO-8601 (with offset or Z) => aware UTC datetime; None if blank."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValidationError(f"Bad timestamp {raw!r} — use ISO 8601, e.g. 2026-09-09T15:40:00+05:00")
+    if dt.tzinfo is None:
+        dt = dt.astimezone()   # treat as server-local
+    return dt.astimezone(datetime.timezone.utc)
+
+
+@app.get("/api/logs/<domain>/<int:port>/<kind>/search")
+@require_role("admin")
+def logs_search(domain, port, kind):
+    """Lines between ?from= and ?to= (ISO 8601) across the live log AND its
+    rotated archives (plain or .gz), optional ?q= substring, ?limit= cap."""
+    try:
+        _m, path = _logs_target(domain, port, kind)
+        start, end = _parse_when(request.args.get("from")), _parse_when(request.args.get("to"))
+    except ValidationError as exc:
+        return _err(str(exc))
+    except LookupError as exc:
+        return _err(str(exc), code=404)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    end = end or now
+    start = start or (end - datetime.timedelta(hours=1))
+    if start > end:
+        return _err("'from' must be before 'to'.")
+    if end - start > datetime.timedelta(days=62):
+        return _err("Window too large — search at most 62 days at a time.")
+    try:
+        limit = max(50, min(int(request.args.get("limit", 2000)), 10000))
+    except (TypeError, ValueError):
+        limit = 2000
+    q = (request.args.get("q") or "").strip() or None
+    res = logrotate.search(path, start, end, query=q, limit=limit)
+    return jsonify({"ok": True, "domain": domain, "port": port, "kind": kind,
+                    "from": start.isoformat(), "to": end.isoformat(), **res})
+
+
+@app.get("/api/logs/<domain>/<int:port>/<kind>/files")
+@require_role("admin")
+def logs_files(domain, port, kind):
+    """The live log and its rotated archives, oldest first."""
+    try:
+        mapping, path = _logs_target(domain, port, kind)
+    except ValidationError as exc:
+        return _err(str(exc))
+    except LookupError as exc:
+        return _err(str(exc), code=404)
+    pol = logrotate.policy_for(mapping)
+    return jsonify({"ok": True, "files": logrotate.log_files(path),
+                    "rotation": {**pol, "text": logrotate.describe(pol)}})
+
+
+@app.post("/api/logs/rotate")
+@require_role("admin")
+def logs_rotate_now():
+    """Run logrotate now (?force=1 rotates even if not due)."""
+    res = logrotate.run_once(force=_truthy(request.form.get("force")))
+    _audit("logs.rotate", detail="forced" if res.get("forced") else "scheduled")
+    return jsonify({"ok": bool(res.get("ok")), **res})
+
+
+@app.get("/api/logs/rotation")
+@require_role("admin")
+def logs_rotation_status():
+    return jsonify({"ok": True, **logrotate.status(), "conf": logrotate.render_conf()})
 
 
 @app.get("/api/logs/<domain>/<int:port>/<kind>")
@@ -2182,6 +2402,14 @@ def logs_download(domain, port, kind):
     if not storage.get(domain, port):
         return _err("No such mapping.", code=404)
     path = nm.log_paths_for(domain, port)[kind]
+    # ?file=<name> picks one of the rotated archives (validated against the
+    # listing, so it can only ever be a sibling of this mapping's own log).
+    want = (request.args.get("file") or "").strip()
+    if want:
+        match = next((f for f in logrotate.log_files(path) if f["name"] == want), None)
+        if not match:
+            return _err("No such archived log file.", code=404)
+        path = match["path"]
     if not os.path.exists(path):
         return _err("Log file not written yet.", code=404)
     try:
@@ -2189,7 +2417,11 @@ def logs_download(domain, port, kind):
             raw = fh.read()
     except OSError as exc:
         return _err(f"Could not read log file: {exc}", code=500)
-    fname = f"{domain}-{port}-{kind}.log"
+    fname = want or f"{domain}-{port}-{kind}.log"
+    if want.endswith(".gz"):
+        _audit("logs.download", target=f"{domain}:{port}", detail=want)
+        return Response(raw, mimetype="application/gzip",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
     _audit("logs.download", target=f"{domain}:{port}", detail=kind)
     return Response(raw, mimetype="text/plain",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
@@ -2211,14 +2443,349 @@ def list_activity():
 
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Log format snippets (Snippets page): named nginx log_format bodies that a
+# mapping can select (mapping form → Log format) instead of the built-in line.
+# --------------------------------------------------------------------------
+_LOGFMT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+_LOGFMT_CONTEXTS = ("stream", "http")
+_LOGFMT_ESCAPES = ("default", "json", "none")
+
+# Ready-made bodies the UI offers as starting points (never stored as-is).
+LOG_FORMAT_PRESETS = [
+    {"name": "stream_default", "context": "stream", "escape": "default",
+     "label": "Stream — built-in",
+     "description": "The default Layer-4 line: client, time, protocol, status, bytes, session time, upstream.",
+     "format": "$remote_addr [$time_local] $protocol $status \n"
+               "sent=$bytes_sent rcvd=$bytes_received time=$session_time upstream=\"$upstream_addr\""},
+    {"name": "stream_json", "context": "stream", "escape": "json",
+     "label": "Stream — JSON",
+     "description": "One JSON object per session, ready for Loki / Elasticsearch / jq.",
+     "format": "{\"ts\":\"$time_iso8601\",\"client\":\"$remote_addr\",\"proto\":\"$protocol\",\n"
+               "\"status\":$status,\"sni\":\"$ssl_preread_server_name\",\n"
+               "\"sent\":$bytes_sent,\"rcvd\":$bytes_received,\"session_time\":$session_time,\n"
+               "\"upstream\":\"$upstream_addr\",\"upstream_connect_time\":\"$upstream_connect_time\"}"},
+    {"name": "http_combined", "context": "http", "escape": "default",
+     "label": "HTTP — combined + timings",
+     "description": "Apache combined log plus request time and the upstream that served it.",
+     "format": "$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent \n"
+               "\"$http_referer\" \"$http_user_agent\" rt=$request_time upstream=$upstream_addr"},
+    {"name": "http_json", "context": "http", "escape": "json",
+     "label": "HTTP — JSON",
+     "description": "One JSON object per request with timings, sizes and the real client IP behind proxies.",
+     "format": "{\"ts\":\"$time_iso8601\",\"client\":\"$remote_addr\",\"xff\":\"$http_x_forwarded_for\",\n"
+               "\"host\":\"$host\",\"method\":\"$request_method\",\"uri\":\"$request_uri\",\n"
+               "\"status\":$status,\"bytes\":$body_bytes_sent,\"referer\":\"$http_referer\",\n"
+               "\"ua\":\"$http_user_agent\",\"rt\":$request_time,\"upstream\":\"$upstream_addr\",\n"
+               "\"upstream_rt\":\"$upstream_response_time\",\"ssl\":\"$ssl_protocol\"}"},
+    {"name": "http_minimal", "context": "http", "escape": "default",
+     "label": "HTTP — minimal",
+     "description": "Short line for busy sites: time, client, method, path, status, bytes, request time.",
+     "format": "$time_iso8601 $remote_addr $request_method $request_uri $status $body_bytes_sent $request_time"},
+]
+
+LOG_FORMAT_VARIABLES = {
+    "stream": ["$remote_addr", "$remote_port", "$server_addr", "$server_port", "$protocol",
+               "$status", "$bytes_sent", "$bytes_received", "$session_time", "$time_local",
+               "$time_iso8601", "$upstream_addr", "$upstream_bytes_sent", "$upstream_bytes_received",
+               "$upstream_connect_time", "$ssl_preread_server_name", "$ssl_server_name",
+               "$ssl_protocol", "$ssl_cipher"],
+    "http": ["$remote_addr", "$remote_user", "$time_local", "$time_iso8601", "$request",
+             "$request_method", "$request_uri", "$host", "$status", "$body_bytes_sent",
+             "$bytes_sent", "$request_time", "$request_length", "$http_referer",
+             "$http_user_agent", "$http_x_forwarded_for", "$upstream_addr",
+             "$upstream_status", "$upstream_response_time", "$ssl_protocol", "$ssl_cipher",
+             "$server_protocol", "$scheme"],
+}
+
+
+def _logfmt_public(rec):
+    return {**rec, "in_use": _mapping_labels(storage.logfmt_usage(rec["name"]))}
+
+
+@app.get("/api/log-formats")
+@require_role(*ANY_ROLE)
+def log_formats_list():
+    return jsonify({"ok": True,
+                    "formats": [_logfmt_public(r) for r in storage.logfmt_list()],
+                    "presets": LOG_FORMAT_PRESETS,
+                    "variables": LOG_FORMAT_VARIABLES})
+
+
+@app.post("/api/log-formats")
+@require_role("admin")
+def log_formats_save():
+    """Create or update a snippet. Mappings already using it are re-applied so
+    the new line takes effect (nginx -t protects against a broken format)."""
+    form = request.form
+    name = (form.get("name") or "").strip()
+    context = (form.get("context") or "stream").strip().lower()
+    escape = (form.get("escape") or "default").strip().lower()
+    fmt = (form.get("format") or "").replace("\r\n", "\n").strip("\n")
+    description = (form.get("description") or "").strip()[:200]
+    if not _LOGFMT_NAME_RE.match(name):
+        return _err("Name must start with a letter and use only letters, digits, _ or - (max 40).")
+    if context not in _LOGFMT_CONTEXTS:
+        return _err("Context must be 'stream' or 'http'.")
+    if escape not in _LOGFMT_ESCAPES:
+        return _err("Escape must be default, json or none.")
+    if not fmt.strip():
+        return _err("Format is empty.")
+    if len(fmt) > 4000:
+        return _err("Format is too long (max 4000 characters).")
+    if "$" not in fmt:
+        return _err("Format has no nginx variables ($remote_addr, $status, …) — every line would be identical.")
+    existing = storage.logfmt_get(name)
+    rec = {
+        "name": name, "context": context, "escape": escape, "format": fmt,
+        "description": description,
+        "created": (existing or {}).get("created", _now()), "updated": _now(),
+    }
+    storage.logfmt_add(rec)
+    _audit("logformat.save", target=name, detail=f"context={context} escape={escape}")
+
+    # Re-apply every enabled mapping that uses this snippet so its access_log
+    # switches to the new line now. A format nginx rejects fails that mapping's
+    # nginx -t and apply_mapping rolls it back to the previous config.
+    steps, failed = _reapply_mappings(storage.logfmt_usage(name))
+    resp = {"ok": not failed, "format": _logfmt_public(rec), "steps": steps}
+    if failed:
+        resp["error"] = ("Saved, but re-applying failed for: " + "; ".join(failed)
+                         + ". Those mappings were rolled back to their previous config.")
+    return jsonify(resp)
+
+
+@app.delete("/api/log-formats/<name>")
+@require_role("admin")
+def log_formats_delete(name):
+    used = _mapping_labels(storage.logfmt_usage(name))
+    if used:
+        return _err(f"'{name}' is used by {', '.join(used)} — switch those mappings to "
+                    "another log format first.", code=409)
+    if not storage.logfmt_remove(name):
+        return _err("No such log format snippet.", code=404)
+    _audit("logformat.delete", target=name)
+    return jsonify({"ok": True})
+
+
+# --------------------------------------------------------------------------
+# Config snippets (Snippets page): named blocks of raw nginx directives that a
+# mapping pulls in with `include` from its Advanced config / custom locations.
+# --------------------------------------------------------------------------
+def _cfgsnip_public(rec):
+    used = config_snippets.usage(rec["name"])
+    return {**rec,
+            "path": config_snippets.path_for(rec["name"]),
+            "include": config_snippets.include_line(rec["name"]),
+            "in_use": _mapping_labels(used)}
+
+
+@app.get("/api/config-snippets")
+@require_role(*ANY_ROLE)
+def config_snippets_list():
+    return jsonify({"ok": True,
+                    "snippets": [_cfgsnip_public(r) for r in storage.cfgsnip_list()],
+                    "presets": config_snippets.PRESETS,
+                    "dir": config.SNIPPET_DIR})
+
+
+@app.post("/api/config-snippets")
+@require_role("admin")
+def config_snippets_save():
+    form = request.form
+    name = (form.get("name") or "").strip()
+    scope = (form.get("scope") or "any").strip().lower()
+    content = (form.get("content") or "").replace("\r\n", "\n").strip("\n")
+    description = (form.get("description") or "").strip()[:200]
+    if not config_snippets.NAME_RE.match(name):
+        return _err("Name must start with a letter and use only letters, digits, _ or - (max 40).")
+    if scope not in config_snippets.SCOPES:
+        return _err("Scope must be server, location or any.")
+    if not content.strip():
+        return _err("Snippet content is empty.")
+    if len(content) > config_snippets.MAX_CONTENT:
+        return _err(f"Snippet is too long (max {config_snippets.MAX_CONTENT} characters).")
+    if content.count("{") != content.count("}"):
+        return _err("Unbalanced braces — every { needs a matching }.")
+    existing = storage.cfgsnip_get(name)
+    rec = {
+        "name": name, "scope": scope, "content": content, "description": description,
+        "created": (existing or {}).get("created", _now()), "updated": _now(),
+    }
+    ok, steps = config_snippets.write_snippet(rec)
+    if not ok:
+        # Keep the store consistent with what is on disk: the previous version
+        # (if any) is what nginx is still running with.
+        failed = "; ".join(f"{st['name']}: {st.get('detail', '')}" for st in steps if not st.get("ok"))
+        return _err("nginx rejected the snippet — nothing changed. " + failed, steps=steps)
+    storage.cfgsnip_add(rec)
+    _audit("snippet.save", target=name, detail=f"scope={scope}")
+    return jsonify({"ok": True, "snippet": _cfgsnip_public(rec), "steps": steps})
+
+
+@app.delete("/api/config-snippets/<name>")
+@require_role("admin")
+def config_snippets_delete(name):
+    if not storage.cfgsnip_get(name):
+        return _err("No such config snippet.", code=404)
+    used = _mapping_labels(config_snippets.usage(name))
+    if used:
+        return _err(f"'{name}' is included by {', '.join(used)} — remove it from "
+                    "those mappings first.", code=409)
+    storage.cfgsnip_remove(name)
+    step = config_snippets.remove_snippet_file(name)
+    _audit("snippet.delete", target=name)
+    return jsonify({"ok": True, "steps": [step]})
+
+
+# --------------------------------------------------------------------------
+# Snippets — the unified catalogue for the mapping form's picker, plus CRUD for
+# the two generic kinds (rate limits, timeouts). Log formats, error pages and
+# config snippets keep their own endpoints above / below.
+# --------------------------------------------------------------------------
+_SNIP_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+
+
+def _mapping_labels(mappings):
+    return [f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}" for m in mappings]
+
+
+def _reapply_mappings(mappings):
+    """Re-apply enabled mappings (after something they render from changed).
+    Returns (steps, failed_labels)."""
+    steps, failed = [], []
+    for m in mappings:
+        if not m.get("enabled", True):
+            continue
+        label = f"{m['domain']}:{m.get('listen_port') or config.LISTEN_PORT}"
+        try:
+            steps.extend({**st, "name": f"[{label}] {st['name']}"} for st in nm.apply_mapping(m))
+        except nm.ProvisionError as exc:
+            failed.append(f"{label}: {exc}")
+            steps.extend({**st, "name": f"[{label}] {st['name']}"} for st in (exc.steps or []))
+    return steps, failed
+
+
+def _snip_public(kind, rec):
+    return {**rec, "kind": kind, "ref": f"{kind}:{rec['name']}",
+            "summary": snippets.describe(kind, rec),
+            "in_use": _mapping_labels(storage.snip_usage(f"{kind}:{rec['name']}"))}
+
+
+@app.get("/api/snippets")
+@require_role(*ANY_ROLE)
+def snippets_catalog():
+    """Everything the mapping form's Snippets picker can offer, by kind."""
+    kinds = {
+        "ratelimit": [_snip_public("ratelimit", r) for r in storage.snip_list("ratelimit")],
+        "timeouts": [_snip_public("timeouts", r) for r in storage.snip_list("timeouts")],
+        "logrotate": [_snip_public("logrotate", r) for r in storage.snip_list("logrotate")],
+        "logformat": [{"name": r["name"], "ref": f"logformat:{r['name']}", "context": r["context"],
+                       "summary": r["context"] + (f", escape={r['escape']}" if r.get("escape") not in (None, "default") else "")}
+                      for r in storage.logfmt_list()],
+        "errorpage": [{"name": e["key"], "ref": f"errorpage:{e['key']}", "summary": ""}
+                      for e in error_pages.list_custom() if error_pages.nginx_codes(e["key"])],
+        "config": [{"name": r["name"], "ref": f"config:{r['name']}", "scope": r.get("scope", "any"),
+                    "summary": r.get("description") or ""}
+                   for r in storage.cfgsnip_list()],
+    }
+    return jsonify({"ok": True, "kinds": kinds,
+                    "labels": {k: v["label"] for k, v in snippets.KINDS.items()}})
+
+
+def _snip_kind_or_404(kind):
+    if kind not in ("ratelimit", "timeouts", "logrotate"):
+        return _err("Unknown snippet kind — this endpoint serves ratelimit, timeouts and logrotate.", code=404)
+    return None
+
+
+@app.get("/api/snippets/<kind>")
+@require_role(*ANY_ROLE)
+def snippets_kind_list(kind):
+    bad = _snip_kind_or_404(kind)
+    if bad:
+        return bad
+    return jsonify({"ok": True, "items": [_snip_public(kind, r) for r in storage.snip_list(kind)]})
+
+
+@app.post("/api/snippets/<kind>")
+@require_role("admin")
+def snippets_kind_save(kind):
+    bad = _snip_kind_or_404(kind)
+    if bad:
+        return bad
+    form = request.form
+    name = (form.get("name") or "").strip()
+    if not _SNIP_NAME_RE.match(name):
+        return _err("Name must start with a letter and use only letters, digits, _ or - (max 40).")
+    rec = {"name": name, "description": (form.get("description") or "").strip()[:200]}
+    try:
+        if kind == "ratelimit":
+            rec["limit_conn"] = clean_uint(form.get("limit_conn"), "max connections", lo=1)
+            rec["proxy_download_rate"] = clean_rate(form.get("proxy_download_rate"), "download rate")
+            rec["proxy_upload_rate"] = clean_rate(form.get("proxy_upload_rate"), "upload rate")
+            if not any(rec[k] for k in snippets.RATE_FIELDS):
+                return _err("Set at least one limit (max connections, download or upload rate).")
+        elif kind == "timeouts":
+            rec["proxy_timeout"] = clean_time(form.get("proxy_timeout"), "proxy_timeout")
+            rec["proxy_connect_timeout"] = clean_time(form.get("proxy_connect_timeout"), "proxy_connect_timeout")
+            if not any(rec[k] for k in snippets.TIMEOUT_FIELDS):
+                return _err("Set at least one timeout.")
+        else:   # logrotate
+            rec["keep_days"] = clean_uint(form.get("keep_days"), "keep days", lo=1)
+            if not rec["keep_days"] or rec["keep_days"] > 365:
+                return _err("keep days must be 1-365.")
+            rec["compress"] = _truthy(form.get("compress"))
+            ms = (form.get("max_size") or "").strip()
+            if ms and not re.match(r"^\d+[kKmMgG]?$", ms):
+                return _err("max size must be a number with an optional k/M/G suffix, e.g. 100M.")
+            rec["max_size"] = ms or None
+    except ValidationError as exc:
+        return _err(str(exc))
+    existing = storage.snip_get(kind, name)
+    rec["created"] = (existing or {}).get("created", _now())
+    rec["updated"] = _now()
+    storage.snip_add(kind, rec)
+    _audit(f"snippet.{kind}.save", target=name, detail=snippets.describe(kind, rec))
+    if kind == "logrotate":
+        return jsonify({"ok": True, "item": _snip_public(kind, rec), "steps": []})   # picked up on the next rotation run
+    steps, failed = _reapply_mappings(storage.snip_usage(f"{kind}:{name}"))
+    resp = {"ok": not failed, "item": _snip_public(kind, rec), "steps": steps}
+    if failed:
+        resp["error"] = ("Saved, but re-applying failed for: " + "; ".join(failed)
+                         + ". Those mappings were rolled back to their previous config.")
+    return jsonify(resp)
+
+
+@app.delete("/api/snippets/<kind>/<name>")
+@require_role("admin")
+def snippets_kind_delete(kind, name):
+    bad = _snip_kind_or_404(kind)
+    if bad:
+        return bad
+    if not storage.snip_get(kind, name):
+        return _err("No such snippet.", code=404)
+    used = _mapping_labels(storage.snip_usage(f"{kind}:{name}"))
+    if used:
+        return _err(f"'{name}' is used by {', '.join(used)} — pick another snippet there first.", code=409)
+    storage.snip_remove(kind, name)
+    _audit(f"snippet.{kind}.delete", target=name)
+    return jsonify({"ok": True})
+
+
 # Custom error pages (admin only) — see error_pages.py. A key is either an
 # exact HTTP status code ("404") or an inclusive range ("400-499").
 # --------------------------------------------------------------------------
 @app.get("/api/error-pages")
-@require_role("admin")
+@require_role(*ANY_ROLE)
 def error_pages_list():
-    return jsonify({"ok": True, "pages": error_pages.list_custom(),
-                    "builtin": error_pages.builtin_codes()})
+    pages = []
+    for e in error_pages.list_custom():
+        used = error_pages.usage(e["key"])
+        pages.append({**e, "in_use": _mapping_labels(used),
+                      "nginx_codes": len(error_pages.nginx_codes(e["key"]))})
+    return jsonify({"ok": True, "pages": pages, "builtin": error_pages.builtin_codes(),
+                    "uri": config.ERROR_PAGES_URI})
 
 
 @app.post("/api/error-pages")
@@ -2246,9 +2813,13 @@ def error_pages_upload():
 @require_role("admin")
 def error_pages_delete(key):
     try:
-        removed = error_pages.delete_custom(key)
+        key = clean_error_page_key(key)
     except ValidationError as exc:
         return _err(str(exc))
+    used = _mapping_labels(error_pages.usage(key))
+    if used:
+        return _err(f"Error page {key} is selected on {', '.join(used)} — untick it there first.", code=409)
+    removed = error_pages.delete_custom(key)
     if not removed:
         return _err("No custom page for that key.", code=404)
     _audit("error_page.delete", target=key)
@@ -2521,6 +3092,10 @@ def preview_conf():
             cert_domain = clean_domain(form.get("ssl_existing"))
         except ValidationError:
             cert_domain, has_cert = domain, False
+    try:
+        snippet_refs = snippets.validate_refs(form.getlist("snippets"))
+    except ValidationError as exc:
+        return _err(str(exc))
     mapping = {
         "domain": domain, "bind_ip": bind_ip, "has_cert": has_cert,
         "listen_port": listen_port,
@@ -2528,10 +3103,22 @@ def preview_conf():
         "cert_domain": cert_domain, "proxy_ssl": _truthy(form.get("proxy_ssl")),
         "sni_guard": _truthy(form.get("sni_guard")),
         "access_list": (form.get("access_list") or "").strip(),
+        "log_format": (form.get("log_format") or "").strip(),
+        "snippets": snippet_refs,
         "upstream_name": nm.upstream_name(domain, listen_port),
     }
     mapping.update(lb)
     mapping.update(rate)
+    if _truthy(form.get("l7")):
+        # Reverse Proxy / WAF form: render the L7 server block (custom
+        # locations with their path/method routing, error pages, …).
+        try:
+            mapping.update(_parse_http_opts(form))
+        except ValidationError as exc:
+            return _err(str(exc))
+        mapping["waf_bound"] = True
+        conf = nm.render_http_conf(mapping)
+        return jsonify({"ok": True, "conf": conf, "path": nm.http_conf_path_for(domain, listen_port)})
     conf = nm.render_conf(mapping)
     return jsonify({"ok": True, "conf": conf, "path": nm.conf_path_for(domain, listen_port)})
 
@@ -3113,6 +3700,7 @@ if __name__ == "__main__":
     access.sync_all()          # materialise acl.d snippets (self-healing on boot)
     access.start_scheduler()   # background re-fetch of auto-refreshing lists
     failover.start_scheduler() # active-passive priority failover orchestration
+    logrotate.start_scheduler() # per-mapping nginx log rotation (hourly check, daily rotate)
     docker_reconcile.start_scheduler()  # keep docker-backed backends' IPs current (poll)
     docker_events.start_watcher()       # + react instantly to Docker events (Traefik-style)
     firewall.sync_all()        # re-apply per-interface iptables rules (self-healing on boot)

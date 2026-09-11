@@ -303,6 +303,13 @@ _SETTINGS_DEFAULTS = {
     # Name of the access list applied to mappings set to "use global default"
     # ("" => no default; those mappings stay open). See access.py.
     "default_access_list": "",
+    # Default per-mapping log rotation (logrotate.py); a "logrotate" snippet on
+    # a mapping overrides it. keep_days: rotated files older than this are
+    # deleted; compress: gzip rotated files; max_size: also rotate when the
+    # live file exceeds this (e.g. "100M"), blank = daily only.
+    "log_keep_days": 7,
+    "log_compress": True,
+    "log_max_size": "",
     # WAF (ModSecurity) server-block settings, editable on the WAF page. Engine
     # mode is NOT here — it lives in the ModSecurity config on the host (see
     # waf.py). These only drive the rendered nginx server block.
@@ -554,6 +561,201 @@ def access_in_use(name, exclude_domain=None):
             if f.get("access_list") == name:
                 return f["name"]
     return None
+
+
+# --------------------------------------------------------------------------
+# Log format snippets (Snippets page) — named nginx log_format bodies a mapping
+# can select instead of the built-in access-log line.
+# --------------------------------------------------------------------------
+_LOGFMT_FILE = os.path.join(config.DATA_DIR, "log_formats.json")
+
+
+def _read_logfmt():
+    try:
+        with open(_LOGFMT_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_logfmt(data):
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=config.DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+        os.replace(tmp, _LOGFMT_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def logfmt_list():
+    with _lock:
+        return sorted(_read_logfmt().values(), key=lambda r: r["name"])
+
+
+def logfmt_get(name):
+    with _lock:
+        return _read_logfmt().get(name)
+
+
+def logfmt_add(rec):
+    with _lock:
+        data = _read_logfmt()
+        data[rec["name"]] = rec
+        _write_logfmt(data)
+        return rec
+
+
+def logfmt_remove(name):
+    with _lock:
+        data = _read_logfmt()
+        removed = data.pop(name, None)
+        _write_logfmt(data)
+        return removed
+
+
+def logfmt_usage(name):
+    """Mappings using log format `name` (snippet ref, or the legacy inline field)."""
+    ref = f"logformat:{name}"
+    with _lock:
+        return [m for m in _read_all().values()
+                if ref in (m.get("snippets") or []) or m.get("log_format") == name]
+
+
+# --------------------------------------------------------------------------
+# Config snippets (Snippets page) — named blocks of raw nginx directives that
+# a mapping includes from its Advanced config / custom locations.
+# --------------------------------------------------------------------------
+_CFGSNIP_FILE = os.path.join(config.DATA_DIR, "config_snippets.json")
+
+
+def _read_cfgsnip():
+    try:
+        with open(_CFGSNIP_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_cfgsnip(data):
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=config.DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+        os.replace(tmp, _CFGSNIP_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def cfgsnip_list():
+    with _lock:
+        return sorted(_read_cfgsnip().values(), key=lambda r: r["name"])
+
+
+def cfgsnip_get(name):
+    with _lock:
+        return _read_cfgsnip().get(name)
+
+
+def cfgsnip_add(rec):
+    with _lock:
+        data = _read_cfgsnip()
+        data[rec["name"]] = rec
+        _write_cfgsnip(data)
+        return rec
+
+
+def cfgsnip_remove(name):
+    with _lock:
+        data = _read_cfgsnip()
+        removed = data.pop(name, None)
+        _write_cfgsnip(data)
+        return removed
+
+
+def cfgsnip_usage(token, ref=None):
+    """Mappings whose Advanced config or any custom location contains `token`
+    (the snippet's include path), or that selected the snippet `ref`."""
+    with _lock:
+        out = []
+        for m in _read_all().values():
+            texts = [m.get("advanced_config") or ""]
+            texts += [(loc or {}).get("config") or "" for loc in (m.get("locations") or [])]
+            refs = list(m.get("snippets") or [])
+            refs += [r for loc in (m.get("locations") or []) for r in ((loc or {}).get("snippets") or [])]
+            if any(token in t for t in texts) or (ref and ref in refs):
+                out.append(m)
+        return out
+
+
+# --------------------------------------------------------------------------
+# Generic snippet kinds (rate limits, timeouts) — one JSON file keyed by kind.
+# --------------------------------------------------------------------------
+_SNIP_FILE = os.path.join(config.DATA_DIR, "snippets.json")
+
+
+def _read_snips():
+    try:
+        with open(_SNIP_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_snips(data):
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=config.DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+        os.replace(tmp, _SNIP_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def snip_list(kind):
+    with _lock:
+        return sorted(_read_snips().get(kind, {}).values(), key=lambda r: r["name"])
+
+
+def snip_get(kind, name):
+    with _lock:
+        return _read_snips().get(kind, {}).get(name)
+
+
+def snip_add(kind, rec):
+    with _lock:
+        data = _read_snips()
+        data.setdefault(kind, {})[rec["name"]] = rec
+        _write_snips(data)
+        return rec
+
+
+def snip_remove(kind, name):
+    with _lock:
+        data = _read_snips()
+        removed = data.get(kind, {}).pop(name, None)
+        _write_snips(data)
+        return removed
+
+
+def snip_usage(ref):
+    """Mappings whose `snippets` (or any custom location's) contain `ref`."""
+    with _lock:
+        out = []
+        for m in _read_all().values():
+            if ref in (m.get("snippets") or []) or any(
+                    ref in ((loc or {}).get("snippets") or []) for loc in (m.get("locations") or [])):
+                out.append(m)
+        return out
 
 
 def export_all():

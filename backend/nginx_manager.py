@@ -20,6 +20,7 @@ import tempfile
 import time
 
 import config
+import snippets
 import storage
 
 
@@ -633,7 +634,44 @@ def _apply_failover(mapping, backends):
             for b in backends]
 
 
+def _nginx_quote(text):
+    """Single-quoted nginx string literal. Backslashes and single quotes are
+    escaped the way ngx_conf_read_token expects."""
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def log_format_lines(mapping, fmt_name, context, default_lines):
+    """The `log_format <fmt_name> ...;` block for a mapping.
+
+    If the mapping selected a log-format snippet (Snippets page) whose context
+    matches (`stream` for the L4 proxy, `http` for the L7 reverse proxy), its
+    body replaces the built-in line — each line of the snippet becomes one
+    quoted string, concatenated by nginx exactly like the default below.
+    Otherwise (no selection, unknown name, or a snippet for the other context)
+    the built-in `default_lines` are emitted unchanged.
+    """
+    sel = (mapping.get("log_format") or "").strip()
+    snip = storage.logfmt_get(sel) if sel else None
+    if not snip:
+        return list(default_lines) + [""]
+    if snip.get("context") != context:
+        return [f"# log format snippet '{sel}' is for the {snip.get('context')} "
+                f"context — using the built-in {context} format instead."] + \
+               list(default_lines) + [""]
+    esc = f" escape={snip['escape']}" if snip.get("escape") in ("json", "none") else ""
+    parts = [ln for ln in (snip.get("format") or "").splitlines() if ln.strip()] or [""]
+    head = f"log_format {fmt_name}{esc} "
+    out = [f"# log format snippet: {sel}"]
+    for i, part in enumerate(parts):
+        prefix = head if i == 0 else " " * len(head)
+        tail = ";" if i == len(parts) - 1 else ""
+        out.append(f"{prefix}{_nginx_quote(part)}{tail}")
+    out.append("")
+    return out
+
+
 def render_conf(mapping):
+    mapping = snippets.resolve(mapping)   # selected snippets => plain fields
     backends = _apply_failover(mapping, _normalize_backends(mapping))
     name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT)
     port = mapping.get("listen_port") or config.LISTEN_PORT
@@ -699,12 +737,11 @@ def render_conf(mapping):
     log_paths = log_paths_for(mapping["domain"], port)
     sni_src = "$ssl_server_name" if terminate else (
         "$ssl_preread_server_name" if ssl_preread else "")
-    lines += [
+    lines += log_format_lines(mapping, f"{name}_fmt", "stream", [
         f"log_format {name}_fmt '$remote_addr [$time_local] $protocol $status '",
         f"                       'host=\"{sni_src}\" sent=$bytes_sent "
         "rcvd=$bytes_received time=$session_time upstream=\"$upstream_addr\"';",
-        "",
-    ]
+    ])
 
     if sni_guard:
         lines += [
@@ -939,6 +976,32 @@ def _websocket_headers(indent="        "):
     ]
 
 
+def _error_page_lines(mapping):
+    """`error_page` directives for the custom pages a mapping selected
+    (Snippets → Error pages), served from their static exports through an
+    internal-only location. proxy_intercept_errors makes backend responses
+    with those codes use the page too, not just nginx's own (502/504…)."""
+    keys = [k for k in (mapping.get("error_pages") or []) if isinstance(k, str)]
+    if not keys:
+        return []
+    out = ["", "    # --- Custom error pages (Snippets → Error pages) ---",
+           "    proxy_intercept_errors on;"]
+    for key in keys:
+        lo, hi = (key.split("-") + [None])[:2]
+        try:
+            lo = int(lo); hi = int(hi) if hi else lo
+        except ValueError:
+            continue
+        codes = [c for c in range(lo, hi + 1) if 300 <= c <= 599]
+        if codes:
+            out.append(f"    error_page {' '.join(map(str, codes))} {config.ERROR_PAGES_URI}{key}.html;")
+    out += [f"    location ^~ {config.ERROR_PAGES_URI} {{",
+            f"        alias {config.ERROR_PAGES_NGINX_DIR}/;",
+            "        internal;",
+            "    }", ""]
+    return out
+
+
 def render_http_conf(mapping):
     """Render the L7 HTTP reverse-proxy + ModSecurity server block.
 
@@ -949,6 +1012,7 @@ def render_http_conf(mapping):
     only apply once `has_cert` is set (TLS termination) except WebSocket/HTTP2/
     custom-locations/advanced-config, which apply regardless.
     """
+    mapping = snippets.resolve(mapping)   # selected snippets => plain fields
     backends = _apply_failover(mapping, _normalize_backends(mapping))
     name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT) + "_http"
     port = mapping.get("listen_port") or config.LISTEN_PORT
@@ -982,16 +1046,73 @@ def render_http_conf(mapping):
         lines.append(_server_line(b, method))
     lines += ["}", ""]
 
+    # Rate limit (HTTP equivalents of the stream directives): a per-IP
+    # connection cap needs an http{}-level zone — this file is included from
+    # conf.d inside http{}, so declare it here, scoped to this mapping.
+    rate_limit = bool(mapping.get("rate_limit"))
+    limit_conn = mapping.get("limit_conn") if rate_limit else None
+    down_rate = mapping.get("proxy_download_rate") if rate_limit else None
+    conn_zone = f"{name}_conn"
+    if limit_conn or any(snippets.location_uses_ratelimit(loc) for loc in locations):
+        lines.append(f"limit_conn_zone $binary_remote_addr zone={conn_zone}:10m;")
+        lines.append("")
+
+    # Path / method routing. Rows are grouped by path: every row with its own
+    # backend pool becomes an upstream; rows with a method list feed one
+    # `map $request_method` per path that picks the pool for those methods
+    # (default = the path's method-less row's pool, else the main pool). So
+    # "GET -> A, POST -> B, DELETE -> C" is three rows on one path. A "/" group
+    # doesn't get its own block: it re-targets the default location below.
+    groups = []                     # [{path, config_lines, target}] in first-seen order
+    by_path = {}
+    for loc in locations:
+        g = by_path.get(loc["path"])
+        if g is None:
+            g = by_path[loc["path"]] = {"path": loc["path"], "rows": []}
+            groups.append(g)
+        g["rows"].append(loc)
+    for k, g in enumerate(groups, 1):
+        pools = {}                  # id(row) -> upstream name
+        for i, row in enumerate(g["rows"], 1):
+            pool = row.get("backends") or []
+            if not pool:
+                continue
+            up = f"{name}_p{k}" if len(g["rows"]) == 1 else f"{name}_p{k}r{i}"
+            pools[id(row)] = up
+            lines.append(f"# location {g['path']}" + (f" — {', '.join(row['methods'])}" if row.get("methods") else " — own backend pool"))
+            lines.append(f"upstream {up} {{")
+            for be in pool:
+                lines.append(f"    server {be};")
+            lines += ["}", ""]
+        default_row = next((r for r in g["rows"] if not r.get("methods")), None)
+        default_target = pools.get(id(default_row), name) if default_row else name
+        method_rows = [r for r in g["rows"] if r.get("methods")]
+        if method_rows:
+            var = f"${name}_p{k}_target"
+            lines.append(f"# location {g['path']} — pick the pool by request method")
+            lines.append(f"map $request_method {var} {{")
+            lines.append(f"    default  {default_target};")
+            for r in method_rows:
+                for m in r["methods"]:
+                    lines.append(f"    {m:<8} {pools[id(r)]};")
+            lines += ["}", ""]
+            g["target"] = var
+        else:
+            g["target"] = default_target
+        g["config_lines"] = [ln for r in g["rows"]
+                             for ln in snippets.location_lines(r, conn_zone) + (r.get("config") or "").splitlines()]
+    root_group = next((g for g in groups if g["path"] == "/"), None)
+    groups = [g for g in groups if g is not root_group]
+
     # Per-mapping traffic log (full HTTP line — this is an L7 proxy). The
     # format name is global to http{}, so scope it to this mapping.
     log_paths = log_paths_for(mapping["domain"], port)
-    lines += [
+    lines += log_format_lines(mapping, f"{name}_fmt", "http", [
         f"log_format {name}_fmt '$remote_addr - $remote_user [$time_local] "
         "\"$request\" $status $body_bytes_sent '",
         "                       '\"$http_referer\" \"$http_user_agent\" "
         "rt=$request_time upstream=$upstream_addr';",
-        "",
-    ]
+    ])
 
     # Force-HTTPS redirect: a companion server{} in the SAME file, on :80, for
     # this domain only. Safe to coexist with other mappings on the same
@@ -1014,6 +1135,16 @@ def render_http_conf(mapping):
     lines.append("server {")
     lines.append(f"    access_log {log_paths['access']} {name}_fmt;")
     lines.append(f"    error_log  {log_paths['error']} warn;")
+    if limit_conn:
+        lines.append(f"    limit_conn {conn_zone} {limit_conn};   # max connections per client IP")
+    if down_rate:
+        lines.append(f"    limit_rate {down_rate};   # bytes/sec per connection (download)")
+    # Upload rate has no per-connection HTTP counterpart; it only applies to stream.
+    if mapping.get("proxy_connect_timeout"):
+        lines.append(f"    proxy_connect_timeout {mapping['proxy_connect_timeout']};")
+    if mapping.get("proxy_timeout"):
+        lines.append(f"    proxy_read_timeout {mapping['proxy_timeout']};")
+        lines.append(f"    proxy_send_timeout {mapping['proxy_timeout']};")
     if terminate:
         # The `listen ... http2;` parameter (rather than the newer standalone
         # `http2 on;` directive, which needs nginx 1.25.1+) works unchanged on
@@ -1049,16 +1180,16 @@ def render_http_conf(mapping):
     # admin's raw config PLUS the same standard proxy_pass + headers the
     # default location uses — the custom body adds path-specific behaviour
     # (headers, rewrites, timeouts…) rather than redefining the backend.
-    for loc in locations:
-        lines.append(f"    location {loc['path']} {{")
-        for raw_line in loc["config"].splitlines():
+    for g in groups:
+        lines.append(f"    location {g['path']} {{")
+        for raw_line in g["config_lines"]:
             lines.append(f"        {raw_line}")
         if websocket:
             lines += _websocket_headers()
         elif http11_only:
             lines.append("        proxy_http_version 1.1;")
         lines += _proxy_headers(client_scheme, hsts_line)
-        lines.append(f"        proxy_pass {scheme}://{name};")
+        lines.append(f"        proxy_pass {scheme}://{g['target']};")
         lines.append("    }")
 
     if mapping.get("advanced_config"):
@@ -1067,13 +1198,19 @@ def render_http_conf(mapping):
         lines.append(mapping["advanced_config"])
         lines.append("")
 
+    lines += _error_page_lines(mapping)
+
     lines.append("    location / {")
+    if root_group:
+        for raw_line in root_group["config_lines"]:
+            lines.append(f"        {raw_line}")
     if websocket:
         lines += _websocket_headers()
     elif http11_only:
         lines.append("        proxy_http_version 1.1;")
     lines += _proxy_headers(client_scheme, hsts_line)
-    lines.append(f"        proxy_pass {scheme}://{name};")
+    root_target = root_group["target"] if root_group else name
+    lines.append(f"        proxy_pass {scheme}://{root_target};")
     lines.append("    }")
     lines += ["}", ""]
     return "\n".join(lines)

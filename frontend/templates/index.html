@@ -154,6 +154,15 @@
     #sidebar-nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border: none; background-clip: padding-box; }
     #sidebar-nav::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.32); background-clip: padding-box; }
 
+    /* Info tooltips: an (i) icon next to a form label; hovering/focusing it
+       shows a floating description (see initInfoTips() in app.js). The pop-up
+       is position:fixed on <body> so it's never clipped by a card's overflow. */
+    .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: .35rem; padding: 0; flex: none; border-radius: 9999px; border: 1px solid #cbd5e1; background: #fff; color: #94a3b8; font: 700 9.5px/1 ui-sans-serif, system-ui, sans-serif; vertical-align: -1px; cursor: help; }
+    .info-tip:hover, .info-tip:focus-visible { border-color: #38bdf8; color: #0284c7; background: #f0f9ff; outline: none; }
+    #info-tip-pop { position: fixed; z-index: 1000; max-width: 300px; background: #0f172a; color: #e2e8f0; font-size: 12px; line-height: 1.45; padding: .55rem .7rem; border-radius: .5rem; box-shadow: 0 12px 30px -10px rgba(15,23,42,.6); white-space: pre-line; pointer-events: none; }
+    #info-tip-pop::after { content: ""; position: absolute; left: var(--arrow-x, 50%); top: 100%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: #0f172a; }
+    #info-tip-pop.below::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: #0f172a; }
+
     @media (prefers-reduced-motion: reduce) {
       *, body { animation: none !important; transition: none !important; }
     }
@@ -228,9 +237,9 @@
           <span>Firewall</span>
           <span id="nav-firewall-badge" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-200 hidden">off</span>
         </button>
-        <button data-page="errorpages" id="nav-errorpages" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
-          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>
-          <span>Error Pages</span>
+        <button data-page="snippets" id="nav-snippets" class="nav-link hidden w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400">
+          <svg class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"/></svg>
+          <span>Snippets</span>
         </button>
       </nav>
 
@@ -400,14 +409,14 @@
                   <input type="hidden" name="orig_port" id="orig_port" value="">
                   <!-- Identity -->
                   <div>
-                    <label class="block text-sm font-medium mb-1">Domain Name</label>
+                    <label class="block text-sm font-medium mb-1">Domain Name<button type="button" class="info-tip" aria-label="More info" data-tip="The hostname clients connect to. With TLS passthrough it is matched against the SNI the client sends; on a terminated / reverse-proxy mapping it becomes the nginx server_name. The same domain can be mapped on several listen ports.">i</button></label>
                     <input name="domain" id="domain" required placeholder="site4.example.com"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                   </div>
 
                   <!-- Transport (TCP / UDP) -->
                   <div>
-                    <label class="block text-sm font-medium mb-1">Transport</label>
+                    <label class="block text-sm font-medium mb-1">Transport<button type="button" class="info-tip" aria-label="More info" data-tip="TCP for connection-based services (HTTP, databases, SSH, RDP). UDP for datagram protocols such as DNS, WireGuard, QUIC and NTP.">i</button></label>
                     <div class="flex gap-2">
                       <label class="flex-1 cursor-pointer">
                         <input type="radio" name="transport" value="tcp" class="peer sr-only" checked />
@@ -423,7 +432,7 @@
                   <!-- Protocol (filtered by transport) + listen port -->
                   <div class="grid grid-cols-2 gap-3">
                     <div>
-                      <label class="block text-sm font-medium mb-1">Protocol</label>
+                      <label class="block text-sm font-medium mb-1">Protocol<button type="button" class="info-tip" aria-label="More info" data-tip="A preset that fills in the usual port and matches the chosen transport. Pick Custom… to enter any port.">i</button></label>
                       <select name="protocol" id="protocol"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
                         <option value="https" data-port="443" data-transport="tcp">HTTPS — 443 (TLS)</option>
@@ -442,7 +451,7 @@
                       </select>
                     </div>
                     <div>
-                      <label class="block text-sm font-medium mb-1">Listen Port</label>
+                      <label class="block text-sm font-medium mb-1">Listen Port<button type="button" class="info-tip" aria-label="More info" data-tip="The port this mapping accepts connections on at its bind IP. Port 443 enables the TLS termination options further down.">i</button></label>
                       <input name="listen_port" id="listen_port" type="number" min="1" max="65535" value="443"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                     </div>
@@ -450,7 +459,7 @@
                   <p id="port-ssl-hint" class="text-xs text-slate-400 -mt-2">Port 443 → TLS termination (configure a certificate below).</p>
 
                   <div id="parent-iface-block">
-                    <label class="block text-sm font-medium mb-1">Parent Interface</label>
+                    <label class="block text-sm font-medium mb-1">Parent Interface<button type="button" class="info-tip" aria-label="More info" data-tip="The host NIC (or bridge) this mapping binds on, or the parent of the sub-interface that gets created for it.">i</button></label>
                     <select name="interface" id="interface"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
                       <option>loading…</option>
@@ -461,7 +470,7 @@
 
                   <!-- Managed sub-interface picker (shown when the toggle is ON) -->
                   <div id="subiface-pick" class="hidden">
-                    <label class="block text-sm font-medium mb-1">Sub-interface</label>
+                    <label class="block text-sm font-medium mb-1">Sub-interface<button type="button" class="info-tip" aria-label="More info" data-tip="A managed macvlan / VLAN device with its own IP address. Several mappings can share one sub-interface as long as they use different ports.">i</button></label>
                     <select name="subiface" id="subiface-select"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"></select>
                     <p id="subiface-pick-note" class="text-xs text-slate-400 mt-1">Bind to a sub-interface managed on the <b>Network → Sub-interfaces</b> tab. Several mappings can share one on different ports.</p>
@@ -470,12 +479,12 @@
                   <div id="subiface-fields" class="space-y-4">
                   <div class="grid grid-cols-3 gap-3">
                     <div>
-                      <label class="block text-sm font-medium mb-1">VLAN ID <span class="text-slate-400 font-normal">(opt)</span></label>
+                      <label class="block text-sm font-medium mb-1">VLAN ID <span class="text-slate-400 font-normal">(opt)</span><button type="button" class="info-tip" aria-label="More info" data-tip="Tag this mapping&#x27;s traffic with an 802.1Q VLAN. Leave blank for untagged traffic on the parent interface.">i</button></label>
                       <input name="vlan_id" id="vlan_id" type="number" min="1" max="4094" placeholder="e.g. 50"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                     </div>
                     <div class="col-span-2">
-                      <label class="block text-sm font-medium mb-1">MAC Address <span class="text-slate-400 font-normal">(blank = random)</span></label>
+                      <label class="block text-sm font-medium mb-1">MAC Address <span class="text-slate-400 font-normal">(blank = random)</span><button type="button" class="info-tip" aria-label="More info" data-tip="Hardware address of the macvlan device. Blank generates a random locally-administered MAC. Set a fixed one if your DHCP server hands out reservations by MAC.">i</button></label>
                       <div class="flex gap-2">
                         <input name="mac" id="mac" placeholder="auto-generated"
                           class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
@@ -486,7 +495,7 @@
                   </div>
 
                   <div>
-                    <label class="block text-sm font-medium mb-1">IP Allocation</label>
+                    <label class="block text-sm font-medium mb-1">IP Allocation<button type="button" class="info-tip" aria-label="More info" data-tip="DHCP: create a macvlan sub-interface and request a lease from your network&#x27;s DHCP server. Static: use the IP address and prefix you type below.">i</button></label>
                     <div class="flex gap-2">
                       <label class="flex-1 cursor-pointer">
                         <input type="radio" name="alloc_method" value="dhcp" class="peer sr-only" checked />
@@ -501,12 +510,12 @@
 
                   <div class="grid grid-cols-3 gap-3" id="static-row">
                     <div class="col-span-2">
-                      <label class="block text-sm font-medium mb-1">Bind IP Address</label>
+                      <label class="block text-sm font-medium mb-1">Bind IP Address<button type="button" class="info-tip" aria-label="More info" data-tip="The IP nginx listens on for this mapping. It must be unused on the LAN, or already owned by a managed sub-interface.">i</button></label>
                       <input name="bind_ip" id="bind_ip" placeholder="192.168.10.15"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                     </div>
                     <div>
-                      <label class="block text-sm font-medium mb-1">Prefix</label>
+                      <label class="block text-sm font-medium mb-1">Prefix<button type="button" class="info-tip" aria-label="More info" data-tip="CIDR prefix length of the bind IP&#x27;s network, e.g. 24 for 255.255.255.0.">i</button></label>
                       <input name="bind_prefix" id="bind_prefix" placeholder="24"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                     </div>
@@ -517,7 +526,7 @@
                   <!-- Backend pool -->
                   <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
                     <div class="flex items-center justify-between mb-2">
-                      <label class="block text-sm font-semibold">Backend Pool <span class="font-normal text-slate-400">load balanced</span></label>
+                      <label class="block text-sm font-semibold">Backend Pool <span class="font-normal text-slate-400">load balanced</span><button type="button" class="info-tip" aria-label="More info" data-tip="The upstream servers (host:port) traffic is forwarded to. One backend is a plain proxy; two or more form a load-balanced pool. Each row can carry a weight and a failover tier.">i</button></label>
                       <div class="flex items-center gap-3">
                         <button type="button" id="add-backend-docker" class="text-xs font-medium text-sky-700 hover:text-sky-900">🐳 Add from Docker</button>
                         <button type="button" id="add-backend" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add Backend</button>
@@ -544,12 +553,15 @@
                   <!-- Load balancing (auto-opens with 2+ backends) -->
                   <div class="rounded-lg border border-slate-200">
                     <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                      <span class="text-sm font-medium">Load balancing
+                      <span class="text-sm font-medium">Load balancing<button type="button" class="info-tip" aria-label="More info" data-tip="How new connections are spread across the backend pool. Opens automatically once the pool has 2+ backends; with a single backend it has no effect.">i</button>
                         <span id="lb-auto-hint" class="hidden text-xs font-normal text-emerald-600">· auto (2+ backends)</span></span>
                       <input type="checkbox" id="lb_enabled" class="h-4 w-4 rounded" />
                     </label>
                     <div id="lb-section" class="hidden px-3 pb-3 space-y-2">
-                      <label class="block text-xs font-medium mb-1">Method</label>
+                      <label class="block text-xs font-medium mb-1">Method<button type="button" class="info-tip" aria-label="More info" data-tip="Round Robin — each new connection goes to the next backend in turn, honouring weights. Good default.
+Least Connections — pick the backend with the fewest active connections. Best for long-lived or uneven sessions.
+Hash — the same client (by hash key, default its IP) always reaches the same backend. Sticky sessions.
+Random — pick a backend at random; with the two option, pick 2 and use the less loaded one." id="lb-method-tip">i</button></label>
                       <select name="lb_method" id="lb_method"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
                         <option value="round_robin">Round Robin (default)</option>
@@ -557,23 +569,24 @@
                         <option value="hash">Hash</option>
                         <option value="random">Random</option>
                       </select>
+                      <p id="lb-method-desc" class="text-[11px] text-slate-500"></p>
 
                       <div id="lb-hash" class="hidden mt-2 rounded-lg bg-slate-50 border border-slate-200 p-3 space-y-2">
                         <div>
-                          <label class="block text-xs font-medium mb-1">Hash key</label>
+                          <label class="block text-xs font-medium mb-1">Hash key<button type="button" class="info-tip" aria-label="More info" data-tip="nginx variable(s) the hash is computed from. $remote_addr = client IP (one client, one backend). $remote_addr$remote_port spreads each connection separately.">i</button></label>
                           <input name="hash_key" id="hash_key" value="$remote_addr"
                             class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
                         </div>
                         <label class="flex items-center gap-2 text-xs text-slate-700">
                           <input type="checkbox" name="hash_consistent" id="hash_consistent" value="1" class="rounded" />
-                          consistent (ketama) — minimal remap when servers change
+                          consistent (ketama) — minimal remap when servers change<button type="button" class="info-tip" aria-label="More info" data-tip="Consistent (ketama) hashing: adding or removing a backend remaps only a small share of clients instead of reshuffling everyone.">i</button>
                         </label>
                       </div>
 
                       <div id="lb-random" class="hidden mt-2 rounded-lg bg-slate-50 border border-slate-200 p-3">
                         <label class="flex items-center gap-2 text-xs text-slate-700">
                           <input type="checkbox" name="random_two" id="random_two" value="1" class="rounded" />
-                          two — pick 2 at random, then least_conn (power of two choices)
+                          two — pick 2 at random, then least_conn (power of two choices)<button type="button" class="info-tip" aria-label="More info" data-tip="Power-of-two-choices: pick two random backends, then send the connection to the one with fewer active connections. Balances far better than plain random.">i</button>
                         </label>
                       </div>
                     </div>
@@ -582,7 +595,7 @@
                   <!-- Active-passive priority failover -->
                   <div class="rounded-lg border border-slate-200">
                     <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                      <span class="text-sm font-medium">Active-passive failover
+                      <span class="text-sm font-medium">Active-passive failover<button type="button" class="info-tip" aria-label="More info" data-tip="Give each backend a tier (Primary, Backup, …). Traffic stays on the Primary tier; when every Primary backend is down the next tier is promoted automatically, and traffic fails back once Primary recovers.">i</button>
                         <span class="text-xs font-normal text-slate-400">· automatic backup promotion</span></span>
                       <input type="checkbox" name="failover" id="failover" value="on" class="h-4 w-4 rounded" />
                     </label>
@@ -596,18 +609,18 @@
                       <!-- HTTP health check (used for the health column + failover promotion) -->
                       <div class="rounded-lg border border-slate-200">
                         <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                          <span class="text-sm font-medium">HTTP health check
+                          <span class="text-sm font-medium">HTTP health check<button type="button" class="info-tip" aria-label="More info" data-tip="Probe an HTTP URL on each backend instead of a bare TCP connect, so a server that accepts connections but answers with errors is also treated as down.">i</button>
                             <span class="text-xs font-normal text-slate-400">· probe a URL instead of a TCP connect</span></span>
                           <input type="checkbox" name="health_check" id="health_check" value="on" class="h-4 w-4 rounded" />
                         </label>
                         <div id="health-section" class="hidden px-3 pb-3 space-y-2">
                           <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                             <div class="sm:col-span-2">
-                              <label class="text-[11px] font-medium text-slate-500">Health check URL</label>
+                              <label class="text-[11px] font-medium text-slate-500">Health check URL<button type="button" class="info-tip" aria-label="More info" data-tip="A path (probed on every backend at its own host:port) or a full URL (probed exactly as written, for a shared status endpoint).">i</button></label>
                               <input name="health_path" id="health_path" placeholder="/healthz  or  http://host:8080/health" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono">
                             </div>
                             <div>
-                              <label class="text-[11px] font-medium text-slate-500">Expected status <span class="text-slate-400">(blank = 2xx/3xx)</span></label>
+                              <label class="text-[11px] font-medium text-slate-500">Expected status <span class="text-slate-400">(blank = 2xx/3xx)</span><button type="button" class="info-tip" aria-label="More info" data-tip="The HTTP status code that counts as healthy. Leave blank to accept any 2xx or 3xx response.">i</button></label>
                               <input name="health_expect" id="health_expect" type="number" min="100" max="599" placeholder="200" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
                             </div>
                           </div>
@@ -624,65 +637,27 @@
                     </div>
                   </div>
 
-                  <!-- Rate limit (Layer-4: connection cap + bandwidth) -->
-                  <div class="rounded-lg border border-slate-200">
-                    <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                      <span class="text-sm font-medium">Rate limit
-                        <span class="text-xs font-normal text-slate-400">· per client IP / connection</span></span>
-                      <input type="checkbox" name="rate_limit" id="rate_limit_enabled" value="1" class="h-4 w-4 rounded" />
-                    </label>
-                    <div id="rate-section" class="hidden px-3 pb-3 space-y-3">
-                      <div>
-                        <label class="block text-xs font-medium mb-1">Max connections / client IP</label>
-                        <input name="limit_conn" id="limit_conn" type="number" min="1" placeholder="e.g. 10"
-                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                        <p class="text-[11px] text-slate-400 mt-1">Caps simultaneous connections from one IP (<span class="font-mono">limit_conn</span>). Blank = unlimited.</p>
-                      </div>
-                      <div class="grid grid-cols-2 gap-3">
-                        <div>
-                          <label class="block text-xs font-medium mb-1">Download rate</label>
-                          <input name="proxy_download_rate" id="proxy_download_rate" placeholder="e.g. 1m"
-                            class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                        </div>
-                        <div>
-                          <label class="block text-xs font-medium mb-1">Upload rate</label>
-                          <input name="proxy_upload_rate" id="proxy_upload_rate" placeholder="e.g. 512k"
-                            class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                        </div>
-                      </div>
-                      <p class="text-[11px] text-slate-400">Bytes/sec <b>per connection</b> (<span class="font-mono">k</span>/<span class="font-mono">m</span> suffix, e.g. <span class="font-mono">1m</span>). Blank = unlimited.</p>
+                  <!-- Snippets: the one place to pick rate limit, timeouts, log format,
+                       error pages and config snippets for this mapping (Snippets page). -->
+                  <div id="snippets-block" class="rounded-lg border border-slate-200 p-3 space-y-2">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-sm font-medium">Snippets<button type="button" class="info-tip" aria-label="More info" data-tip="Reusable settings managed on the Snippets page. Pick what this mapping needs: one rate limit, one timeouts set, one log format, any error pages and config snippets. Nothing selected = built-in defaults. Error pages and config snippets take effect on Reverse Proxy / WAF mappings.">i</button></span>
+                      <button type="button" class="nav-jump-snippets text-xs font-medium text-emerald-700 hover:text-emerald-900">Manage snippets →</button>
                     </div>
+                    <div id="snippets-pick" class="space-y-2"><span class="text-xs text-slate-400">Loading…</span></div>
+                    <p id="snippets-legacy-note" class="hidden text-[11px] text-amber-600"></p>
                   </div>
-
-                  <!-- Advanced: proxy timeouts -->
-                  <details class="group rounded-lg border border-slate-200">
-                    <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 flex items-center justify-between">
-                      Advanced (timeouts) <span class="text-xs text-slate-400 group-open:hidden">show</span>
-                    </summary>
-                    <div class="px-3 pb-3 grid grid-cols-2 gap-3">
-                      <div>
-                        <label class="block text-xs font-medium mb-1">proxy_timeout</label>
-                        <input name="proxy_timeout" id="proxy_timeout" placeholder="10m"
-                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                      </div>
-                      <div>
-                        <label class="block text-xs font-medium mb-1">proxy_connect_timeout</label>
-                        <input name="proxy_connect_timeout" id="proxy_connect_timeout" placeholder="5s"
-                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                      </div>
-                    </div>
-                  </details>
 
                   <!-- Reverse Proxy (L7) options — only take effect once this mapping
                        is bound to Reverse Proxy/WAF; ignored on a plain L4 stream. -->
                   <details id="l7-advanced-details" class="group rounded-lg border border-slate-200">
                     <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 flex items-center justify-between">
-                      Reverse Proxy (L7) options <span class="text-xs text-slate-400 group-open:hidden">show</span>
+                      <span>Reverse Proxy (L7) options<button type="button" class="info-tip" aria-label="More info" data-tip="Settings that only apply after this mapping is bound to the Reverse Proxy / WAF. On a plain Layer-4 stream mapping they are stored but ignored.">i</button></span> <span class="text-xs text-slate-400 group-open:hidden">show</span>
                     </summary>
                     <div class="px-3 pb-3 space-y-3">
                       <label class="flex items-center gap-2 text-xs text-slate-700">
                         <input type="checkbox" name="websocket_upgrade" id="websocket_upgrade" value="1" class="rounded" />
-                        <span><b>WebSocket support</b> — forward <span class="font-mono">Upgrade</span>/<span class="font-mono">Connection</span> headers.</span>
+                        <span><b>WebSocket support</b> — forward <span class="font-mono">Upgrade</span>/<span class="font-mono">Connection</span> headers.<button type="button" class="info-tip" aria-label="More info" data-tip="Needed for apps that keep a WebSocket open: chat, live dashboards, terminals, code-server. Also switches the backend connection to HTTP/1.1.">i</button></span>
                       </label>
                       <label class="flex items-center gap-2 text-xs text-slate-700">
                         <input type="checkbox" name="http2" id="http2" value="1" checked class="rounded" />
@@ -695,11 +670,11 @@
 
                       <div>
                         <div class="flex items-center justify-between mb-1.5">
-                          <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path-specific config</span></label>
+                          <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path &amp; method routing</span><button type="button" class="info-tip" aria-label="More info" data-tip="Per-path rules. Each can send its path to a different backend pool, restrict that to certain HTTP methods (e.g. POST/PUT to a write node, GET stays on the main pool), and/or add extra nginx directives. Rows with no backends keep proxying to the main pool.">i</button></label>
                           <button type="button" id="add-location" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add location</button>
                         </div>
                         <div id="locations" class="space-y-2"></div>
-                        <p class="text-[11px] text-slate-400 mt-1">Each block becomes <span class="font-mono">location &lt;path&gt; { ... }</span>, evaluated before the default <span class="font-mono">location /</span>. Add headers, rewrites or other path-specific directives here — the proxy target (this mapping's backend pool) is appended automatically, same as the default location.</p>
+                        <p class="text-[11px] text-slate-400 mt-1">Each row becomes <span class="font-mono">location &lt;path&gt; { ... }</span>, evaluated before the default <span class="font-mono">location /</span>. <b>Path routing:</b> give a row its own backends. <b>Method routing:</b> add methods so only those go there; several rows may share a path (<span class="font-mono">/api</span> GET → main, POST/PUT → write node…); path <span class="font-mono">/</span> splits the whole site by method. <b>Snippets:</b> each row can pick its own config snippets, rate limit and timeouts. Extra directives are optional.</p>
                       </div>
 
                       <div>
@@ -713,7 +688,7 @@
 
                   <!-- SSL -->
                   <div id="ssl-section">
-                    <label class="block text-sm font-medium mb-1">SSL / TLS</label>
+                    <label class="block text-sm font-medium mb-1">SSL / TLS<button type="button" class="info-tip" aria-label="More info" data-tip="None: the encrypted stream is passed through untouched and the backend holds the certificate. Managed cert: nginx terminates TLS here with a certificate from the SSL page, so it can inspect traffic (WAF, HTTP/2, redirects).">i</button></label>
                     <div id="ssl-keep" class="hidden mb-2 text-xs rounded-md bg-slate-100 text-slate-600 px-3 py-2">
                       Keeping current certificate (<span id="ssl-keep-mode" class="font-mono"></span>). Pick an option to change it.
                     </div>
@@ -724,7 +699,7 @@
                     <input type="hidden" name="ssl_mode" id="ssl_mode" value="none" />
 
                     <div id="ssl-existing" class="hidden">
-                      <label class="block text-xs font-medium mb-1">Certificate</label>
+                      <label class="block text-xs font-medium mb-1">Certificate<button type="button" class="info-tip" aria-label="More info" data-tip="A certificate managed on the SSL page. Its names should cover this mapping&#x27;s domain or browsers will warn.">i</button></label>
                       <select name="ssl_existing" id="ssl_existing"
                         class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono bg-white outline-none focus:ring-2 focus:ring-emerald-500">
                       </select>
@@ -737,20 +712,20 @@
                       <p>nginx will <b>terminate TLS</b> on <span class="font-mono">:443</span> with this certificate (<span class="font-mono">listen … ssl</span>).</p>
                       <label class="flex items-center gap-2">
                         <input type="checkbox" name="proxy_ssl" id="proxy_ssl" value="1" checked class="rounded" />
-                        Re-encrypt to backend (<span class="font-mono">proxy_ssl on</span>) — keep on for TLS backends (:443)
+                        Re-encrypt to backend (<span class="font-mono">proxy_ssl on</span>) — keep on for TLS backends (:443)<button type="button" class="info-tip" aria-label="More info" data-tip="On: nginx opens a new TLS connection to the backend (backend speaks HTTPS, usually port 443). Off: plain TCP to the backend (e.g. port 80 or 8080).">i</button>
                       </label>
                       <label class="flex items-center gap-2">
                         <input type="checkbox" name="ssl_forced" id="ssl_forced" value="1" class="rounded" />
-                        Force HTTPS — redirect plain <span class="font-mono">:80</span> requests for this domain to this listener. Reverse Proxy (L7) only.
+                        Force HTTPS — redirect plain <span class="font-mono">:80</span> requests for this domain to this listener. Reverse Proxy (L7) only.<button type="button" class="info-tip" aria-label="More info" data-tip="Adds a port-80 listener that answers http://domain with a permanent redirect to this HTTPS listener. Takes effect once the mapping is bound to the Reverse Proxy.">i</button>
                       </label>
                       <div id="hsts-block" class="hidden pl-5 space-y-2">
                         <label class="flex items-center gap-2">
                           <input type="checkbox" name="hsts_enabled" id="hsts_enabled" value="1" class="rounded" />
-                          Send <span class="font-mono">Strict-Transport-Security</span> (HSTS)
+                          Send <span class="font-mono">Strict-Transport-Security</span> (HSTS)<button type="button" class="info-tip" aria-label="More info" data-tip="Tells browsers to use HTTPS only for this domain for a long time. Browsers remember it, so enable it only once HTTPS is working reliably.">i</button>
                         </label>
                         <label id="hsts-subdomains-row" class="hidden flex items-center gap-2 pl-5">
                           <input type="checkbox" name="hsts_subdomains" id="hsts_subdomains" value="1" class="rounded" />
-                          Include subdomains (<span class="font-mono">includeSubDomains</span>)
+                          Include subdomains (<span class="font-mono">includeSubDomains</span>)<button type="button" class="info-tip" aria-label="More info" data-tip="Extends the HSTS rule to every subdomain. Make sure all of them already serve HTTPS, or they will become unreachable in browsers.">i</button>
                         </label>
                       </div>
                     </div>
@@ -758,7 +733,7 @@
 
                   <!-- Access list (allow/deny) -->
                   <div>
-                    <label class="block text-sm font-medium mb-1">Access list</label>
+                    <label class="block text-sm font-medium mb-1">Access list<button type="button" class="info-tip" aria-label="More info" data-tip="An allow / deny list of networks applied to this listener; anyone outside it is refused. Global default follows the setting on Network → Access Lists.">i</button></label>
                     <select name="access_list" id="access_list"
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
                       <option value="__default__">Use global default</option>
@@ -770,7 +745,7 @@
                   <!-- Hostname restriction (SNI) -->
                   <label id="sni-section" class="flex items-start gap-2 text-xs text-slate-700 rounded-lg border border-slate-200 p-3">
                     <input type="checkbox" name="sni_guard" id="sni_guard" value="1" class="mt-0.5 rounded" />
-                    <span><b>Only allow this hostname</b> — drop any connection whose TLS SNI isn't this domain.
+                    <span><b>Only allow this hostname</b> — drop any connection whose TLS SNI isn't this domain.<button type="button" class="info-tip" aria-label="More info" data-tip="Rejects TLS connections whose SNI hostname is not this domain, so other names pointing at the same IP cannot reach the backend. Works with passthrough only.">i</button>
                     Requires TLS passthrough (don't terminate a certificate on this mapping).</span>
                   </label>
 
@@ -1140,6 +1115,61 @@
             </div>
           </div>
 
+          <!-- nginx stub_status (http layer: Reverse Proxy / WAF) -->
+          <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 mt-[var(--gap)]">
+            <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
+              <div class="flex items-center gap-2 text-slate-400 text-xs font-medium uppercase tracking-wide">
+                <span class="h-2 w-2 rounded-full bg-rose-500"></span> NGINX
+                <span class="normal-case tracking-normal font-mono text-[10px] text-slate-400">stub_status</span>
+                <button type="button" class="info-tip" aria-label="More info" data-tip="Live counters from nginx's built-in stub_status module for the HTTP layer (Reverse Proxy / WAF mappings).&#10;Active = open client connections. Reading = reading a request header, Writing = sending a response, Waiting = idle keep-alive.&#10;Accepts / handled / requests are totals since nginx started; dropped = accepts minus handled (worker_connections exhausted).&#10;Layer-4 stream mappings are not counted here — see the Traffic column on the mappings page.">i</button>
+              </div>
+              <span id="mon-nginx-updated" class="text-xs text-slate-400">—</span>
+            </div>
+
+            <div id="mon-nginx-unavailable" class="hidden rounded-lg bg-slate-50 border border-dashed border-slate-300 p-4 text-sm text-slate-500">
+              <div id="mon-nginx-reason">stub_status is not available.</div>
+              <button type="button" id="mon-nginx-provision" class="mt-3 bg-slate-900 hover:bg-slate-700 text-white text-xs font-semibold rounded-lg px-3 py-2 transition">Enable stub_status</button>
+              <pre id="mon-nginx-steps" class="hidden mt-3 max-h-40 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+            </div>
+
+            <div id="mon-nginx-stats" class="hidden">
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-2">
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">Active connections</div>
+                  <div id="mon-nginx-active" class="text-2xl font-extrabold tabular-nums text-slate-900">—</div>
+                </div>
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">Requests / s</div>
+                  <div id="mon-nginx-rps" class="text-2xl font-extrabold tabular-nums text-rose-700">—</div>
+                </div>
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">Connections / s</div>
+                  <div id="mon-nginx-cps" class="text-2xl font-extrabold tabular-nums text-sky-700">—</div>
+                </div>
+                <div class="rounded-lg bg-slate-50 p-3">
+                  <div class="text-xs text-slate-400">Requests / connection</div>
+                  <div id="mon-nginx-rpc" class="text-2xl font-extrabold tabular-nums text-slate-700">—</div>
+                </div>
+              </div>
+
+              <div class="mt-3 grid grid-cols-3 gap-3">
+                <div class="rounded-lg border border-slate-200 p-3">
+                  <div class="flex items-center justify-between text-xs text-slate-400"><span>Reading</span><span id="mon-nginx-reading" class="font-bold tabular-nums text-slate-800">—</span></div>
+                  <div class="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div id="mon-nginx-reading-bar" class="h-full w-0 rounded-full bg-amber-500 transition-all duration-500"></div></div>
+                </div>
+                <div class="rounded-lg border border-slate-200 p-3">
+                  <div class="flex items-center justify-between text-xs text-slate-400"><span>Writing</span><span id="mon-nginx-writing" class="font-bold tabular-nums text-slate-800">—</span></div>
+                  <div class="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div id="mon-nginx-writing-bar" class="h-full w-0 rounded-full bg-emerald-500 transition-all duration-500"></div></div>
+                </div>
+                <div class="rounded-lg border border-slate-200 p-3">
+                  <div class="flex items-center justify-between text-xs text-slate-400"><span>Waiting <span class="text-slate-300">(keep-alive)</span></span><span id="mon-nginx-waiting" class="font-bold tabular-nums text-slate-800">—</span></div>
+                  <div class="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div id="mon-nginx-waiting-bar" class="h-full w-0 rounded-full bg-sky-500 transition-all duration-500"></div></div>
+                </div>
+              </div>
+              <div id="mon-nginx-meta" class="mt-2 text-xs text-slate-400">—</div>
+            </div>
+          </div>
+
           <!-- Live per-interface throughput (moved from Sub-interfaces page) -->
           <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 mt-[var(--gap)]">
             <div class="flex items-center justify-between mb-1">
@@ -1176,6 +1206,22 @@
                 </span>
               </div>
             </figcaption>
+            <!-- nginx stub_status strip (http layer) — polled while this page is open -->
+            <div id="livemap-nginx" class="flex items-center gap-x-4 gap-y-1.5 flex-wrap px-6 py-2 border-b border-slate-100 bg-slate-50/70 text-xs">
+              <span class="flex items-center gap-1.5 font-mono tracking-widest text-[10px] text-slate-400">
+                <span class="h-1.5 w-1.5 rounded-full bg-rose-500"></span> NGINX
+                <button type="button" class="info-tip" aria-label="More info" data-tip="Live stub_status counters for nginx's HTTP layer (Reverse Proxy / WAF mappings). Layer-4 stream mappings are not counted here — their flow is shown on the map itself.&#10;R / W / Idle = connections reading a request, writing a response, or idle keep-alive.">i</button>
+              </span>
+              <span id="livemap-nginx-unavailable" class="hidden text-slate-400">stub_status unavailable — <button type="button" class="nav-jump-monitoring underline hover:text-slate-600">see Monitoring</button></span>
+              <span id="livemap-nginx-stats" class="hidden contents">
+                <span class="flex items-baseline gap-1"><span class="text-slate-400">Active</span><span id="lm-ngx-active" class="font-bold tabular-nums text-slate-800">—</span></span>
+                <span class="flex items-baseline gap-1"><span id="lm-ngx-rps" class="font-bold tabular-nums text-rose-700">—</span><span class="text-slate-400">req/s</span></span>
+                <span class="flex items-baseline gap-1"><span id="lm-ngx-cps" class="font-bold tabular-nums text-sky-700">—</span><span class="text-slate-400">conn/s</span></span>
+                <span class="flex items-baseline gap-1 tabular-nums"><span class="text-slate-400">R</span><span id="lm-ngx-reading" class="font-semibold text-amber-600">—</span><span class="text-slate-300">/</span><span class="text-slate-400">W</span><span id="lm-ngx-writing" class="font-semibold text-emerald-600">—</span><span class="text-slate-300">/</span><span class="text-slate-400">Idle</span><span id="lm-ngx-waiting" class="font-semibold text-sky-600">—</span></span>
+                <span class="flex items-baseline gap-1 text-slate-400"><span id="lm-ngx-requests" class="tabular-nums">—</span> requests total<span id="lm-ngx-dropped" class="hidden text-red-600"></span></span>
+              </span>
+              <span id="lm-ngx-updated" class="ml-auto text-[10px] text-slate-400 tabular-nums">—</span>
+            </div>
             <div class="relative">
               <div id="route-scroll" class="overflow-auto p-4 sm:p-6 cursor-grab select-none" style="height:calc(100vh - 120px);min-height:420px;background-color:#fff;background-image:radial-gradient(circle, rgba(148,163,184,.4) 1px, transparent 1.6px);background-size:22px 22px;background-attachment:local">
                 <svg id="route-map" viewBox="0 0 1000 380" class="h-auto block" style="width:100%" aria-label="Live traffic routing visualization"></svg>
@@ -1942,6 +1988,28 @@
           </div>
 
           <!-- mapping picker -->
+          <!-- Default log rotation (admin). A "logrotate" snippet on a mapping overrides it. -->
+          <div id="logs-rotation-card" class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 p-5">
+            <div class="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <div class="text-sm font-semibold text-slate-800">Log rotation<button type="button" class="info-tip" aria-label="More info" data-tip="Every mapping's access and error logs are rotated daily by logrotate (run from Splitter every hour, rotating once a day, or sooner when a file exceeds the max size). Rotated files get a -YYYYMMDD suffix, are gzip-compressed when enabled, and are deleted after the retention period. A Log rotation snippet picked on a mapping overrides these defaults for that mapping.">i</button></div>
+                <p class="text-xs text-slate-500 mt-0.5">Default policy for every mapping. Pick a <b>Log rotation</b> snippet on a mapping to give it its own.</p>
+              </div>
+              <div class="flex items-center gap-2 text-xs">
+                <span id="logs-rotation-last" class="text-slate-400"></span>
+                <button id="logs-rotate-now" class="bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-lg px-3 py-2 transition">Rotate now</button>
+              </div>
+            </div>
+            <form id="logs-rotation-form" class="mt-3 flex items-end gap-3 flex-wrap text-sm">
+              <label class="block"><span class="block text-xs font-medium text-slate-600 mb-1">Keep (days)</span><input name="log_keep_days" id="log_keep_days" type="number" min="1" max="365" value="7" class="w-24 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></label>
+              <label class="block"><span class="block text-xs font-medium text-slate-600 mb-1">Also rotate when over <span class="text-slate-400 font-normal">(optional)</span></span><input name="log_max_size" id="log_max_size" placeholder="e.g. 100M" class="w-28 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></label>
+              <label class="flex items-center gap-2 pb-2.5"><input type="checkbox" name="log_compress" id="log_compress" value="1" class="rounded" checked /> gzip rotated files</label>
+              <button type="submit" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save defaults</button>
+              <span id="logs-rotation-status" class="text-xs text-slate-400"></span>
+            </form>
+            <pre id="logs-rotate-output" class="hidden mt-3 max-h-40 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+          </div>
+
           <div id="logs-list-card" class="card bg-white/80 rounded-2xl shadow-sm border border-slate-200/70 overflow-hidden">
             <div class="overflow-x-auto">
               <table class="w-full text-sm">
@@ -1993,6 +2061,29 @@
                   <input type="checkbox" id="logs-auto" class="rounded" /> auto (5s)
                 </label>
               </div>
+              <!-- Time-range search: live log + rotated archives (.gz) -->
+              <div class="flex items-center gap-2 flex-wrap text-xs border-t border-slate-100 pt-3">
+                <span class="font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Time range</span>
+                <input type="datetime-local" id="logs-from" step="60" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs bg-white outline-none focus:ring-2 focus:ring-emerald-500" />
+                <span class="text-slate-400">→</span>
+                <input type="datetime-local" id="logs-to" step="60" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs bg-white outline-none focus:ring-2 focus:ring-emerald-500" />
+                <button type="button" data-range="60" class="logs-quick rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">last 1h</button>
+                <button type="button" data-range="1440" class="logs-quick rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">24h</button>
+                <button type="button" data-range="10080" class="logs-quick rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">7d</button>
+                <button type="button" id="logs-search-range" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg px-3 py-1.5">Search range</button>
+                <button type="button" id="logs-live" class="hidden rounded-lg border border-slate-300 px-3 py-1.5 font-semibold text-slate-600 hover:bg-slate-50">← Live tail</button>
+                <span class="text-slate-400">Searches the live log and every rotated archive for this mapping — e.g. an incident two days ago at 15:40.<button type="button" class="info-tip" aria-label="More info" data-tip="Times are entered in your browser's time zone and matched against each line's own timestamp. Rotated files, including gzip-compressed ones, are read too, so anything within the retention window is reachable. Each result is prefixed with the archive date it came from (live = current file).">i</button></span>
+              </div>
+              <details id="logs-files-details" class="group text-xs">
+                <summary class="cursor-pointer select-none text-slate-500 hover:text-slate-800 font-medium">Files &amp; rotation <span id="logs-rotation-text" class="font-normal text-slate-400"></span></summary>
+                <div class="mt-2 overflow-x-auto">
+                  <table class="w-full text-xs">
+                    <thead class="text-slate-400 uppercase tracking-wide"><tr><th class="text-left py-1 pr-3 font-medium">File</th><th class="text-left py-1 pr-3 font-medium">Date</th><th class="text-left py-1 pr-3 font-medium">Size</th><th class="py-1"></th></tr></thead>
+                    <tbody id="logs-files-rows" class="divide-y divide-slate-100 font-mono"></tbody>
+                  </table>
+                  <div id="logs-files-empty" class="hidden py-2 text-slate-400">No rotated archives yet — the first rotation happens on the next daily run.</div>
+                </div>
+              </details>
               <div id="logs-meta" class="text-xs text-slate-400 font-mono"></div>
               <pre id="logs-output" class="bg-slate-900 text-slate-200 text-xs font-mono rounded-xl p-4 overflow-x-auto max-h-[32rem] overflow-y-auto whitespace-pre leading-5"></pre>
             </div>
@@ -2423,15 +2514,352 @@
         </section>
 
         <!-- ── Error Pages (admin) ─────────────────────── -->
-        <section id="page-errorpages" class="page hidden space-y-6">
+        <!-- ====== PAGE: Snippets (Log formats / Error pages tabs) ====== -->
+        <section id="page-snippets" class="page hidden space-y-6">
           <div class="flex items-end justify-between flex-wrap gap-3">
             <div>
-              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Error Pages</h2>
-              <p class="text-sm text-slate-500 mt-0.5">Custom pages served for HTTP errors on this dashboard — 404, 500, and everything else. Anything not overridden below uses the built-in animated default.</p>
+              <h2 class="h1-fluid font-extrabold tracking-tight bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-transparent">Snippets</h2>
+              <p class="text-sm text-slate-500 mt-0.5">Reusable pieces mappings and the dashboard pick from — nginx log formats and custom error pages.</p>
             </div>
-            <button id="errpages-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
+            <button id="snippets-refresh" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded-lg px-4 py-2.5 transition">Refresh</button>
           </div>
 
+          <!-- Tab strip -->
+          <div class="flex overflow-x-auto bg-slate-50/70 border border-slate-200 rounded-xl px-2 pt-2 gap-0.5">
+            <button data-sniptab="ratelimit" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Rate limits <span id="snip-ratelimit-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+            <button data-sniptab="timeouts" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Timeouts <span id="snip-timeouts-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+            <button data-sniptab="logrotate" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Log rotation <span id="snip-logrotate-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+            <button data-sniptab="logformats" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Log formats <span id="snip-logformats-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+            <button data-sniptab="config" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Config snippets <span id="snip-config-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+            <button data-sniptab="errorpages" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Error pages <span id="snip-errorpages-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+          </div>
+
+          <!-- ── Rate limits ── -->
+          <div id="snippanel-ratelimit" class="snip-panel hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="rl-form-title" class="text-sm font-semibold text-slate-800">New rate limit</div>
+                  <button type="button" id="rl-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">Per-client limits: how many simultaneous connections one IP may hold and how fast each connection may go. Blank = no limit for that value.</p>
+                <form id="rl-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">Name</label><input id="rl-name" name="name" required pattern="[A-Za-z][A-Za-z0-9_-]{0,39}" placeholder="api-strict" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label><input id="rl-description" name="description" maxlength="200" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">Max connections / IP</label><input name="limit_conn" id="rl-limit_conn" placeholder="e.g. 10" type="number" min="1" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Download rate</label><input name="proxy_download_rate" id="rl-proxy_download_rate" placeholder="e.g. 1m"  class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Upload rate <span class="text-slate-400 font-normal">(stream only)</span></label><input name="proxy_upload_rate" id="rl-proxy_upload_rate" placeholder="e.g. 512k"  class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">RENDERED DIRECTIVES</div>
+                    <pre id="rl-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all min-h-[3rem]">…</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="rl-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save</button>
+                    <span class="text-[11px] text-slate-400">Mappings using this snippet are re-applied (nginx -t guards every change).</span>
+                  </div>
+                </form>
+                <pre id="rl-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4"><li>Save a limit set here, e.g. <b>api-strict</b>: 10 connections per IP, 1m download.</li><li>Pick it under <b>Snippets → Rate limit</b> on a mapping, or on a custom location for one path only.</li><li>Stream: <span class="font-mono">limit_conn</span> + <span class="font-mono">proxy_download/upload_rate</span>. Reverse Proxy: <span class="font-mono">limit_conn</span> + <span class="font-mono">limit_rate</span>.</li></ol>
+                <p class="text-xs text-amber-600 mt-3">A snippet can't be deleted while a mapping or location uses it.</p>
+              </div>
+            </div>
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100"><h3 class="text-sm font-semibold">Saved rate limits</h3></div>
+              <div class="overflow-x-auto"><table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide"><tr><th class="text-left px-6 py-3 font-medium">Name</th><th class="text-left px-6 py-3 font-medium">Values</th><th class="text-left px-6 py-3 font-medium">Used by</th><th class="px-6 py-3"></th></tr></thead>
+                <tbody id="rl-rows" class="divide-y divide-slate-100"></tbody>
+              </table></div>
+              <div id="rl-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No rate limits yet.</div>
+            </div>
+          </div>
+
+          <!-- ── Timeouts ── -->
+          <div id="snippanel-timeouts" class="snip-panel hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="to-form-title" class="text-sm font-semibold text-slate-800">New timeout set</div>
+                  <button type="button" id="to-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">How long nginx waits for a backend to accept the connection, and how long an idle connection may stay open. nginx time values: 10s, 5m, 1h.</p>
+                <form id="to-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">Name</label><input id="to-name" name="name" required pattern="[A-Za-z][A-Za-z0-9_-]{0,39}" placeholder="api-strict" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label><input id="to-description" name="description" maxlength="200" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">proxy_timeout (idle / read)</label><input name="proxy_timeout" id="to-proxy_timeout" placeholder="e.g. 10m"  class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">proxy_connect_timeout</label><input name="proxy_connect_timeout" id="to-proxy_connect_timeout" placeholder="e.g. 5s"  class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">RENDERED DIRECTIVES</div>
+                    <pre id="to-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all min-h-[3rem]">…</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="to-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save</button>
+                    <span class="text-[11px] text-slate-400">Mappings using this snippet are re-applied (nginx -t guards every change).</span>
+                  </div>
+                </form>
+                <pre id="to-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4"><li>Save a timeout set here, e.g. <b>long-lived</b>: 1h idle for databases / SSH.</li><li>Pick it under <b>Snippets → Timeouts</b> on a mapping, or on a custom location.</li><li>Stream: <span class="font-mono">proxy_timeout</span> / <span class="font-mono">proxy_connect_timeout</span>. Reverse Proxy: <span class="font-mono">proxy_read/send_timeout</span> / <span class="font-mono">proxy_connect_timeout</span>.</li></ol>
+                <p class="text-xs text-amber-600 mt-3">A snippet can't be deleted while a mapping or location uses it.</p>
+              </div>
+            </div>
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100"><h3 class="text-sm font-semibold">Saved timeouts</h3></div>
+              <div class="overflow-x-auto"><table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide"><tr><th class="text-left px-6 py-3 font-medium">Name</th><th class="text-left px-6 py-3 font-medium">Values</th><th class="text-left px-6 py-3 font-medium">Used by</th><th class="px-6 py-3"></th></tr></thead>
+                <tbody id="to-rows" class="divide-y divide-slate-100"></tbody>
+              </table></div>
+              <div id="to-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No timeouts yet.</div>
+            </div>
+          </div>
+
+          <!-- ── Log rotation ── -->
+          <div id="snippanel-logrotate" class="snip-panel hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="lr-form-title" class="text-sm font-semibold text-slate-800">New rotation policy</div>
+                  <button type="button" id="lr-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">How long a mapping's access / error logs are kept and whether rotated files are gzip-compressed. Without a snippet a mapping uses the defaults on the Logs page.</p>
+                <form id="lr-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">Name</label><input id="lr-name" name="name" required pattern="[A-Za-z][A-Za-z0-9_-]{0,39}" placeholder="keep-5-days" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label><input id="lr-description" name="description" maxlength="200" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                    <div><label class="block text-xs font-medium mb-1">Keep (days)</label><input name="keep_days" id="lr-keep_days" type="number" min="1" max="365" placeholder="5" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Also rotate when over <span class="text-slate-400 font-normal">(optional)</span></label><input name="max_size" id="lr-max_size" placeholder="e.g. 100M" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <label class="flex items-center gap-2 text-sm pb-2"><input type="checkbox" name="compress" id="lr-compress" value="1" class="rounded" checked /> gzip rotated files</label>
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">LOGROTATE STANZA</div>
+                    <pre id="lr-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all min-h-[3rem]">…</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="lr-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save</button>
+                    <span class="text-[11px] text-slate-400">Takes effect on the next rotation run (hourly check).</span>
+                  </div>
+                </form>
+                <pre id="lr-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4"><li>Save a policy, e.g. <b>keep-5-days</b>: 5 days, gzip.</li><li>Pick it under <b>Snippets → Log rotation</b> on a mapping.</li><li>Rotated files (<span class="font-mono">…-access.log-20260909.gz</span>) stay searchable from the Logs page until they expire.</li></ol>
+                <p class="text-xs text-amber-600 mt-3">A snippet can't be deleted while a mapping uses it.</p>
+              </div>
+            </div>
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100"><h3 class="text-sm font-semibold">Saved rotation policies</h3></div>
+              <div class="overflow-x-auto"><table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide"><tr><th class="text-left px-6 py-3 font-medium">Name</th><th class="text-left px-6 py-3 font-medium">Policy</th><th class="text-left px-6 py-3 font-medium">Used by</th><th class="px-6 py-3"></th></tr></thead>
+                <tbody id="lr-rows" class="divide-y divide-slate-100"></tbody>
+              </table></div>
+              <div id="lr-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No rotation policies yet — every mapping uses the defaults on the Logs page.</div>
+            </div>
+          </div>
+
+          <!-- ── Log formats ─────────────────────────────────────────── -->
+          <div id="snippanel-logformats" class="snip-panel space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <!-- Editor -->
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="logfmt-form-title" class="text-sm font-semibold text-slate-800">New log format</div>
+                  <button type="button" id="logfmt-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">A named <span class="font-mono">log_format</span> body. Pick it on a mapping's <b>Log format</b> field and that mapping's access log switches to this line. Each line below becomes one quoted string — nginx joins them, so line breaks are only for readability.</p>
+                <form id="logfmt-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Name<button type="button" class="info-tip" aria-label="More info" data-tip="Identifier shown in the mapping form. Letters, digits, _ and - only; max 40 characters.">i</button></label>
+                      <input id="logfmt-name" name="name" required placeholder="json_access" pattern="[A-Za-z][A-Za-z0-9_-]{0,39}"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Context<button type="button" class="info-tip" aria-label="More info" data-tip="stream = Layer-4 Stream mappings (TCP/UDP; no HTTP variables). http = Reverse Proxy / WAF mappings (full request variables). A mapping only uses a snippet of its own context.">i</button></label>
+                      <select id="logfmt-context" name="context" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="stream">stream — L4 Stream</option>
+                        <option value="http">http — Reverse Proxy / WAF</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Escaping<button type="button" class="info-tip" aria-label="More info" data-tip="How nginx escapes variable values. default: \xXX hex for quotes and control chars. json: valid JSON string escaping (use for JSON lines). none: raw values, no escaping at all.">i</button></label>
+                      <select id="logfmt-escape" name="escape" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="default">default</option>
+                        <option value="json">json</option>
+                        <option value="none">none</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-1">
+                      <label class="block text-xs font-medium">Format<button type="button" class="info-tip" aria-label="More info" data-tip="The log line template. Use nginx variables like $remote_addr or $status; quote text values with double quotes. Single quotes are escaped automatically.">i</button></label>
+                      <div class="flex items-center gap-2 text-xs">
+                        <span class="text-slate-400">Start from</span>
+                        <select id="logfmt-preset" class="rounded-md border border-slate-300 px-2 py-1 text-xs bg-white"><option value="">preset…</option></select>
+                      </div>
+                    </div>
+                    <textarea id="logfmt-format" name="format" rows="6" spellcheck="false" placeholder='$remote_addr [$time_local] $status sent=$bytes_sent upstream="$upstream_addr"'
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                    <div id="logfmt-vars" class="mt-1.5 flex flex-wrap gap-1"></div>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label>
+                    <input id="logfmt-description" name="description" maxlength="200" placeholder="What this line is for"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">RENDERED DIRECTIVE</div>
+                    <pre id="logfmt-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all min-h-[3rem]">log_format …</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="logfmt-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save log format</button>
+                    <span class="text-[11px] text-slate-400">Mappings already using this name are re-applied (nginx -t guards against a broken format).</span>
+                  </div>
+                </form>
+                <pre id="logfmt-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+
+              <!-- Help -->
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4">
+                  <li>Save a snippet here (or start from a preset).</li>
+                  <li>Open a mapping and pick it under <b>Log format</b>. Stream mappings take <span class="font-mono">stream</span> snippets; Reverse Proxy / WAF mappings take <span class="font-mono">http</span> ones.</li>
+                  <li>Splitter renders <span class="font-mono">log_format &lt;mapping&gt;_fmt …</span> into that mapping's config and its access log switches on the next apply.</li>
+                </ol>
+                <p class="text-xs text-slate-400 mt-3">Access logs live under <span class="font-mono" id="logfmt-logdir">/var/log/splitter</span> and are readable on the <b>Logs</b> page.</p>
+                <p class="text-xs text-amber-600 mt-2">A snippet can't be deleted while a mapping uses it.</p>
+              </div>
+            </div>
+
+            <!-- List -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100">
+                <h3 class="text-sm font-semibold">Saved log formats</h3>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                    <tr>
+                      <th class="text-left px-6 py-3 font-medium">Name</th>
+                      <th class="text-left px-6 py-3 font-medium">Context</th>
+                      <th class="text-left px-6 py-3 font-medium">Format</th>
+                      <th class="text-left px-6 py-3 font-medium">Used by</th>
+                      <th class="px-6 py-3"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="logfmt-rows" class="divide-y divide-slate-100"></tbody>
+                </table>
+              </div>
+              <div id="logfmt-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No log format snippets yet — every mapping uses its built-in access-log line.</div>
+            </div>
+          </div>
+
+          <!-- ── Config snippets ─────────────────────────────────────── -->
+          <div id="snippanel-config" class="snip-panel hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <!-- Editor -->
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="cfgsnip-form-title" class="text-sm font-semibold text-slate-800">New config snippet</div>
+                  <button type="button" id="cfgsnip-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">A reusable block of raw nginx directives. It is saved as an <span class="font-mono">include</span> file; a mapping pulls it in from its <b>Advanced config</b> or a <b>custom location</b> with the Insert snippet picker. Editing the snippet later updates every mapping that includes it.</p>
+                <form id="cfgsnip-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Name<button type="button" class="info-tip" aria-label="More info" data-tip="Also the include file name (<name>.inc). Letters, digits, _ and - only; max 40 characters.">i</button></label>
+                      <input id="cfgsnip-name" name="name" required placeholder="security_headers" pattern="[A-Za-z][A-Za-z0-9_-]{0,39}"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Scope<button type="button" class="info-tip" aria-label="More info" data-tip="Where the directives are valid. server: inside the server block (Advanced config). location: inside a location block (custom location). any: works in both. Only used to label and filter the picker — nginx -t still checks placement.">i</button></label>
+                      <select id="cfgsnip-scope" name="scope" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500">
+                        <option value="server">server — Advanced config</option>
+                        <option value="location">location — custom location</option>
+                        <option value="any">any</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium mb-1">Start from</label>
+                      <select id="cfgsnip-preset" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500"><option value="">preset…</option></select>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Directives<button type="button" class="info-tip" aria-label="More info" data-tip="Raw nginx configuration, written verbatim into the include file. Every directive ends with a semicolon; a mistake fails nginx -t for the mappings that include it and is rolled back automatically.">i</button></label>
+                    <textarea id="cfgsnip-content" name="content" rows="8" spellcheck="false" placeholder="add_header X-Frame-Options SAMEORIGIN always;"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label>
+                    <input id="cfgsnip-description" name="description" maxlength="200" placeholder="What this block does"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">INCLUDE LINE A MAPPING GETS</div>
+                    <pre id="cfgsnip-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all">include …</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="cfgsnip-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save snippet</button>
+                    <span class="text-[11px] text-slate-400">If a live mapping includes it, nginx is validated and reloaded; a bad snippet is rolled back.</span>
+                  </div>
+                </form>
+                <pre id="cfgsnip-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+
+              <!-- Help -->
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4">
+                  <li>Save a snippet here (or start from a preset).</li>
+                  <li>Open a mapping's <b>Reverse Proxy (L7) options</b>. Use <b>Insert snippet</b> above <b>Advanced config</b> (server scope) or on a <b>custom location</b> (location scope).</li>
+                  <li>The picker adds one <span class="font-mono">include …;</span> line. Save / Apply the mapping — nginx validates the result.</li>
+                </ol>
+                <p class="text-xs text-slate-400 mt-3">Files live in <span class="font-mono" id="cfgsnip-dir">…</span>. Applies to Reverse Proxy / WAF mappings (the L7 server block); plain L4 stream mappings have no raw-config hook.</p>
+                <p class="text-xs text-amber-600 mt-2">A snippet can't be deleted while a mapping includes it.</p>
+              </div>
+            </div>
+
+            <!-- List -->
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100">
+                <h3 class="text-sm font-semibold">Saved config snippets</h3>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                    <tr>
+                      <th class="text-left px-6 py-3 font-medium">Name</th>
+                      <th class="text-left px-6 py-3 font-medium">Scope</th>
+                      <th class="text-left px-6 py-3 font-medium">Directives</th>
+                      <th class="text-left px-6 py-3 font-medium">Included by</th>
+                      <th class="px-6 py-3"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="cfgsnip-rows" class="divide-y divide-slate-100"></tbody>
+                </table>
+              </div>
+              <div id="cfgsnip-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No config snippets yet.</div>
+            </div>
+          </div>
+
+          <!-- ── Error pages (moved from its own page) ────────────────── -->
+          <div id="snippanel-errorpages" class="snip-panel hidden space-y-6">
+            <p class="text-sm text-slate-500 -mb-2">Custom pages for HTTP errors. The dashboard serves them for its own errors, and any <b>Reverse Proxy / WAF mapping</b> can select them (mapping form → Reverse Proxy options → Error pages) so nginx serves the page for those status codes. Anything not overridden uses the built-in animated default. <button id="errpages-refresh" type="button" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 ml-1">Refresh</button></p>
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
             <!-- Upload -->
             <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
@@ -2483,6 +2911,7 @@
                     <th class="text-left px-6 py-3 font-medium">Key</th>
                     <th class="text-left px-6 py-3 font-medium">Size</th>
                     <th class="text-left px-6 py-3 font-medium">Last modified</th>
+                    <th class="text-left px-6 py-3 font-medium">Used by mappings</th>
                     <th class="px-6 py-3"></th>
                   </tr>
                 </thead>
@@ -2490,6 +2919,7 @@
               </table>
             </div>
             <div id="errpages-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No custom error pages yet — every status code uses the built-in default above.</div>
+          </div>
           </div>
         </section>
 

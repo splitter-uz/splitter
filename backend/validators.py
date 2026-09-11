@@ -156,6 +156,26 @@ def clean_backend(value):
     return f"{host}:{port_i}"
 
 
+_HTTP_METHOD_RE = re.compile(r"^[A-Z]{3,16}$")
+
+
+def clean_http_methods(value):
+    """A list (or comma/space separated string) of HTTP methods, upper-cased
+    and de-duplicated. Empty => no restriction."""
+    if isinstance(value, str):
+        value = re.split(r"[\s,]+", value)
+    out = []
+    for raw in value or []:
+        m = (raw or "").strip().upper()
+        if not m:
+            continue
+        if not _HTTP_METHOD_RE.match(m):
+            raise ValidationError(f"Invalid HTTP method {raw!r} — use names like GET, POST, PUT, DELETE.")
+        if m not in out:
+            out.append(m)
+    return out
+
+
 # nginx time values: a number with an optional unit (ms, s, m, h, d, w).
 _TIME_RE = re.compile(r"^\d+(ms|s|m|h|d|w)?$")
 # nginx size/rate values: bytes/sec with an optional k/m/g suffix (e.g. 1m, 512k).
