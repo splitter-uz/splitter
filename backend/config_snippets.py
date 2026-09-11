@@ -76,17 +76,9 @@ def include_line(name):
 
 
 def usage(name):
-    """Mappings including this snippet — directly (matched on its file path)
-    or through a profile that lists it."""
-    direct = storage.cfgsnip_usage(path_for(name))
-    via = set(storage.profiles_referencing("snippets", name))
-    out, seen = [], set()
-    for m in direct + ([m for m in storage.export_all().values() if m.get("profile") in via] if via else []):
-        key = (m["domain"], m.get("listen_port"))
-        if key not in seen:
-            seen.add(key)
-            out.append(m)
-    return out
+    """Mappings using this snippet — selected on the mapping or a location,
+    or included by hand (matched on its file path)."""
+    return storage.cfgsnip_usage(path_for(name), ref=f"config:{name}")
 
 
 def render_file(rec):

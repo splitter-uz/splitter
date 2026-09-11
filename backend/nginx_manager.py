@@ -20,7 +20,7 @@ import tempfile
 import time
 
 import config
-import profiles
+import snippets
 import storage
 
 
@@ -671,7 +671,7 @@ def log_format_lines(mapping, fmt_name, context, default_lines):
 
 
 def render_conf(mapping):
-    mapping = profiles.merge(mapping)   # profile fills in what the mapping leaves blank
+    mapping = snippets.resolve(mapping)   # selected snippets => plain fields
     backends = _apply_failover(mapping, _normalize_backends(mapping))
     name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT)
     port = mapping.get("listen_port") or config.LISTEN_PORT
@@ -1012,7 +1012,7 @@ def render_http_conf(mapping):
     only apply once `has_cert` is set (TLS termination) except WebSocket/HTTP2/
     custom-locations/advanced-config, which apply regardless.
     """
-    mapping = profiles.merge(mapping)   # profile fills in what the mapping leaves blank
+    mapping = snippets.resolve(mapping)   # selected snippets => plain fields
     backends = _apply_failover(mapping, _normalize_backends(mapping))
     name = upstream_name(mapping["domain"], mapping.get("listen_port") or config.LISTEN_PORT) + "_http"
     port = mapping.get("listen_port") or config.LISTEN_PORT
@@ -1053,7 +1053,7 @@ def render_http_conf(mapping):
     limit_conn = mapping.get("limit_conn") if rate_limit else None
     down_rate = mapping.get("proxy_download_rate") if rate_limit else None
     conn_zone = f"{name}_conn"
-    if limit_conn:
+    if limit_conn or any(snippets.location_uses_ratelimit(loc) for loc in locations):
         lines.append(f"limit_conn_zone $binary_remote_addr zone={conn_zone}:10m;")
         lines.append("")
 
@@ -1099,7 +1099,8 @@ def render_http_conf(mapping):
             g["target"] = var
         else:
             g["target"] = default_target
-        g["config_lines"] = [ln for r in g["rows"] for ln in (r.get("config") or "").splitlines()]
+        g["config_lines"] = [ln for r in g["rows"]
+                             for ln in snippets.location_lines(r, conn_zone) + (r.get("config") or "").splitlines()]
     root_group = next((g for g in groups if g["path"] == "/"), None)
     groups = [g for g in groups if g is not root_group]
 

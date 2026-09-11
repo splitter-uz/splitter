@@ -509,7 +509,7 @@ happened.
 | `GET`·`POST` | `/api/nginx/status` · `/nginx/status/provision` | any / admin | nginx `stub_status` counters (http layer) + (re)provision the loopback status endpoint. |
 | `GET`·`POST`·`DELETE` | `/api/log-formats[/<name>]` | any / admin | Log‑format snippets (Snippets page) a mapping can select via its `log_format` field. |
 | `GET`·`POST`·`DELETE` | `/api/config-snippets[/<name>]` | any / admin | Config snippets: raw nginx blocks written as include files a mapping pulls into its Advanced config / custom locations. |
-| `GET`·`POST`·`DELETE` | `/api/profiles[/<name>]` | any / admin | Settings profiles: rate limit + timeouts + log format + error pages + snippet includes, selected on a mapping as one (`profile`). Blank mapping fields inherit from it. |
+| `GET` · `GET`·`POST`·`DELETE` | `/api/snippets` · `/api/snippets/{ratelimit,timeouts}[/<name>]` | any / admin | Snippet catalogue for the mapping form's picker (all kinds), plus rate‑limit and timeout snippets. A mapping stores `snippets` refs like `ratelimit:api`. |
 | `GET` | `/api/random-mac` | any | Generate a random locally‑administered MAC. |
 | `POST` | `/api/system/reboot` | admin | Reboot the host (native install only). |
 

@@ -414,17 +414,6 @@
                       class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
                   </div>
 
-                  <!-- Settings profile (Snippets → Profiles): one pick fills rate limit,
-                       timeouts, log format, error pages and snippet includes. -->
-                  <div id="profile-block">
-                    <label class="block text-sm font-medium mb-1">Settings profile<button type="button" class="info-tip" aria-label="More info" data-tip="A bundle from Snippets → Profiles: rate limit, timeouts, log format, error pages and config-snippet includes in one pick. Blank fields under Per-mapping overrides inherit from it; a value you enter there wins. None = built-in defaults, exactly as before.">i</button></label>
-                    <select name="profile" id="profile"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
-                      <option value="">None — built-in defaults</option>
-                    </select>
-                    <p id="profile-summary" class="hidden text-xs text-emerald-700 mt-1"></p>
-                  </div>
-
                   <!-- Transport (TCP / UDP) -->
                   <div>
                     <label class="block text-sm font-medium mb-1">Transport<button type="button" class="info-tip" aria-label="More info" data-tip="TCP for connection-based services (HTTP, databases, SSH, RDP). UDP for datagram protocols such as DNS, WireGuard, QUIC and NTP.">i</button></label>
@@ -648,6 +637,17 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                     </div>
                   </div>
 
+                  <!-- Snippets: the one place to pick rate limit, timeouts, log format,
+                       error pages and config snippets for this mapping (Snippets page). -->
+                  <div id="snippets-block" class="rounded-lg border border-slate-200 p-3 space-y-2">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-sm font-medium">Snippets<button type="button" class="info-tip" aria-label="More info" data-tip="Reusable settings managed on the Snippets page. Pick what this mapping needs: one rate limit, one timeouts set, one log format, any error pages and config snippets. Nothing selected = built-in defaults. Error pages and config snippets take effect on Reverse Proxy / WAF mappings.">i</button></span>
+                      <button type="button" class="nav-jump-snippets text-xs font-medium text-emerald-700 hover:text-emerald-900">Manage snippets →</button>
+                    </div>
+                    <div id="snippets-pick" class="space-y-2"><span class="text-xs text-slate-400">Loading…</span></div>
+                    <p id="snippets-legacy-note" class="hidden text-[11px] text-amber-600"></p>
+                  </div>
+
                   <!-- Reverse Proxy (L7) options — only take effect once this mapping
                        is bound to Reverse Proxy/WAF; ignored on a plain L4 stream. -->
                   <details id="l7-advanced-details" class="group rounded-lg border border-slate-200">
@@ -674,99 +674,15 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                           <button type="button" id="add-location" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add location</button>
                         </div>
                         <div id="locations" class="space-y-2"></div>
-                        <p class="text-[11px] text-slate-400 mt-1">Each row becomes <span class="font-mono">location &lt;path&gt; { ... }</span>, evaluated before the default <span class="font-mono">location /</span>. <b>Path routing:</b> give a row its own backends and that path is served by them instead of the main pool. <b>Method routing:</b> add methods and only those requests go there (the rest stay on the main pool). Use several rows with the <i>same path</i> for a multi-way split — e.g. <span class="font-mono">/api</span> GET → main pool, <span class="font-mono">/api</span> POST, PUT → write node, <span class="font-mono">/api</span> DELETE → another. A row with path <span class="font-mono">/</span> splits the whole site by method. Extra directives are optional.</p>
+                        <p class="text-[11px] text-slate-400 mt-1">Each row becomes <span class="font-mono">location &lt;path&gt; { ... }</span>, evaluated before the default <span class="font-mono">location /</span>. <b>Path routing:</b> give a row its own backends. <b>Method routing:</b> add methods so only those go there; several rows may share a path (<span class="font-mono">/api</span> GET → main, POST/PUT → write node…); path <span class="font-mono">/</span> splits the whole site by method. <b>Snippets:</b> each row can pick its own config snippets, rate limit and timeouts. Extra directives are optional.</p>
                       </div>
 
                       <div>
-                        <div class="flex items-center justify-between mb-1 gap-2">
-                          <label class="block text-xs font-medium">Advanced config <span class="text-slate-400 font-normal">(raw nginx, inserted into the server block)</span></label>
-                          <select id="advanced-snippet-pick" data-snippet-target="#advanced_config" data-snippet-scope="server" class="snippet-pick rounded-md border border-slate-300 px-2 py-1 text-xs bg-white text-slate-600"><option value="">Insert snippet…</option></select>
-                        </div>
+                        <label class="block text-xs font-medium mb-1">Advanced config <span class="text-slate-400 font-normal">(raw nginx, inserted into the server block)</span></label>
                         <textarea name="advanced_config" id="advanced_config" rows="4" spellcheck="false" placeholder="# e.g. extra headers, rewrites…"
                           class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
                         <p class="text-[11px] text-amber-600 mt-1">Written verbatim into the generated config — a mistake here can fail <span class="font-mono">nginx -t</span> for this mapping only (rolled back automatically). Admin/creator access required, same as everything else on this form.</p>
                       </div>
-                    </div>
-                  </details>
-
-                  <!-- Per-mapping overrides: everything a profile can also provide.
-                       Collapsed by default so the form stays short; a blank field
-                       here inherits the profile's value (or the built-in default). -->
-                  <details id="overrides-details" class="group rounded-lg border border-slate-200">
-                    <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 flex items-center justify-between">
-                      <span>Per-mapping overrides <span class="text-xs font-normal text-slate-400">· rate limit, timeouts, log format, error pages</span><button type="button" class="info-tip" aria-label="More info" data-tip="Settings you can set on this mapping alone. Leave them blank to inherit from the selected profile (or the built-in defaults). A value entered here always wins over the profile.">i</button></span>
-                      <span class="text-xs text-slate-400 group-open:hidden">show</span>
-                    </summary>
-                    <div class="px-3 pb-3 space-y-4">
-                  <!-- Rate limit (Layer-4: connection cap + bandwidth) -->
-                  <div class="rounded-lg border border-slate-200">
-                    <label class="flex items-center justify-between px-3 py-2.5 cursor-pointer">
-                      <span class="text-sm font-medium">Rate limit<button type="button" class="info-tip" aria-label="More info" data-tip="Per-client limits: cap how many simultaneous connections one IP may hold, and throttle bytes per second on each connection.">i</button>
-                        <span class="text-xs font-normal text-slate-400">· per client IP / connection</span></span>
-                      <input type="checkbox" name="rate_limit" id="rate_limit_enabled" value="1" class="h-4 w-4 rounded" />
-                    </label>
-                    <div id="rate-section" class="hidden px-3 pb-3 space-y-3">
-                      <div>
-                        <label class="block text-xs font-medium mb-1">Max connections / client IP<button type="button" class="info-tip" aria-label="More info" data-tip="Maximum simultaneous connections from one source IP (limit_conn). Connections above the cap are refused. Blank = unlimited.">i</button></label>
-                        <input name="limit_conn" id="limit_conn" type="number" min="1" placeholder="e.g. 10"
-                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                        <p class="text-[11px] text-slate-400 mt-1">Caps simultaneous connections from one IP (<span class="font-mono">limit_conn</span>). Blank = unlimited.</p>
-                      </div>
-                      <div class="grid grid-cols-2 gap-3">
-                        <div>
-                          <label class="block text-xs font-medium mb-1">Download rate<button type="button" class="info-tip" aria-label="More info" data-tip="Bytes per second sent to the client on each connection (proxy_download_rate). Use a k or m suffix, e.g. 1m.">i</button></label>
-                          <input name="proxy_download_rate" id="proxy_download_rate" placeholder="e.g. 1m"
-                            class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                        </div>
-                        <div>
-                          <label class="block text-xs font-medium mb-1">Upload rate<button type="button" class="info-tip" aria-label="More info" data-tip="Bytes per second read from the client on each connection (proxy_upload_rate). Use a k or m suffix, e.g. 512k.">i</button></label>
-                          <input name="proxy_upload_rate" id="proxy_upload_rate" placeholder="e.g. 512k"
-                            class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                        </div>
-                      </div>
-                      <p class="text-[11px] text-slate-400">Bytes/sec <b>per connection</b> (<span class="font-mono">k</span>/<span class="font-mono">m</span> suffix, e.g. <span class="font-mono">1m</span>). Blank = unlimited.</p>
-                    </div>
-                  </div>
-
-                  <!-- Advanced: proxy timeouts -->
-                  <details class="group rounded-lg border border-slate-200">
-                    <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 flex items-center justify-between">
-                      <span>Advanced (timeouts)<button type="button" class="info-tip" aria-label="More info" data-tip="Idle and connect timeouts for the proxied connection.">i</button></span> <span class="text-xs text-slate-400 group-open:hidden">show</span>
-                    </summary>
-                    <div class="px-3 pb-3 grid grid-cols-2 gap-3">
-                      <div>
-                        <label class="block text-xs font-medium mb-1">proxy_timeout<button type="button" class="info-tip" aria-label="More info" data-tip="Close the session after this long with no data flowing in either direction. Default 10m. Raise it for long-idle connections such as databases or SSH.">i</button></label>
-                        <input name="proxy_timeout" id="proxy_timeout" placeholder="10m"
-                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                      </div>
-                      <div>
-                        <label class="block text-xs font-medium mb-1">proxy_connect_timeout<button type="button" class="info-tip" aria-label="More info" data-tip="How long to wait for a backend to accept the connection before it is marked failed and the next backend is tried. Default 5s.">i</button></label>
-                        <input name="proxy_connect_timeout" id="proxy_connect_timeout" placeholder="5s"
-                          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                      </div>
-                    </div>
-                  </details>
-
-                  <!-- Log format snippet -->
-                  <div>
-                    <label class="block text-sm font-medium mb-1">Log format<button type="button" class="info-tip" aria-label="More info" data-tip="Which access-log line this mapping writes. Built-in is a sensible default; a snippet from Snippets → Log formats replaces it (stream snippets for Stream mappings, http snippets once bound to the Reverse Proxy / WAF).">i</button></label>
-                    <select name="log_format" id="log_format"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
-                      <option value="">Built-in default</option>
-                    </select>
-                    <p class="text-xs text-slate-400 mt-1">Custom access-log line for this mapping. Manage snippets on the <b>Snippets → Log formats</b> tab.</p>
-                  </div>
-
-                  <!-- Error pages nginx serves for this mapping (uploaded on Snippets → Error pages) -->
-                  <div id="error-pages-block" class="rounded-lg border border-slate-200 p-3">
-                    <label class="block text-sm font-medium mb-1.5">Error pages<button type="button" class="info-tip" aria-label="More info" data-tip="Pages uploaded on Snippets → Error pages. Tick one and nginx serves it for that page's status codes on this mapping: backend responses with those codes, and nginx's own 502 / 504 when the backend is down. Works on Reverse Proxy / WAF mappings (the HTTP layer).">i</button></label>
-                    <div id="error-pages-pick" class="flex flex-wrap gap-1.5">
-                      <span class="text-xs text-slate-400">No custom error pages uploaded yet — add some on <b>Snippets → Error pages</b>.</span>
-                    </div>
-                    <p id="error-pages-mode-note" class="hidden text-[11px] text-amber-600 mt-1.5">Stored now, applied once this mapping is bound to the Reverse Proxy / WAF — a plain Layer-4 stream can't serve HTTP error pages.</p>
-                    <p class="text-[11px] text-slate-400 mt-1.5">Adds <span class="font-mono">proxy_intercept_errors on</span> and an <span class="font-mono">error_page</span> line per selected page to the generated config.</p>
-                  </div>
-
                     </div>
                   </details>
 
@@ -2565,10 +2481,102 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
 
           <!-- Tab strip -->
           <div class="flex overflow-x-auto bg-slate-50/70 border border-slate-200 rounded-xl px-2 pt-2 gap-0.5">
+            <button data-sniptab="ratelimit" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Rate limits <span id="snip-ratelimit-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+            <button data-sniptab="timeouts" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Timeouts <span id="snip-timeouts-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
             <button data-sniptab="logformats" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Log formats <span id="snip-logformats-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
             <button data-sniptab="config" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Config snippets <span id="snip-config-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
-            <button data-sniptab="profiles" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Profiles <span id="snip-profiles-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
             <button data-sniptab="errorpages" class="snip-tab flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg border border-b-0 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Error pages <span id="snip-errorpages-count" class="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">0</span></button>
+          </div>
+
+          <!-- ── Rate limits ── -->
+          <div id="snippanel-ratelimit" class="snip-panel hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="rl-form-title" class="text-sm font-semibold text-slate-800">New rate limit</div>
+                  <button type="button" id="rl-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">Per-client limits: how many simultaneous connections one IP may hold and how fast each connection may go. Blank = no limit for that value.</p>
+                <form id="rl-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">Name</label><input id="rl-name" name="name" required pattern="[A-Za-z][A-Za-z0-9_-]{0,39}" placeholder="api-strict" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label><input id="rl-description" name="description" maxlength="200" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">Max connections / IP</label><input name="limit_conn" id="rl-limit_conn" placeholder="e.g. 10" type="number" min="1" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Download rate</label><input name="proxy_download_rate" id="rl-proxy_download_rate" placeholder="e.g. 1m"  class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Upload rate <span class="text-slate-400 font-normal">(stream only)</span></label><input name="proxy_upload_rate" id="rl-proxy_upload_rate" placeholder="e.g. 512k"  class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">RENDERED DIRECTIVES</div>
+                    <pre id="rl-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all min-h-[3rem]">…</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="rl-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save</button>
+                    <span class="text-[11px] text-slate-400">Mappings using this snippet are re-applied (nginx -t guards every change).</span>
+                  </div>
+                </form>
+                <pre id="rl-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4"><li>Save a limit set here, e.g. <b>api-strict</b>: 10 connections per IP, 1m download.</li><li>Pick it under <b>Snippets → Rate limit</b> on a mapping, or on a custom location for one path only.</li><li>Stream: <span class="font-mono">limit_conn</span> + <span class="font-mono">proxy_download/upload_rate</span>. Reverse Proxy: <span class="font-mono">limit_conn</span> + <span class="font-mono">limit_rate</span>.</li></ol>
+                <p class="text-xs text-amber-600 mt-3">A snippet can't be deleted while a mapping or location uses it.</p>
+              </div>
+            </div>
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100"><h3 class="text-sm font-semibold">Saved rate limits</h3></div>
+              <div class="overflow-x-auto"><table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide"><tr><th class="text-left px-6 py-3 font-medium">Name</th><th class="text-left px-6 py-3 font-medium">Values</th><th class="text-left px-6 py-3 font-medium">Used by</th><th class="px-6 py-3"></th></tr></thead>
+                <tbody id="rl-rows" class="divide-y divide-slate-100"></tbody>
+              </table></div>
+              <div id="rl-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No rate limits yet.</div>
+            </div>
+          </div>
+
+          <!-- ── Timeouts ── -->
+          <div id="snippanel-timeouts" class="snip-panel hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
+                <div class="flex items-center justify-between mb-1">
+                  <div id="to-form-title" class="text-sm font-semibold text-slate-800">New timeout set</div>
+                  <button type="button" id="to-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">How long nginx waits for a backend to accept the connection, and how long an idle connection may stay open. nginx time values: 10s, 5m, 1h.</p>
+                <form id="to-form" class="space-y-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">Name</label><input id="to-name" name="name" required pattern="[A-Za-z][A-Za-z0-9_-]{0,39}" placeholder="api-strict" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label><input id="to-description" name="description" maxlength="200" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block text-xs font-medium mb-1">proxy_timeout (idle / read)</label><input name="proxy_timeout" id="to-proxy_timeout" placeholder="e.g. 10m"  class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                    <div><label class="block text-xs font-medium mb-1">proxy_connect_timeout</label><input name="proxy_connect_timeout" id="to-proxy_connect_timeout" placeholder="e.g. 5s"  class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">RENDERED DIRECTIVES</div>
+                    <pre id="to-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all min-h-[3rem]">…</pre>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button type="submit" id="to-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save</button>
+                    <span class="text-[11px] text-slate-400">Mappings using this snippet are re-applied (nginx -t guards every change).</span>
+                  </div>
+                </form>
+                <pre id="to-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+              </div>
+              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
+                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
+                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4"><li>Save a timeout set here, e.g. <b>long-lived</b>: 1h idle for databases / SSH.</li><li>Pick it under <b>Snippets → Timeouts</b> on a mapping, or on a custom location.</li><li>Stream: <span class="font-mono">proxy_timeout</span> / <span class="font-mono">proxy_connect_timeout</span>. Reverse Proxy: <span class="font-mono">proxy_read/send_timeout</span> / <span class="font-mono">proxy_connect_timeout</span>.</li></ol>
+                <p class="text-xs text-amber-600 mt-3">A snippet can't be deleted while a mapping or location uses it.</p>
+              </div>
+            </div>
+            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
+              <div class="px-6 py-4 border-b border-slate-100"><h3 class="text-sm font-semibold">Saved timeouts</h3></div>
+              <div class="overflow-x-auto"><table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide"><tr><th class="text-left px-6 py-3 font-medium">Name</th><th class="text-left px-6 py-3 font-medium">Values</th><th class="text-left px-6 py-3 font-medium">Used by</th><th class="px-6 py-3"></th></tr></thead>
+                <tbody id="to-rows" class="divide-y divide-slate-100"></tbody>
+              </table></div>
+              <div id="to-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No timeouts yet.</div>
+            </div>
           </div>
 
           <!-- ── Log formats ─────────────────────────────────────────── -->
@@ -2754,94 +2762,6 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
                 </table>
               </div>
               <div id="cfgsnip-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No config snippets yet.</div>
-            </div>
-          </div>
-
-          <!-- ── Profiles ────────────────────────────────────────────── -->
-          <div id="snippanel-profiles" class="snip-panel hidden space-y-6">
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-[var(--gap)]">
-              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5 lg:col-span-2">
-                <div class="flex items-center justify-between mb-1">
-                  <div id="profile-form-title" class="text-sm font-semibold text-slate-800">New profile</div>
-                  <button type="button" id="profile-cancel" class="hidden text-xs font-medium text-slate-500 hover:text-slate-800">Cancel edit</button>
-                </div>
-                <p class="text-xs text-slate-500 mb-4">A named bundle of settings. Pick it as the <b>Settings profile</b> on a mapping and every field left blank there takes the profile's value. Only the parts you fill in here are applied; the rest stay at the built-in defaults.</p>
-                <form id="profile-form" class="space-y-4">
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label class="block text-xs font-medium mb-1">Name</label>
-                      <input id="profile-name" name="name" required placeholder="api-hardened" pattern="[A-Za-z][A-Za-z0-9_-]{0,39}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" />
-                    </div>
-                    <div>
-                      <label class="block text-xs font-medium mb-1">Description <span class="text-slate-400 font-normal">(optional)</span></label>
-                      <input id="profile-description" name="description" maxlength="200" placeholder="What this bundle is for" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
-                    </div>
-                  </div>
-
-                  <div class="rounded-lg border border-slate-200 p-3 space-y-2">
-                    <label class="flex items-center gap-2 text-sm font-medium"><input type="checkbox" name="rate_limit" id="profile-rate_limit" value="1" class="h-4 w-4 rounded" /> Rate limit</label>
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <div><label class="block text-[11px] text-slate-500 mb-0.5">Max connections / IP</label><input name="limit_conn" id="profile-limit_conn" type="number" min="1" placeholder="e.g. 10" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
-                      <div><label class="block text-[11px] text-slate-500 mb-0.5">Download rate</label><input name="proxy_download_rate" id="profile-proxy_download_rate" placeholder="e.g. 1m" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
-                      <div><label class="block text-[11px] text-slate-500 mb-0.5">Upload rate</label><input name="proxy_upload_rate" id="profile-proxy_upload_rate" placeholder="e.g. 512k" class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
-                    </div>
-                  </div>
-
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div><label class="block text-xs font-medium mb-1">proxy_timeout <span class="text-slate-400 font-normal">(blank = default)</span></label><input name="proxy_timeout" id="profile-proxy_timeout" placeholder="10m" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
-                    <div><label class="block text-xs font-medium mb-1">proxy_connect_timeout <span class="text-slate-400 font-normal">(blank = default)</span></label><input name="proxy_connect_timeout" id="profile-proxy_connect_timeout" placeholder="5s" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></div>
-                  </div>
-
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Log format</label>
-                    <select name="log_format" id="profile-log_format" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-500"><option value="">Built-in default</option></select>
-                  </div>
-
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Error pages <span class="text-slate-400 font-normal">(Reverse Proxy / WAF mappings)</span></label>
-                    <div id="profile-error-pages" class="flex flex-wrap gap-1.5"><span class="text-xs text-slate-400">No custom error pages uploaded yet.</span></div>
-                  </div>
-
-                  <div>
-                    <label class="block text-xs font-medium mb-1">Config snippets to include <span class="text-slate-400 font-normal">(server scope; Reverse Proxy / WAF mappings)</span></label>
-                    <div id="profile-snippets" class="flex flex-wrap gap-1.5"><span class="text-xs text-slate-400">No config snippets yet.</span></div>
-                  </div>
-
-                  <div>
-                    <div class="text-[10px] font-bold font-mono tracking-widest text-slate-400 mb-1">THIS PROFILE SETS</div>
-                    <pre id="profile-preview" class="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap break-all min-h-[3rem]">nothing yet</pre>
-                  </div>
-                  <div class="flex items-center gap-3">
-                    <button type="submit" id="profile-save" class="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 shadow">Save profile</button>
-                    <span class="text-[11px] text-slate-400">Mappings using this profile are re-applied (nginx -t guards every change).</span>
-                  </div>
-                </form>
-                <pre id="profile-steps" class="hidden mt-3 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
-              </div>
-
-              <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm p-5">
-                <div class="text-sm font-semibold text-slate-800 mb-1">How it's used</div>
-                <ol class="text-xs text-slate-500 space-y-2 list-decimal pl-4">
-                  <li>Create a profile with the settings you reuse (e.g. "public-api": rate limit, JSON log, custom 502 page, security headers).</li>
-                  <li>On a mapping, pick it under <b>Settings profile</b> at the top of the form. Done — nothing else to fill in.</li>
-                  <li>Need an exception? Open <b>Per-mapping overrides</b> on that mapping: a filled field there beats the profile.</li>
-                </ol>
-                <p class="text-xs text-slate-400 mt-3">Log format and rate limit / timeouts apply to Stream and Reverse Proxy mappings alike. Error pages and snippet includes only take effect on Reverse Proxy / WAF mappings.</p>
-                <p class="text-xs text-amber-600 mt-2">A profile can't be deleted while a mapping uses it. Items a profile references (log format, error page, snippet) can't be deleted either.</p>
-              </div>
-            </div>
-
-            <div class="card bg-white/80 rounded-2xl border border-slate-200/70 shadow-sm overflow-hidden">
-              <div class="px-6 py-4 border-b border-slate-100"><h3 class="text-sm font-semibold">Saved profiles</h3></div>
-              <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                  <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-                    <tr><th class="text-left px-6 py-3 font-medium">Name</th><th class="text-left px-6 py-3 font-medium">Sets</th><th class="text-left px-6 py-3 font-medium">Used by</th><th class="px-6 py-3"></th></tr>
-                  </thead>
-                  <tbody id="profile-rows" class="divide-y divide-slate-100"></tbody>
-                </table>
-              </div>
-              <div id="profile-empty" class="hidden px-6 py-12 text-center text-sm text-slate-400">No profiles yet.</div>
             </div>
           </div>
 

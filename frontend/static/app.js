@@ -167,10 +167,7 @@ let MAPPING_FORM_SOURCE = "map";   // "map" | "docker"
 
 function showMappingForm() {
   MAPPING_FORM_SOURCE = "map";
-  loadProfiles();
-  loadLogFormats();
-  loadConfigSnippets();
-  loadErrorPages();
+  loadSnippetCatalog();
   const home = $("#mappanel-mappings"), form = $("#mapping-form-view");
   if (home && form && form.parentElement !== home) home.appendChild(form);
   const dslot = $("#docker-form-slot"); if (dslot) dslot.classList.add("hidden");
@@ -218,10 +215,7 @@ function dockerNewMapping() {
 
 function dockerShowMappingForm() {
   MAPPING_FORM_SOURCE = "docker";
-  loadProfiles();
-  loadLogFormats();
-  loadConfigSnippets();
-  loadErrorPages();
+  loadSnippetCatalog();
   const slot = $("#docker-form-slot"), form = $("#mapping-form-view");
   if (slot && form) slot.appendChild(form);
   if (form) form.classList.remove("hidden");
@@ -953,7 +947,6 @@ function addLocationRow(loc) {
     <div class="flex gap-2 items-center">
       <input class="loc-path flex-1 min-w-0 rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
         placeholder="/api" value="${escapeHtml(loc.path || "")}" />
-      <select data-snippet-scope="location" class="snippet-pick loc-snippet rounded-md border border-slate-300 px-2 py-1 text-xs bg-white text-slate-600"><option value="">Insert snippet…</option></select>
       <button type="button" class="rm-location px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
     </div>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -968,12 +961,11 @@ function addLocationRow(loc) {
           placeholder="POST, PUT, DELETE" value="${escapeHtml((loc.methods || []).join(", "))}" />
       </div>
     </div>
-    <textarea class="loc-config w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" rows="3"
+    <div class="loc-snips rounded-md border border-dashed border-slate-200 p-2 space-y-1.5" data-selected="${escapeHtml(JSON.stringify(loc.snippets || []))}"></div>
+    <textarea class="loc-config w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" rows="2"
       placeholder="proxy_set_header X-Api-Key mykey;   (optional extra directives for this path)">${escapeHtml(loc.config || "")}</textarea>`;
   wrap.querySelector(".rm-location").addEventListener("click", () => wrap.remove());
-  const pick = wrap.querySelector(".loc-snippet");
-  fillSnippetPicker(pick);
-  pick.addEventListener("change", () => insertSnippetInto(wrap.querySelector(".loc-config"), pick));
+  renderLocationSnippetPicker(wrap.querySelector(".loc-snips"));
   $("#locations").appendChild(wrap);
 }
 
@@ -984,7 +976,8 @@ function serializeLocations() {
     config: row.querySelector(".loc-config").value,
     backends: split(row.querySelector(".loc-backends").value),
     methods: split(row.querySelector(".loc-methods").value).map((m) => m.toUpperCase()),
-  })).filter((l) => l.path && (l.config.trim() || l.backends.length));
+    snippets: selectedRefs(row.querySelector(".loc-snips")),
+  })).filter((l) => l.path && (l.config.trim() || l.backends.length || l.snippets.length));
 }
 
 // --- load-balancing method panels -----------------------------------------
@@ -1020,9 +1013,6 @@ function syncLbAuto() {
   toggleLbSection();
 }
 
-function toggleRateSection() {
-  $("#rate-section").classList.toggle("hidden", !$("#rate_limit_enabled").checked);
-}
 
 // --- SSL tabs --------------------------------------------------------------
 function selectSsl(mode) {
@@ -1870,9 +1860,8 @@ function resetForm() {
   selectSsl("none");
   onMethodChange();
   onLbChange();
-  const od = $("#overrides-details"); if (od) od.open = false;
-  renderProfileSummary();
-  toggleRateSection();   // collapse rate-limit panel (reset() unchecked the toggle)
+  renderSnippetsPicker([]);
+  $("#snippets-legacy-note").classList.add("hidden");
   syncHealthUI();        // collapse health-check panel
   syncHstsUI();          // collapse force-SSL/HSTS panel (reset() unchecked the toggles)
   applyIntentModeUI();   // hide L7-only fields (locations, WS, HTTP/2, Force-HTTPS…) for Stream
@@ -1969,19 +1958,9 @@ function editMapping(domain, port) {
   setVal("health_expect", m.health_expect || "");
   syncHealthUI();
 
-  // rate limit
-  $("#rate_limit_enabled").checked = !!m.rate_limit;
-  setVal("limit_conn", m.limit_conn || "");
-  setVal("proxy_download_rate", m.proxy_download_rate || "");
-  setVal("proxy_upload_rate", m.proxy_upload_rate || "");
-  toggleRateSection();
-
-  // timeouts (open the panel if customised)
-  setVal("proxy_timeout", m.proxy_timeout || "");
-  setVal("proxy_connect_timeout", m.proxy_connect_timeout || "");
-  if (m.proxy_timeout || m.proxy_connect_timeout) {
-    const d = document.querySelector("details"); if (d) d.open = true;
-  }
+  // Snippets (rate limit / timeouts / log format / error pages / config).
+  renderSnippetsPicker(m.snippets || []);
+  renderLegacyInlineNote(m);
 
   $("#sni_guard").checked = !!m.sni_guard;
 
@@ -1999,8 +1978,7 @@ function editMapping(domain, port) {
   setVal("advanced_config", m.advanced_config || "");
   $("#locations").innerHTML = "";
   (m.locations || []).forEach(addLocationRow);
-  renderErrorPagePicker(m.error_pages || []);
-  if (m.websocket_upgrade || !m.http2 || m.proxy_http11 || m.ssl_forced || m.advanced_config || (m.locations || []).length || (m.error_pages || []).length) {
+  if (m.websocket_upgrade || !m.http2 || m.proxy_http11 || m.ssl_forced || m.advanced_config || (m.locations || []).length) {
     const l7d = $("#l7-advanced-details"); if (l7d) l7d.open = true;
   }
 
@@ -2010,27 +1988,6 @@ function editMapping(domain, port) {
     ? m.access_list : "__default__";
   if (![...$("#access_list").options].some((o) => o.value === $("#access_list").value))
     $("#access_list").value = "__default__";
-
-  // Settings profile — keep the stored name even if the list hasn't loaded yet.
-  const pf = $("#profile");
-  if (pf) {
-    const want = m.profile || "";
-    if (want && ![...pf.options].some((o) => o.value === want)) pf.add(new Option(want, want));
-    pf.value = want;
-    renderProfileSummary();
-  }
-  const od = $("#overrides-details");
-  if (od) od.open = !!(m.rate_limit || m.proxy_timeout || m.proxy_connect_timeout || m.log_format || (m.error_pages || []).length);
-
-  // Log format snippet — keep the stored name even if the list hasn't loaded yet.
-  const lf = $("#log_format");
-  if (lf) {
-    const want = m.log_format || "";
-    if (want && ![...lf.options].some((o) => o.value === want)) {
-      const o = document.createElement("option"); o.value = want; o.textContent = want; lf.appendChild(o);
-    }
-    lf.value = want;
-  }
 
   // SSL — keep the current cert untouched by default
   EDIT_HAS_CERT = !!m.has_cert;
@@ -4419,8 +4376,6 @@ async function loadErrorPages() {
     const j = await (await fetch("/api/error-pages")).json();
     if (!j.ok) return null;
     ERROR_PAGES = j.pages || [];
-    renderErrorPagePicker();
-    renderProfileEditorChoices();
     const badge = $("#snip-errorpages-count"); if (badge) badge.textContent = ERROR_PAGES.length;
     return j;
   } catch (_) { return null; }
@@ -4432,24 +4387,8 @@ async function loadErrorPagesPage() {
   if (j) renderErrorPagesList(ERROR_PAGES);
 }
 
-// Mapping form: one checkbox per uploaded page. `selected` (edit) or the
-// currently ticked keys (refresh) survive a re-render.
-function renderErrorPagePicker(selected) {
-  const box = $("#error-pages-pick"); if (!box) return;
-  const keep = new Set(selected || [...box.querySelectorAll("input:checked")].map((i) => i.value));
-  if (!ERROR_PAGES.length) {
-    box.innerHTML = '<span class="text-xs text-slate-400">No custom error pages uploaded yet — add some on <b>Snippets → Error pages</b>.</span>';
-    return;
-  }
-  box.innerHTML = ERROR_PAGES.map((p) => `
-    <label class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs cursor-pointer hover:border-emerald-300 ${p.nginx_codes === 0 ? "opacity-50" : ""}" ${p.nginx_codes === 0 ? 'title="Only codes 300-599 can be served by nginx"' : ""}>
-      <input type="checkbox" name="error_pages" value="${escapeHtml(p.key)}" class="rounded" ${keep.has(p.key) ? "checked" : ""} ${p.nginx_codes === 0 ? "disabled" : ""}>
-      <span class="font-mono font-semibold text-slate-700">${escapeHtml(p.key)}</span>
-    </label>`).join("");
-}
-
 // --- Snippets page: Log formats / Config snippets / Error pages tabs --------
-let SNIP_TAB = "logformats";
+let SNIP_TAB = "ratelimit";
 let _snippetsReady = false;
 
 // Provisioning steps (from a save) into a <pre>; hidden when there are none.
@@ -4603,7 +4542,7 @@ const LOGFMT = makeSnippetPanel({
   confirmDelete: (n) => `Delete log format "${n}"?`,
   previewInputs: ["name", "context", "escape", "format"],
   wire: (P) => $("#logfmt-context").addEventListener("change", () => renderLogFormatVars(P)),
-  onLoaded: (P) => { populateLogFormatDropdown(); renderLogFormatVars(P); renderProfileEditorChoices(); },
+  onLoaded: (P) => { renderLogFormatVars(P); loadSnippetCatalog(); },
   afterReset: (P) => renderLogFormatVars(P),
   fillForm: (P, r, isPreset) => {
     $("#logfmt-context").value = r.context;
@@ -4627,9 +4566,8 @@ const CFGSNIP = makeSnippetPanel({
   confirmDelete: (n) => `Delete config snippet "${n}"? Its include file is removed too.`,
   previewInputs: ["name"],
   onLoaded: (P) => {
-    $$(".snippet-pick").forEach(fillSnippetPicker);
     const dir = $("#cfgsnip-dir"); if (dir) dir.textContent = P.meta.dir || "";
-    renderProfileEditorChoices();
+    loadSnippetCatalog();
   },
   fillForm: (P, r, isPreset) => {
     $("#cfgsnip-scope").value = r.scope || "any";
@@ -4655,127 +4593,23 @@ const CFGSNIP = makeSnippetPanel({
   })),
 });
 
-// ---- Profiles (settings bundles) -------------------------------------------
-// Editor choices (log format select, error page + snippet checkboxes) come
-// from the other panels, so they're (re)rendered whenever any of them loads.
-function renderProfileEditorChoices() {
-  const lf = $("#profile-log_format");
-  if (lf) {
-    const cur = lf.value;
-    lf.innerHTML = "";
-    lf.add(new Option("Built-in default", ""));
-    LOGFMT.items.forEach((r) => lf.add(new Option(`${r.name} (${r.context})`, r.name)));
-    lf.value = [...lf.options].some((o) => o.value === cur) ? cur : "";
-  }
-  const chips = (box, items, name, label) => {
-    if (!box) return;
-    const keep = new Set([...box.querySelectorAll("input:checked")].map((i) => i.value));
-    box.innerHTML = items.length ? items.map((it) => `
-      <label class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs cursor-pointer hover:border-emerald-300">
-        <input type="checkbox" name="${name}" value="${escapeHtml(it.value)}" class="rounded" ${keep.has(it.value) ? "checked" : ""}>
-        <span class="font-mono font-semibold text-slate-700">${escapeHtml(it.value)}</span>${it.hint ? `<span class="text-slate-400">${escapeHtml(it.hint)}</span>` : ""}
-      </label>`).join("") : `<span class="text-xs text-slate-400">${label}</span>`;
-    box.querySelectorAll("input").forEach((i) => i.addEventListener("change", () => PROFILE.preview()));
-  };
-  chips($("#profile-error-pages"), ERROR_PAGES.filter((p) => p.nginx_codes !== 0).map((p) => ({ value: p.key })), "error_pages", "No custom error pages uploaded yet.");
-  chips($("#profile-snippets"), CFGSNIP.items.filter((r) => r.scope !== "location").map((r) => ({ value: r.name, hint: r.description })), "snippets", "No server-scope config snippets yet.");
-}
-
-// Human summary of what a profile sets (mirrors profiles.summary() in Python).
-function profileSummary(p) {
-  const parts = [];
-  if (p.rate_limit) {
-    const bits = [];
-    if (p.limit_conn) bits.push(`${p.limit_conn} conn/IP`);
-    if (p.proxy_download_rate) bits.push(`down ${p.proxy_download_rate}`);
-    if (p.proxy_upload_rate) bits.push(`up ${p.proxy_upload_rate}`);
-    parts.push("rate limit " + (bits.length ? bits.join(", ") : "on"));
-  }
-  if (p.proxy_timeout || p.proxy_connect_timeout) parts.push(`timeouts ${p.proxy_timeout || "default"} / ${p.proxy_connect_timeout || "default"}`);
-  if (p.log_format) parts.push(`log format ${p.log_format}`);
-  if ((p.error_pages || []).length) parts.push("error pages " + p.error_pages.join(", "));
-  if ((p.snippets || []).length) parts.push("includes " + p.snippets.join(", "));
-  return parts;
-}
-
-// The profile form as a record (for the live preview).
-function profileFormRecord() {
-  const fd = new FormData($("#profile-form"));
-  return {
-    rate_limit: fd.get("rate_limit") === "1", limit_conn: fd.get("limit_conn"), proxy_download_rate: fd.get("proxy_download_rate"), proxy_upload_rate: fd.get("proxy_upload_rate"),
-    proxy_timeout: fd.get("proxy_timeout"), proxy_connect_timeout: fd.get("proxy_connect_timeout"), log_format: fd.get("log_format"),
-    error_pages: fd.getAll("error_pages"), snippets: fd.getAll("snippets"),
-  };
-}
-
-const PROFILE = makeSnippetPanel({
-  prefix: "profile", tab: "profiles", api: "/api/profiles", listKey: "profiles",
-  newTitle: "New profile", editTitle: "Edit profile",
-  inUseTitle: "Used by a mapping", inUseHint: "switch those mappings to another profile first.",
-  confirmDelete: (n) => `Delete profile "${n}"?`,
-  previewInputs: ["rate_limit", "limit_conn", "proxy_download_rate", "proxy_upload_rate", "proxy_timeout", "proxy_connect_timeout"],
-  wire: () => $("#profile-log_format").addEventListener("change", () => PROFILE.preview()),
-  onLoaded: () => { renderProfileEditorChoices(); populateProfileDropdown(); },
-  afterReset: () => renderProfileEditorChoices(),
-  fillForm: (P, r) => {
-    $("#profile-name").value = r.name;
-    $("#profile-description").value = r.description || "";
-    $("#profile-rate_limit").checked = !!r.rate_limit;
-    ["limit_conn", "proxy_download_rate", "proxy_upload_rate", "proxy_timeout", "proxy_connect_timeout"].forEach((k) => { $(`#profile-${k}`).value = r[k] || ""; });
-    renderProfileEditorChoices();
-    $("#profile-log_format").value = r.log_format || "";
-    $$("#profile-error-pages input").forEach((i) => { i.checked = (r.error_pages || []).includes(i.value); });
-    $$("#profile-snippets input").forEach((i) => { i.checked = (r.snippets || []).includes(i.value); });
-  },
-  preview: () => {
-    const pre = $("#profile-preview"); if (!pre) return;
-    const parts = profileSummary(profileFormRecord());
-    pre.textContent = parts.length ? parts.map((x) => "• " + x).join("\n") : "nothing yet — enable at least one setting";
-  },
-  rowCells: (r) => snippetNameCell(r)
-    + `<td class="px-6 py-3 text-xs text-slate-600">${(r.summary || []).map((x) => `<div>• ${escapeHtml(x)}</div>`).join("") || "—"}</td>`,
-});
-
-// Mapping form: the profile select + its summary line.
-function populateProfileDropdown() {
-  const sel = $("#profile"); if (!sel) return;
-  const cur = sel.value || "";
-  sel.innerHTML = "";
-  sel.add(new Option("None — built-in defaults", ""));
-  PROFILE.items.forEach((p) => sel.add(new Option(p.name + (p.description ? " — " + p.description : ""), p.name)));
-  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "";
-  renderProfileSummary();
-}
-
-function renderProfileSummary() {
-  const sel = $("#profile"), out = $("#profile-summary"); if (!sel || !out) return;
-  const p = PROFILE.items.find((x) => x.name === sel.value);
-  const parts = p ? (p.summary || profileSummary(p)) : [];
-  out.classList.toggle("hidden", !parts.length);
-  out.textContent = parts.length ? "This profile sets: " + parts.join(" · ") + ". Blank overrides below inherit these." : "";
-}
-
-function loadProfiles() { return PROFILE.load(); }
-function editProfile(name) { PROFILE.edit(name); }
-
 // Thin named entry points used elsewhere (page switch, mapping form).
 function loadLogFormats() { return LOGFMT.load(); }
 function loadConfigSnippets() { return CFGSNIP.load(); }
 function editLogFormat(name) { LOGFMT.edit(name); }
 function editConfigSnippet(name) { CFGSNIP.edit(name); }
 
+function loadAllSnippetPanels() {
+  RATELIMIT.load(); TIMEOUTS.load(); loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage();
+}
+
 function startSnippets() {
-  loadLogFormats();
-  loadConfigSnippets();
-  loadErrorPagesPage();
-  loadProfiles();
+  loadAllSnippetPanels();
   if (!_snippetsReady) {
     _snippetsReady = true;
     $$(".snip-tab").forEach((btn) => btn.addEventListener("click", () => showSnipTab(btn.dataset.sniptab)));
-    $("#snippets-refresh").addEventListener("click", () => { loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage(); loadProfiles(); });
-    LOGFMT.wire();
-    CFGSNIP.wire();
-    PROFILE.wire();
+    $("#snippets-refresh").addEventListener("click", loadAllSnippetPanels);
+    RATELIMIT.wire(); TIMEOUTS.wire(); LOGFMT.wire(); CFGSNIP.wire();
   }
   showSnipTab(SNIP_TAB);
 }
@@ -4796,48 +4630,139 @@ function showSnipTab(name) {
   if (panel) panel.classList.remove("hidden");
 }
 
-// ---- Mapping form hooks -------------------------------------------------------
-// "Insert snippet…" pickers (Advanced config + each custom location). Every
-// snippet is listed: the ones matching the picker's scope first, the others
-// tagged with their scope — a "server" snippet is still reachable from a
-// location row (nginx -t decides whether it's valid there). Never disabled;
-// the last entry jumps to the Snippets page.
-const SNIPPET_PICK_MANAGE = "__manage__";
-
-function fillSnippetPicker(sel) {
-  if (!sel) return;
-  const scope = sel.dataset.snippetScope || "any";
-  const fits = (r) => !r.scope || r.scope === "any" || r.scope === scope;
-  const items = [...CFGSNIP.items].sort((a, b) => Number(fits(b)) - Number(fits(a)) || a.name.localeCompare(b.name));
-  sel.innerHTML = "";
-  sel.add(new Option(items.length ? "Insert snippet…" : "No config snippets yet", ""));
-  for (const r of items) sel.add(new Option(`${r.name}${fits(r) ? "" : ` [${r.scope}]`}${r.description ? " — " + r.description : ""}`, r.name));
-  sel.add(new Option("＋ Manage snippets…", SNIPPET_PICK_MANAGE));
-  sel.disabled = false;
+// ---- Rate limit / timeout snippet panels ----------------------------------------
+function describeRateLimit(r) {
+  const bits = [];
+  if (r.limit_conn) bits.push(`${r.limit_conn} conn/IP`);
+  if (r.proxy_download_rate) bits.push(`down ${r.proxy_download_rate}`);
+  if (r.proxy_upload_rate) bits.push(`up ${r.proxy_upload_rate}`);
+  return bits.join(", ");
 }
 
-function insertSnippetInto(textarea, sel) {
-  const choice = sel.value;
-  sel.value = "";
-  if (choice === SNIPPET_PICK_MANAGE) { SNIP_TAB = "config"; showPage("snippets"); return; }
-  const r = CFGSNIP.items.find((x) => x.name === choice);
-  if (!r || !textarea) return;
-  if (textarea.value.includes(r.path)) { toast(`${r.name} is already included here.`, false); return; }
-  const cur = textarea.value.replace(/\s+$/, "");
-  textarea.value = (cur ? cur + "\n" : "") + r.include + "\n";
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
-  toast(`Inserted include for ${r.name}. Save / Apply to take effect.`);
+const RATELIMIT = makeSnippetPanel({
+  prefix: "rl", tab: "ratelimit", api: "/api/snippets/ratelimit", listKey: "items",
+  newTitle: "New rate limit", editTitle: "Edit rate limit",
+  inUseTitle: "Used by a mapping", inUseHint: "pick another snippet there first.",
+  confirmDelete: (n) => `Delete rate limit "${n}"?`,
+  previewInputs: ["limit_conn", "proxy_download_rate", "proxy_upload_rate"],
+  onLoaded: () => loadSnippetCatalog(),
+  fillForm: (P, r) => {
+    $("#rl-name").value = r.name; $("#rl-description").value = r.description || "";
+    ["limit_conn", "proxy_download_rate", "proxy_upload_rate"].forEach((k) => { $(`#rl-${k}`).value = r[k] || ""; });
+  },
+  preview: () => {
+    const c = $("#rl-limit_conn").value, d = $("#rl-proxy_download_rate").value, u = $("#rl-proxy_upload_rate").value;
+    const out = [];
+    if (c) out.push(`limit_conn <mapping>_conn ${c};        # both`);
+    if (d) out.push(`proxy_download_rate ${d};   # stream`, `limit_rate ${d};             # reverse proxy`);
+    if (u) out.push(`proxy_upload_rate ${u};     # stream`);
+    $("#rl-preview").textContent = out.join("\n") || "…";
+  },
+  rowCells: (r) => snippetNameCell(r) + `<td class="px-6 py-3 text-xs font-mono text-slate-600">${escapeHtml(describeRateLimit(r) || "—")}</td>`,
+});
+
+const TIMEOUTS = makeSnippetPanel({
+  prefix: "to", tab: "timeouts", api: "/api/snippets/timeouts", listKey: "items",
+  newTitle: "New timeout set", editTitle: "Edit timeout set",
+  inUseTitle: "Used by a mapping", inUseHint: "pick another snippet there first.",
+  confirmDelete: (n) => `Delete timeouts "${n}"?`,
+  previewInputs: ["proxy_timeout", "proxy_connect_timeout"],
+  onLoaded: () => loadSnippetCatalog(),
+  fillForm: (P, r) => {
+    $("#to-name").value = r.name; $("#to-description").value = r.description || "";
+    ["proxy_timeout", "proxy_connect_timeout"].forEach((k) => { $(`#to-${k}`).value = r[k] || ""; });
+  },
+  preview: () => {
+    const t = $("#to-proxy_timeout").value, c = $("#to-proxy_connect_timeout").value;
+    const out = [];
+    if (c) out.push(`proxy_connect_timeout ${c};   # both`);
+    if (t) out.push(`proxy_timeout ${t};           # stream`, `proxy_read_timeout ${t};      # reverse proxy`, `proxy_send_timeout ${t};`);
+    $("#to-preview").textContent = out.join("\n") || "…";
+  },
+  rowCells: (r) => snippetNameCell(r) + `<td class="px-6 py-3 text-xs font-mono text-slate-600">${escapeHtml(`${r.proxy_timeout || "default"} / ${r.proxy_connect_timeout || "default"}`)}</td>`,
+});
+
+// ---- The Snippets picker on the mapping form + custom locations ------------------
+// One catalogue (/api/snippets) feeds both. Values are refs like "ratelimit:api".
+let SNIPPET_CATALOG = { kinds: {}, labels: {} };
+let _catalogLoading = null;
+
+function loadSnippetCatalog() {
+  if (_catalogLoading) return _catalogLoading;
+  _catalogLoading = (async () => {
+    try {
+      const j = await (await fetch("/api/snippets")).json();
+      if (j.ok) SNIPPET_CATALOG = j;
+    } catch (_) { /* keep the previous catalogue */ }
+    _catalogLoading = null;
+    renderSnippetsPicker();
+    $$("#locations .loc-snips").forEach(renderLocationSnippetPicker);
+  })();
+  return _catalogLoading;
 }
 
-// Mapping form's Log format dropdown — built-in default + every snippet,
-// labelled with its context. Preserves the current selection.
-function populateLogFormatDropdown() {
-  const sel = $("#log_format"); if (!sel) return;
-  const cur = sel.value || "";
-  sel.innerHTML = "";
-  sel.add(new Option("Built-in default", ""));
-  for (const r of LOGFMT.items) sel.add(new Option(`${r.name} (${r.context}${r.escape && r.escape !== "default" ? ", " + r.escape : ""})`, r.name));
-  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "";
+// Selected refs inside a picker box (selects + checkboxes, blanks skipped).
+function selectedRefs(box) {
+  if (!box) return [];
+  return [...box.querySelectorAll("select, input[type=checkbox]")]
+    .map((el) => (el.type === "checkbox" ? (el.checked ? el.value : "") : el.value))
+    .filter(Boolean);
+}
+
+// Picker markup. Single-valued kinds render as a select, the others as
+// checkbox chips. `name` (form field) is set for the mapping picker only; the
+// location pickers are read by serializeLocations().
+function snippetPickerHtml(selected, kinds, name, compact) {
+  const K = SNIPPET_CATALOG.kinds || {};
+  const sel = new Set(selected || []);
+  const nameAttr = name ? ` name="${name}"` : "";
+  const label = (t) => `<span class="${compact ? "w-20" : "w-28"} shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-400">${t}</span>`;
+  const rows = [];
+  const single = (kind, title, none, fmt) => {
+    const items = K[kind] || [];
+    rows.push(`<div class="flex items-center gap-2">${label(title)}<select${nameAttr} class="snip-${kind} flex-1 min-w-0 rounded-md border border-slate-300 px-2 py-1 text-xs bg-white">
+      <option value="">${none}</option>${items.map((it) => `<option value="${escapeHtml(it.ref)}" ${sel.has(it.ref) ? "selected" : ""}>${escapeHtml(fmt(it))}</option>`).join("")}</select></div>`);
+  };
+  const multi = (kind, title, items, empty) => {
+    rows.push(`<div class="flex items-start gap-2">${label(title)}<div class="flex flex-wrap gap-1.5 min-w-0">${items.length ? items.map((it) => `
+      <label class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs cursor-pointer hover:border-emerald-300">
+        <input type="checkbox"${nameAttr} value="${escapeHtml(it.ref)}" class="rounded" ${sel.has(it.ref) ? "checked" : ""}><span class="font-mono font-semibold text-slate-700">${escapeHtml(it.name)}</span>${it.summary ? `<span class="text-slate-400">${escapeHtml(it.summary)}</span>` : ""}
+      </label>`).join("") : `<span class="text-xs text-slate-400">${empty}</span>`}</div></div>`);
+  };
+  if (kinds.includes("ratelimit")) single("ratelimit", "Rate limit", "None — no limit", (it) => `${it.name} — ${it.summary}`);
+  if (kinds.includes("timeouts")) single("timeouts", "Timeouts", "Defaults", (it) => `${it.name} — ${it.summary}`);
+  if (kinds.includes("logformat")) single("logformat", "Log format", "Built-in line", (it) => `${it.name} (${it.summary})`);
+  if (kinds.includes("errorpage")) multi("errorpage", "Error pages", K.errorpage || [], "none uploaded yet");
+  if (kinds.includes("config")) multi("config", compact ? "Config" : "Config snippets",
+    (K.config || []).filter((it) => compact ? it.scope !== "server" : it.scope !== "location"), "none yet");
+  return rows.join("");
+}
+
+function renderSnippetsPicker(selected) {
+  const box = $("#snippets-pick"); if (!box) return;
+  const keep = selected || selectedRefs(box);
+  box.innerHTML = snippetPickerHtml(keep, ["ratelimit", "timeouts", "logformat", "errorpage", "config"], "snippets", false);
+}
+
+function renderLocationSnippetPicker(box) {
+  if (!box) return;
+  const keep = box.querySelector("select, input") ? selectedRefs(box) : JSON.parse(box.dataset.selected || "[]");
+  box.innerHTML = `<div class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Snippets for this path</div>`
+    + snippetPickerHtml(keep, ["ratelimit", "timeouts", "config"], null, true);
+}
+
+// Mappings saved before the picker existed carry inline rate-limit / timeout /
+// log-format / error-page values. They keep rendering until the mapping is
+// saved again — say so, so the user creates matching snippets first.
+function renderLegacyInlineNote(m) {
+  const note = $("#snippets-legacy-note"); if (!note) return;
+  const bits = [];
+  if (m.rate_limit) bits.push("rate limit " + (describeRateLimit(m) || "on"));
+  if (m.proxy_timeout || m.proxy_connect_timeout) bits.push(`timeouts ${m.proxy_timeout || "default"} / ${m.proxy_connect_timeout || "default"}`);
+  if (m.log_format) bits.push(`log format ${m.log_format}`);
+  if ((m.error_pages || []).length) bits.push("error pages " + m.error_pages.join(", "));
+  note.classList.toggle("hidden", !bits.length);
+  note.textContent = bits.length ? `This mapping still has inline settings from before snippets (${bits.join(" · ")}). They apply until you save; saving keeps only the snippets picked above — create matching snippets first if you still need them.` : "";
 }
 
 function renderErrorPagesList(pages) {
@@ -5831,9 +5756,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const abd = $("#add-backend-docker"); if (abd) abd.addEventListener("click", toggleBackendDockerGrid);
   const bdgc = $("#backend-docker-grid-close"); if (bdgc) bdgc.addEventListener("click", closeBackendDockerGrid);
   $("#add-location").addEventListener("click", () => addLocationRow());
-  $("#profile").addEventListener("change", renderProfileSummary);
-  const advPick = $("#advanced-snippet-pick");
-  if (advPick) advPick.addEventListener("change", () => insertSnippetInto($(advPick.dataset.snippetTarget), advPick));
+  $$(".nav-jump-snippets").forEach((b) => b.addEventListener("click", () => showPage("snippets")));
   $("#ssl_forced").addEventListener("change", syncHstsUI);
   $("#hsts_enabled").addEventListener("change", syncHstsUI);
   // Docker page
@@ -5855,7 +5778,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!$("#lb_enabled").checked) { $("#lb_method").value = "round_robin"; onLbChange(); }
     toggleLbSection();
   });
-  $("#rate_limit_enabled").addEventListener("change", toggleRateSection);
   $("#failover").addEventListener("change", syncFailoverUI);
   $("#health_check").addEventListener("change", syncHealthUI);
   $$('input[name="alloc_method"]').forEach((r) => r.addEventListener("change", onMethodChange));

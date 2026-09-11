@@ -611,13 +611,11 @@ def logfmt_remove(name):
 
 
 def logfmt_usage(name):
-    """Mappings using log format `name` — selected directly, or through a
-    profile that sets it (and the mapping doesn't override it)."""
+    """Mappings using log format `name` (snippet ref, or the legacy inline field)."""
+    ref = f"logformat:{name}"
     with _lock:
-        via = {p["name"] for p in _read_profiles().values() if p.get("log_format") == name}
         return [m for m in _read_all().values()
-                if m.get("log_format") == name
-                or (not m.get("log_format") and m.get("profile") in via)]
+                if ref in (m.get("snippets") or []) or m.get("log_format") == name]
 
 
 # --------------------------------------------------------------------------
@@ -674,88 +672,83 @@ def cfgsnip_remove(name):
         return removed
 
 
-def cfgsnip_usage(token):
+def cfgsnip_usage(token, ref=None):
     """Mappings whose Advanced config or any custom location contains `token`
-    (the snippet's include path). Full records."""
+    (the snippet's include path), or that selected the snippet `ref`."""
     with _lock:
         out = []
         for m in _read_all().values():
             texts = [m.get("advanced_config") or ""]
             texts += [(loc or {}).get("config") or "" for loc in (m.get("locations") or [])]
-            if any(token in t for t in texts):
+            refs = list(m.get("snippets") or [])
+            refs += [r for loc in (m.get("locations") or []) for r in ((loc or {}).get("snippets") or [])]
+            if any(token in t for t in texts) or (ref and ref in refs):
                 out.append(m)
         return out
 
 
 # --------------------------------------------------------------------------
-# Settings profiles (Snippets page) — a named bundle (rate limit, timeouts,
-# log format, error pages, config-snippet includes) a mapping selects as one.
+# Generic snippet kinds (rate limits, timeouts) — one JSON file keyed by kind.
 # --------------------------------------------------------------------------
-_PROFILE_FILE = os.path.join(config.DATA_DIR, "profiles.json")
+_SNIP_FILE = os.path.join(config.DATA_DIR, "snippets.json")
 
 
-def _read_profiles():
+def _read_snips():
     try:
-        with open(_PROFILE_FILE, "r", encoding="utf-8") as fh:
+        with open(_SNIP_FILE, "r", encoding="utf-8") as fh:
             data = json.load(fh)
             return data if isinstance(data, dict) else {}
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
-def _write_profiles(data):
+def _write_snips(data):
     os.makedirs(config.DATA_DIR, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=config.DATA_DIR, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, sort_keys=True)
-        os.replace(tmp, _PROFILE_FILE)
+        os.replace(tmp, _SNIP_FILE)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
 
 
-def profile_list():
+def snip_list(kind):
     with _lock:
-        return sorted(_read_profiles().values(), key=lambda r: r["name"])
+        return sorted(_read_snips().get(kind, {}).values(), key=lambda r: r["name"])
 
 
-def profile_get(name):
+def snip_get(kind, name):
     with _lock:
-        return _read_profiles().get(name)
+        return _read_snips().get(kind, {}).get(name)
 
 
-def profile_add(rec):
+def snip_add(kind, rec):
     with _lock:
-        data = _read_profiles()
-        data[rec["name"]] = rec
-        _write_profiles(data)
+        data = _read_snips()
+        data.setdefault(kind, {})[rec["name"]] = rec
+        _write_snips(data)
         return rec
 
 
-def profile_remove(name):
+def snip_remove(kind, name):
     with _lock:
-        data = _read_profiles()
-        removed = data.pop(name, None)
-        _write_profiles(data)
+        data = _read_snips()
+        removed = data.get(kind, {}).pop(name, None)
+        _write_snips(data)
         return removed
 
 
-def profile_usage(name):
-    """Mappings that selected profile `name` (full records)."""
-    with _lock:
-        return [m for m in _read_all().values() if m.get("profile") == name]
-
-
-def profiles_referencing(field, value):
-    """Names of profiles whose `field` is `value` (scalar) or contains it (list)."""
+def snip_usage(ref):
+    """Mappings whose `snippets` (or any custom location's) contain `ref`."""
     with _lock:
         out = []
-        for p in _read_profiles().values():
-            v = p.get(field)
-            if (isinstance(v, list) and value in v) or (not isinstance(v, list) and v == value):
-                out.append(p["name"])
-        return sorted(out)
+        for m in _read_all().values():
+            if ref in (m.get("snippets") or []) or any(
+                    ref in ((loc or {}).get("snippets") or []) for loc in (m.get("locations") or [])):
+                out.append(m)
+        return out
 
 
 def export_all():
