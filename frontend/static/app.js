@@ -954,8 +954,20 @@ function addLocationRow(loc) {
       <select data-snippet-scope="location" class="snippet-pick loc-snippet rounded-md border border-slate-300 px-2 py-1 text-xs bg-white text-slate-600"><option value="">Insert snippet…</option></select>
       <button type="button" class="rm-location px-2 text-slate-400 hover:text-red-600" title="Remove">✕</button>
     </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <div>
+        <label class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-0.5">Backends for this path <span class="normal-case font-normal">(optional)</span><button type="button" class="info-tip" aria-label="More info" data-tip="Route this path to its own servers instead of the mapping's main pool. host:port, several separated by commas — they become a dedicated upstream. Leave empty to keep using the main pool.">i</button></label>
+        <input class="loc-backends w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+          placeholder="10.0.0.20:8080, 10.0.0.21:8080" value="${escapeHtml((loc.backends || []).join(", "))}" />
+      </div>
+      <div>
+        <label class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-0.5">Only these methods <span class="normal-case font-normal">(optional)</span><button type="button" class="info-tip" aria-label="More info" data-tip="Method split: only requests with these HTTP methods go to the backends on the left; every other method on this path keeps using the main pool. Example: POST, PUT, DELETE to a write node while GET stays on the read replicas. Use path / to split the whole site by method.">i</button></label>
+        <input class="loc-methods w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500"
+          placeholder="POST, PUT, DELETE" value="${escapeHtml((loc.methods || []).join(", "))}" />
+      </div>
+    </div>
     <textarea class="loc-config w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500" rows="3"
-      placeholder="proxy_set_header X-Api-Key mykey;">${escapeHtml(loc.config || "")}</textarea>`;
+      placeholder="proxy_set_header X-Api-Key mykey;   (optional extra directives for this path)">${escapeHtml(loc.config || "")}</textarea>`;
   wrap.querySelector(".rm-location").addEventListener("click", () => wrap.remove());
   const pick = wrap.querySelector(".loc-snippet");
   fillSnippetPicker(pick);
@@ -964,10 +976,13 @@ function addLocationRow(loc) {
 }
 
 function serializeLocations() {
+  const split = (v) => (v || "").split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
   return $$("#locations .loc-row").map((row) => ({
     path: row.querySelector(".loc-path").value.trim(),
     config: row.querySelector(".loc-config").value,
-  })).filter((l) => l.path && l.config.trim());
+    backends: split(row.querySelector(".loc-backends").value),
+    methods: split(row.querySelector(".loc-methods").value).map((m) => m.toUpperCase()),
+  })).filter((l) => l.path && (l.config.trim() || l.backends.length));
 }
 
 // --- load-balancing method panels -----------------------------------------
@@ -1677,6 +1692,9 @@ async function toggleMapping(domain, port, currentlyEnabled) {
 async function preview() {
   const fd = formData();
   fd.delete("cert"); fd.delete("key");
+  // Reverse Proxy form => preview the L7 server block (custom locations,
+  // path/method routing, error pages); Stream form => the L4 stream block.
+  fd.set("l7", FORM_INTENT_MODE === "proxy" ? "1" : "0");
   const r = await fetch("/api/preview", { method: "POST", body: fd });
   const j = await r.json();
   if (!j.ok) return toast(j.error || "Cannot preview.", false);

@@ -708,11 +708,11 @@ Random — pick a backend at random; with the two option, pick 2 and use the les
 
                       <div>
                         <div class="flex items-center justify-between mb-1.5">
-                          <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path-specific config</span><button type="button" class="info-tip" aria-label="More info" data-tip="Extra nginx location blocks for specific paths, e.g. /api with different headers or timeouts. The proxy target is added for you.">i</button></label>
+                          <label class="block text-xs font-semibold">Custom locations <span class="font-normal text-slate-400">path &amp; method routing</span><button type="button" class="info-tip" aria-label="More info" data-tip="Per-path rules. Each can send its path to a different backend pool, restrict that to certain HTTP methods (e.g. POST/PUT to a write node, GET stays on the main pool), and/or add extra nginx directives. Rows with no backends keep proxying to the main pool.">i</button></label>
                           <button type="button" id="add-location" class="text-xs font-medium text-emerald-700 hover:text-emerald-900">+ Add location</button>
                         </div>
                         <div id="locations" class="space-y-2"></div>
-                        <p class="text-[11px] text-slate-400 mt-1">Each block becomes <span class="font-mono">location &lt;path&gt; { ... }</span>, evaluated before the default <span class="font-mono">location /</span>. Add headers, rewrites or other path-specific directives here — the proxy target (this mapping's backend pool) is appended automatically, same as the default location.</p>
+                        <p class="text-[11px] text-slate-400 mt-1">Each row becomes <span class="font-mono">location &lt;path&gt; { ... }</span>, evaluated before the default <span class="font-mono">location /</span>. <b>Path routing:</b> give a row its own backends and that path is served by them instead of the main pool. <b>Method routing:</b> add methods and only those requests go there (the rest stay on the main pool). Use several rows with the <i>same path</i> for a multi-way split — e.g. <span class="font-mono">/api</span> GET → main pool, <span class="font-mono">/api</span> POST, PUT → write node, <span class="font-mono">/api</span> DELETE → another. A row with path <span class="font-mono">/</span> splits the whole site by method. Extra directives are optional.</p>
                       </div>
 
                       <div>

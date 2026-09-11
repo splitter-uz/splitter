@@ -1043,6 +1043,52 @@ def render_http_conf(mapping):
         lines.append(_server_line(b, method))
     lines += ["}", ""]
 
+    # Path / method routing. Rows are grouped by path: every row with its own
+    # backend pool becomes an upstream; rows with a method list feed one
+    # `map $request_method` per path that picks the pool for those methods
+    # (default = the path's method-less row's pool, else the main pool). So
+    # "GET -> A, POST -> B, DELETE -> C" is three rows on one path. A "/" group
+    # doesn't get its own block: it re-targets the default location below.
+    groups = []                     # [{path, config_lines, target}] in first-seen order
+    by_path = {}
+    for loc in locations:
+        g = by_path.get(loc["path"])
+        if g is None:
+            g = by_path[loc["path"]] = {"path": loc["path"], "rows": []}
+            groups.append(g)
+        g["rows"].append(loc)
+    for k, g in enumerate(groups, 1):
+        pools = {}                  # id(row) -> upstream name
+        for i, row in enumerate(g["rows"], 1):
+            pool = row.get("backends") or []
+            if not pool:
+                continue
+            up = f"{name}_p{k}" if len(g["rows"]) == 1 else f"{name}_p{k}r{i}"
+            pools[id(row)] = up
+            lines.append(f"# location {g['path']}" + (f" — {', '.join(row['methods'])}" if row.get("methods") else " — own backend pool"))
+            lines.append(f"upstream {up} {{")
+            for be in pool:
+                lines.append(f"    server {be};")
+            lines += ["}", ""]
+        default_row = next((r for r in g["rows"] if not r.get("methods")), None)
+        default_target = pools.get(id(default_row), name) if default_row else name
+        method_rows = [r for r in g["rows"] if r.get("methods")]
+        if method_rows:
+            var = f"${name}_p{k}_target"
+            lines.append(f"# location {g['path']} — pick the pool by request method")
+            lines.append(f"map $request_method {var} {{")
+            lines.append(f"    default  {default_target};")
+            for r in method_rows:
+                for m in r["methods"]:
+                    lines.append(f"    {m:<8} {pools[id(r)]};")
+            lines += ["}", ""]
+            g["target"] = var
+        else:
+            g["target"] = default_target
+        g["config_lines"] = [ln for r in g["rows"] for ln in (r.get("config") or "").splitlines()]
+    root_group = next((g for g in groups if g["path"] == "/"), None)
+    groups = [g for g in groups if g is not root_group]
+
     # Per-mapping traffic log (full HTTP line — this is an L7 proxy). The
     # format name is global to http{}, so scope it to this mapping.
     log_paths = log_paths_for(mapping["domain"], port)
@@ -1109,16 +1155,16 @@ def render_http_conf(mapping):
     # admin's raw config PLUS the same standard proxy_pass + headers the
     # default location uses — the custom body adds path-specific behaviour
     # (headers, rewrites, timeouts…) rather than redefining the backend.
-    for loc in locations:
-        lines.append(f"    location {loc['path']} {{")
-        for raw_line in loc["config"].splitlines():
+    for g in groups:
+        lines.append(f"    location {g['path']} {{")
+        for raw_line in g["config_lines"]:
             lines.append(f"        {raw_line}")
         if websocket:
             lines += _websocket_headers()
         elif http11_only:
             lines.append("        proxy_http_version 1.1;")
         lines += _proxy_headers(client_scheme, hsts_line)
-        lines.append(f"        proxy_pass {scheme}://{name};")
+        lines.append(f"        proxy_pass {scheme}://{g['target']};")
         lines.append("    }")
 
     if mapping.get("advanced_config"):
@@ -1130,12 +1176,16 @@ def render_http_conf(mapping):
     lines += _error_page_lines(mapping)
 
     lines.append("    location / {")
+    if root_group:
+        for raw_line in root_group["config_lines"]:
+            lines.append(f"        {raw_line}")
     if websocket:
         lines += _websocket_headers()
     elif http11_only:
         lines.append("        proxy_http_version 1.1;")
     lines += _proxy_headers(client_scheme, hsts_line)
-    lines.append(f"        proxy_pass {scheme}://{name};")
+    root_target = root_group["target"] if root_group else name
+    lines.append(f"        proxy_pass {scheme}://{root_target};")
     lines.append("    }")
     lines += ["}", ""]
     return "\n".join(lines)

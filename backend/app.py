@@ -69,6 +69,8 @@ from validators import (
     clean_uint,
     clean_vlan_id,
     clean_error_page_key,
+    clean_http_methods,
+    clean_backend,
 )
 
 
@@ -204,13 +206,42 @@ def _parse_http_opts(form):
                 continue
             path = (it.get("path") or "").strip()
             cfg = (it.get("config") or "").strip()
-            if not path or not cfg:
-                continue
+            # Optional per-location backend pool (host:port list) and the HTTP
+            # methods that should go to it — path- and method-based routing.
+            raw_be = it.get("backends") or []
+            if isinstance(raw_be, str):
+                raw_be = re.split(r"[\s,]+", raw_be)
+            backends = []
+            for be in raw_be:
+                if (be or "").strip():
+                    cleaned = clean_backend(be)
+                    if cleaned not in backends:
+                        backends.append(cleaned)
+            methods = clean_http_methods(it.get("methods") or [])
+            if not path or (not cfg and not backends and not methods):
+                continue   # empty row
             if not path.startswith("/") and not path.startswith("="):
                 raise ValidationError(f"Custom location path must start with '/' (got {path!r}).")
             if "\0" in path or "{" in path or "}" in path:
                 raise ValidationError(f"Invalid character in location path: {path!r}")
-            locations.append({"path": path, "config": cfg[:_LOCATION_CONFIG_MAX]})
+            if methods and not backends:
+                raise ValidationError(
+                    f"Location {path}: methods only choose which backend pool serves the "
+                    "request — add backends for this location (or clear the methods).")
+            # Several rows may share a path to split it by method (GET -> A,
+            # POST -> B, DELETE -> C): their method lists must not overlap, and
+            # at most one row per path may be the method-less default.
+            for other in locations:
+                if other["path"] != path:
+                    continue
+                if not methods and not other["methods"]:
+                    raise ValidationError(f"Location {path!r} is listed twice without methods — merge the two rows.")
+                clash = sorted(set(methods) & set(other["methods"]))
+                if clash:
+                    raise ValidationError(
+                        f"Location {path}: {', '.join(clash)} appears in two rows — each method can go to one pool only.")
+            locations.append({"path": path, "config": cfg[:_LOCATION_CONFIG_MAX],
+                              "backends": backends, "methods": methods})
 
     return {
         "websocket_upgrade": _truthy(form.get("websocket_upgrade")),
@@ -1996,6 +2027,9 @@ def create_mapping():
     # `nginx -t` fail ("host not found in upstream") and rolls the mapping back.
     # Catch it here with an actionable message instead of that cryptic failure.
     bad_hosts = _unresolvable_backend_hosts(mapping.get("backends"))
+    bad_hosts += [h for h in _unresolvable_backend_hosts(
+        [b for loc in mapping.get("locations") or [] for b in loc.get("backends") or []])
+        if h not in bad_hosts]
     if bad_hosts:
         return _err(
             "Backend host(s) can't be resolved: " + ", ".join(bad_hosts) + ". "
@@ -2824,6 +2858,16 @@ def preview_conf():
     }
     mapping.update(lb)
     mapping.update(rate)
+    if _truthy(form.get("l7")):
+        # Reverse Proxy / WAF form: render the L7 server block (custom
+        # locations with their path/method routing, error pages, …).
+        try:
+            mapping.update(_parse_http_opts(form))
+        except ValidationError as exc:
+            return _err(str(exc))
+        mapping["waf_bound"] = True
+        conf = nm.render_http_conf(mapping)
+        return jsonify({"ok": True, "conf": conf, "path": nm.http_conf_path_for(domain, listen_port)})
     conf = nm.render_conf(mapping)
     return jsonify({"ok": True, "conf": conf, "path": nm.conf_path_for(domain, listen_port)})
 
