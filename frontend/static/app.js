@@ -4432,12 +4432,217 @@ function renderErrorPagePicker(selected) {
     </label>`).join("");
 }
 
-// --- Snippets page: Log formats / Error pages tabs --------------------------
+// --- Snippets page: Log formats / Config snippets / Error pages tabs --------
 let SNIP_TAB = "logformats";
 let _snippetsReady = false;
-let LOG_FORMATS = [];        // saved snippets from /api/log-formats
-let LOGFMT_PRESETS = [];
-let LOGFMT_VARS = {};
+
+// Provisioning steps (from a save) into a <pre>; hidden when there are none.
+function showSteps(pre, steps) {
+  if (!pre) return;
+  const has = Array.isArray(steps) && steps.length > 0;
+  pre.classList.toggle("hidden", !has);
+  if (has) pre.textContent = steps.map((st) => `${st.ok ? "✔" : "✘"} ${st.name}\n   ${st.detail || ""}`).join("\n");
+}
+
+const scopeBadge = (label, cls) => `<span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${cls}">${escapeHtml(label)}</span>`;
+const snippetNameCell = (r) => `<td class="px-6 py-3 whitespace-nowrap"><div class="font-mono font-semibold text-slate-800">${escapeHtml(r.name)}</div>${r.description ? `<div class="text-xs text-slate-400 mt-0.5">${escapeHtml(r.description)}</div>` : ""}</td>`;
+const usedByCell = (used) => `<td class="px-6 py-3 text-xs text-slate-500">${used.length ? used.map((u) => `<div class="font-mono">${escapeHtml(u)}</div>`).join("") : '<span class="text-slate-300">—</span>'}</td>`;
+
+// One editor + list panel per snippet kind (log formats, config snippets).
+// `spec` supplies what differs (ids prefix, API, form fields, row cells,
+// preview); loading, listing, edit/reset, save (with steps) and delete (with
+// the in-use guard) are shared.
+function makeSnippetPanel(spec) {
+  const P = { items: [], presets: [], meta: {}, spec };
+  const el = (suffix) => $(`#${spec.prefix}-${suffix}`);
+
+  P.load = async function () {
+    try {
+      const j = await (await fetch(spec.api)).json();
+      if (!j.ok) return;
+      P.items = j[spec.listKey] || [];
+      P.presets = j.presets || [];
+      P.meta = j;
+      P.renderList();
+      const badge = $(`#snip-${spec.tab}-count`); if (badge) badge.textContent = P.items.length;
+      const presetSel = el("preset");
+      if (presetSel && presetSel.options.length <= 1) P.presets.forEach((p) => presetSel.add(new Option(p.label, p.name)));
+      spec.onLoaded?.(P);
+      P.preview();
+    } catch (_) { /* non-fatal — keep what we have */ }
+  };
+  P.preview = () => spec.preview?.(P);
+  P.applyPreset = function () {
+    const p = P.presets.find((x) => x.name === el("preset").value);
+    if (p) { spec.fillForm(P, p, true); P.preview(); }
+  };
+  P.reset = function () {
+    el("form").reset();
+    el("name").readOnly = false;
+    el("form-title").textContent = spec.newTitle;
+    el("cancel").classList.add("hidden");
+    el("steps").classList.add("hidden");
+    spec.afterReset?.(P);
+    P.preview();
+  };
+  P.edit = function (name) {
+    const r = P.items.find((x) => x.name === name);
+    if (!r) return;
+    spec.fillForm(P, r, false);
+    el("name").readOnly = true;
+    el("form-title").textContent = `${spec.editTitle}: ${r.name}`;
+    el("cancel").classList.remove("hidden");
+    P.preview();
+    el("form").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  P.renderList = function () {
+    const rows = el("rows");
+    if (!rows) return;
+    rows.innerHTML = "";
+    el("empty").classList.toggle("hidden", P.items.length > 0);
+    for (const r of P.items) {
+      const used = r.in_use || [];
+      const tr = document.createElement("tr");
+      tr.className = "hover:bg-slate-50 align-top";
+      tr.innerHTML = spec.rowCells(r) + usedByCell(used) + `
+        <td class="px-6 py-3 text-right whitespace-nowrap">
+          ${spec.extraActions ? spec.extraActions(r) : ""}
+          <button data-name="${escapeHtml(r.name)}" class="snip-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
+          <button data-name="${escapeHtml(r.name)}" class="snip-del text-xs font-medium text-red-600 hover:text-red-800 ${used.length ? "opacity-40 cursor-not-allowed" : ""}" ${used.length ? `title="${spec.inUseTitle}"` : ""}>Delete</button>
+        </td>`;
+      rows.appendChild(tr);
+    }
+    rows.querySelectorAll(".snip-edit").forEach((b) => b.addEventListener("click", () => P.edit(b.dataset.name)));
+    rows.querySelectorAll(".snip-del").forEach((b) => b.addEventListener("click", () => P.remove(b.dataset.name)));
+    spec.afterList?.(P, rows);
+  };
+  P.save = async function (e) {
+    e.preventDefault();
+    const btn = el("save");
+    btn.disabled = true;
+    try {
+      const fd = new FormData(el("form"));
+      const j = await (await fetch(spec.api, { method: "POST", body: fd })).json();
+      toast(j.ok ? `Saved ${fd.get("name")}.` : (j.error || "Could not save it."), j.ok);
+      if (j.ok) P.reset();
+      showSteps(el("steps"), j.steps);   // after reset, so the steps stay visible
+      P.load();
+    } catch (err) {
+      toast("Request failed: " + err.message, false);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  P.remove = async function (name) {
+    const r = P.items.find((x) => x.name === name);
+    if (r && (r.in_use || []).length) { toast(`"${name}" is used by ${r.in_use.join(", ")} — ${spec.inUseHint}`, false); return; }
+    if (!confirm(spec.confirmDelete(name))) return;
+    const j = await (await fetch(`${spec.api}/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
+    toast(j.ok ? `Deleted ${name}.` : (j.error || "Could not delete it."), j.ok);
+    P.load();
+  };
+  P.wire = function () {
+    el("form").addEventListener("submit", P.save);
+    el("cancel").addEventListener("click", P.reset);
+    el("preset").addEventListener("change", P.applyPreset);
+    (spec.previewInputs || []).forEach((id) => el(id).addEventListener("input", P.preview));
+    spec.wire?.(P);
+  };
+  return P;
+}
+
+// ---- Log formats -----------------------------------------------------------
+// The exact directive the backend will emit (mirrors log_format_lines() in
+// nginx_manager.py): one quoted string per non-empty line, joined by nginx.
+function nginxQuote(t) { return "'" + t.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'"; }
+
+function renderLogFormatPreview() {
+  const pre = $("#logfmt-preview"); if (!pre) return;
+  const name = ($("#logfmt-name").value || "").trim() || "<mapping>";
+  const esc = $("#logfmt-escape").value;
+  const parts = ($("#logfmt-format").value || "").split(/\r?\n/).filter((l) => l.trim());
+  if (!parts.length) { pre.textContent = "log_format …"; return; }
+  const head = `log_format ${name}_fmt${esc === "json" || esc === "none" ? " escape=" + esc : ""} `;
+  pre.textContent = parts.map((p, i) => (i ? " ".repeat(head.length) : head) + nginxQuote(p) + (i === parts.length - 1 ? ";" : "")).join("\n");
+}
+
+// Clickable variable chips for the selected context; a click inserts at the caret.
+function renderLogFormatVars(P) {
+  const box = $("#logfmt-vars"); if (!box) return;
+  const vars = (P.meta.variables || {})[$("#logfmt-context").value] || [];
+  box.innerHTML = vars.map((v) => `<button type="button" data-var="${escapeHtml(v)}" class="logfmt-var font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600">${escapeHtml(v)}</button>`).join("");
+  box.querySelectorAll(".logfmt-var").forEach((b) => b.addEventListener("click", () => {
+    const ta = $("#logfmt-format");
+    const at = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? at;
+    ta.value = ta.value.slice(0, at) + b.dataset.var + ta.value.slice(end);
+    ta.focus(); ta.selectionStart = ta.selectionEnd = at + b.dataset.var.length;
+    renderLogFormatPreview();
+  }));
+}
+
+const LOGFMT = makeSnippetPanel({
+  prefix: "logfmt", tab: "logformats", api: "/api/log-formats", listKey: "formats",
+  newTitle: "New log format", editTitle: "Edit log format",
+  inUseTitle: "In use by a mapping", inUseHint: "switch those mappings first.",
+  confirmDelete: (n) => `Delete log format "${n}"?`,
+  previewInputs: ["name", "context", "escape", "format"],
+  wire: (P) => $("#logfmt-context").addEventListener("change", () => renderLogFormatVars(P)),
+  onLoaded: (P) => { populateLogFormatDropdown(); renderLogFormatVars(P); },
+  afterReset: (P) => renderLogFormatVars(P),
+  fillForm: (P, r, isPreset) => {
+    $("#logfmt-context").value = r.context;
+    $("#logfmt-escape").value = r.escape || "default";
+    $("#logfmt-format").value = r.format;
+    if (!isPreset || !$("#logfmt-name").value.trim()) $("#logfmt-name").value = r.name;
+    if (!isPreset || !$("#logfmt-description").value.trim()) $("#logfmt-description").value = r.description || "";
+    renderLogFormatVars(P);
+  },
+  preview: renderLogFormatPreview,
+  rowCells: (r) => snippetNameCell(r)
+    + `<td class="px-6 py-3 whitespace-nowrap">${scopeBadge(r.context, r.context === "http" ? "bg-sky-50 text-sky-700" : "bg-violet-50 text-violet-700")}${r.escape && r.escape !== "default" ? `<span class="ml-1 text-[11px] text-slate-400 font-mono">escape=${escapeHtml(r.escape)}</span>` : ""}</td>`
+    + `<td class="px-6 py-3"><pre class="font-mono text-[11px] text-slate-600 whitespace-pre-wrap break-all max-w-md">${escapeHtml(r.format)}</pre></td>`,
+});
+
+// ---- Config snippets (raw nginx include blocks) -----------------------------
+const CFGSNIP = makeSnippetPanel({
+  prefix: "cfgsnip", tab: "config", api: "/api/config-snippets", listKey: "snippets",
+  newTitle: "New config snippet", editTitle: "Edit config snippet",
+  inUseTitle: "Included by a mapping", inUseHint: "remove those include lines first.",
+  confirmDelete: (n) => `Delete config snippet "${n}"? Its include file is removed too.`,
+  previewInputs: ["name"],
+  onLoaded: (P) => {
+    $$(".snippet-pick").forEach(fillSnippetPicker);
+    const dir = $("#cfgsnip-dir"); if (dir) dir.textContent = P.meta.dir || "";
+  },
+  fillForm: (P, r, isPreset) => {
+    $("#cfgsnip-scope").value = r.scope || "any";
+    $("#cfgsnip-content").value = r.content;
+    if (!isPreset || !$("#cfgsnip-name").value.trim()) $("#cfgsnip-name").value = r.name;
+    if (!isPreset || !$("#cfgsnip-description").value.trim()) $("#cfgsnip-description").value = r.description || "";
+  },
+  preview: (P) => {
+    const pre = $("#cfgsnip-preview"); if (!pre) return;
+    const name = ($("#cfgsnip-name").value || "").trim();
+    pre.textContent = name ? `include ${P.meta.dir || "<snippet dir>"}/${name}.inc;   # snippet: ${name}` : "include …";
+  },
+  rowCells: (r) => {
+    const cls = { server: "bg-sky-50 text-sky-700", location: "bg-violet-50 text-violet-700" }[r.scope] || "bg-slate-100 text-slate-600";
+    return snippetNameCell(r)
+      + `<td class="px-6 py-3 whitespace-nowrap">${scopeBadge(r.scope || "any", cls)}</td>`
+      + `<td class="px-6 py-3"><pre class="font-mono text-[11px] text-slate-600 whitespace-pre-wrap break-all max-w-md max-h-32 overflow-auto">${escapeHtml(r.content)}</pre></td>`;
+  },
+  extraActions: (r) => `<button data-name="${escapeHtml(r.name)}" class="cfgsnip-copy text-xs font-medium text-slate-500 hover:text-slate-800 mr-3" title="Copy the include line">Copy include</button>`,
+  afterList: (P, rows) => rows.querySelectorAll(".cfgsnip-copy").forEach((b) => b.addEventListener("click", () => {
+    const r = P.items.find((x) => x.name === b.dataset.name);
+    if (r) navigator.clipboard.writeText(r.include).then(() => toast("Include line copied")).catch(() => {});
+  })),
+});
+
+// Thin named entry points used elsewhere (page switch, mapping form).
+function loadLogFormats() { return LOGFMT.load(); }
+function loadConfigSnippets() { return CFGSNIP.load(); }
+function editLogFormat(name) { LOGFMT.edit(name); }
+function editConfigSnippet(name) { CFGSNIP.edit(name); }
 
 function startSnippets() {
   loadLogFormats();
@@ -4445,18 +4650,10 @@ function startSnippets() {
   loadErrorPagesPage();
   if (!_snippetsReady) {
     _snippetsReady = true;
-    $("#cfgsnip-form").addEventListener("submit", saveConfigSnippet);
-    $("#cfgsnip-cancel").addEventListener("click", resetConfigSnippetForm);
-    $("#cfgsnip-preset").addEventListener("change", applyConfigSnippetPreset);
-    $("#cfgsnip-name").addEventListener("input", renderConfigSnippetPreview);
     $$(".snip-tab").forEach((btn) => btn.addEventListener("click", () => showSnipTab(btn.dataset.sniptab)));
     $("#snippets-refresh").addEventListener("click", () => { loadLogFormats(); loadConfigSnippets(); loadErrorPagesPage(); });
-    $("#logfmt-form").addEventListener("submit", saveLogFormat);
-    $("#logfmt-cancel").addEventListener("click", resetLogFormatForm);
-    $("#logfmt-preset").addEventListener("change", applyLogFormatPreset);
-    ["logfmt-name", "logfmt-context", "logfmt-escape", "logfmt-format"].forEach((id) =>
-      $("#" + id).addEventListener("input", renderLogFormatPreview));
-    $("#logfmt-context").addEventListener("change", renderLogFormatVars);
+    LOGFMT.wire();
+    CFGSNIP.wire();
   }
   showSnipTab(SNIP_TAB);
 }
@@ -4477,285 +4674,31 @@ function showSnipTab(name) {
   if (panel) panel.classList.remove("hidden");
 }
 
-async function loadLogFormats() {
-  try {
-    const j = await (await fetch("/api/log-formats")).json();
-    if (!j.ok) return;
-    LOG_FORMATS = j.formats || [];
-    LOGFMT_PRESETS = j.presets || [];
-    LOGFMT_VARS = j.variables || {};
-    renderLogFormatsList();
-    populateLogFormatDropdown();
-    const badge = $("#snip-logformats-count"); if (badge) badge.textContent = LOG_FORMATS.length;
-    const presetSel = $("#logfmt-preset");
-    if (presetSel && presetSel.options.length <= 1) {
-      LOGFMT_PRESETS.forEach((p) => {
-        const o = document.createElement("option"); o.value = p.name; o.textContent = p.label; presetSel.appendChild(o);
-      });
-    }
-    renderLogFormatVars();
-    renderLogFormatPreview();
-  } catch (_) { /* non-fatal */ }
-}
+// ---- Mapping form hooks -------------------------------------------------------
+// "Insert snippet…" pickers (Advanced config + each custom location). Every
+// snippet is listed: the ones matching the picker's scope first, the others
+// tagged with their scope — a "server" snippet is still reachable from a
+// location row (nginx -t decides whether it's valid there). Never disabled;
+// the last entry jumps to the Snippets page.
+const SNIPPET_PICK_MANAGE = "__manage__";
 
-// The exact directive the backend will emit (mirrors log_format_lines() in
-// nginx_manager.py): one quoted string per non-empty line, joined by nginx.
-function nginxQuote(t) { return "'" + t.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'"; }
-
-function renderLogFormatPreview() {
-  const pre = $("#logfmt-preview"); if (!pre) return;
-  const name = ($("#logfmt-name").value || "<mapping>").trim() || "<mapping>";
-  const esc = $("#logfmt-escape").value;
-  const parts = ($("#logfmt-format").value || "").split(/\r?\n/).filter((l) => l.trim());
-  if (!parts.length) { pre.textContent = "log_format …"; return; }
-  const head = `log_format ${name}_fmt${esc === "json" || esc === "none" ? " escape=" + esc : ""} `;
-  pre.textContent = parts.map((p, i) => (i ? " ".repeat(head.length) : head) + nginxQuote(p) + (i === parts.length - 1 ? ";" : "")).join("\n");
-}
-
-function renderLogFormatVars() {
-  const box = $("#logfmt-vars"); if (!box) return;
-  const vars = LOGFMT_VARS[$("#logfmt-context").value] || [];
-  box.innerHTML = vars.map((v) => `<button type="button" data-var="${escapeHtml(v)}" class="logfmt-var font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600">${escapeHtml(v)}</button>`).join("");
-  box.querySelectorAll(".logfmt-var").forEach((b) => b.addEventListener("click", () => {
-    const ta = $("#logfmt-format");
-    const at = ta.selectionStart ?? ta.value.length;
-    ta.value = ta.value.slice(0, at) + b.dataset.var + ta.value.slice(ta.selectionEnd ?? at);
-    ta.focus(); ta.selectionStart = ta.selectionEnd = at + b.dataset.var.length;
-    renderLogFormatPreview();
-  }));
-}
-
-function applyLogFormatPreset() {
-  const p = LOGFMT_PRESETS.find((x) => x.name === $("#logfmt-preset").value);
-  if (!p) return;
-  $("#logfmt-context").value = p.context;
-  $("#logfmt-escape").value = p.escape;
-  $("#logfmt-format").value = p.format;
-  if (!$("#logfmt-name").value.trim()) $("#logfmt-name").value = p.name;
-  if (!$("#logfmt-description").value.trim()) $("#logfmt-description").value = p.description || "";
-  renderLogFormatVars();
-  renderLogFormatPreview();
-}
-
-function resetLogFormatForm() {
-  $("#logfmt-form").reset();
-  $("#logfmt-name").readOnly = false;
-  $("#logfmt-form-title").textContent = "New log format";
-  $("#logfmt-cancel").classList.add("hidden");
-  $("#logfmt-steps").classList.add("hidden");
-  renderLogFormatVars();
-  renderLogFormatPreview();
-}
-
-function editLogFormat(name) {
-  const r = LOG_FORMATS.find((x) => x.name === name); if (!r) return;
-  $("#logfmt-name").value = r.name; $("#logfmt-name").readOnly = true;
-  $("#logfmt-context").value = r.context;
-  $("#logfmt-escape").value = r.escape || "default";
-  $("#logfmt-format").value = r.format;
-  $("#logfmt-description").value = r.description || "";
-  $("#logfmt-form-title").textContent = `Edit log format: ${r.name}`;
-  $("#logfmt-cancel").classList.remove("hidden");
-  renderLogFormatVars();
-  renderLogFormatPreview();
-  $("#logfmt-form").scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function renderLogFormatsList() {
-  const rows = $("#logfmt-rows"); if (!rows) return;
-  rows.innerHTML = "";
-  $("#logfmt-empty").classList.toggle("hidden", LOG_FORMATS.length > 0);
-  LOG_FORMATS.forEach((r) => {
-    const tr = document.createElement("tr");
-    tr.className = "hover:bg-slate-50 align-top";
-    const used = r.in_use || [];
-    tr.innerHTML = `
-      <td class="px-6 py-3 whitespace-nowrap"><div class="font-mono font-semibold text-slate-800">${escapeHtml(r.name)}</div>${r.description ? `<div class="text-xs text-slate-400 mt-0.5">${escapeHtml(r.description)}</div>` : ""}</td>
-      <td class="px-6 py-3 whitespace-nowrap"><span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${r.context === "http" ? "bg-sky-50 text-sky-700" : "bg-violet-50 text-violet-700"}">${escapeHtml(r.context)}</span>${r.escape && r.escape !== "default" ? `<span class="ml-1 text-[11px] text-slate-400 font-mono">escape=${escapeHtml(r.escape)}</span>` : ""}</td>
-      <td class="px-6 py-3"><pre class="font-mono text-[11px] text-slate-600 whitespace-pre-wrap break-all max-w-md">${escapeHtml(r.format)}</pre></td>
-      <td class="px-6 py-3 text-xs text-slate-500">${used.length ? used.map((u) => `<div class="font-mono">${escapeHtml(u)}</div>`).join("") : '<span class="text-slate-300">—</span>'}</td>
-      <td class="px-6 py-3 text-right whitespace-nowrap">
-        <button data-name="${escapeHtml(r.name)}" class="logfmt-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
-        <button data-name="${escapeHtml(r.name)}" class="logfmt-del text-xs font-medium text-red-600 hover:text-red-800 ${used.length ? "opacity-40 cursor-not-allowed" : ""}" ${used.length ? 'title="In use by a mapping"' : ""}>Delete</button>
-      </td>`;
-    rows.appendChild(tr);
-  });
-  rows.querySelectorAll(".logfmt-edit").forEach((b) => b.addEventListener("click", () => editLogFormat(b.dataset.name)));
-  rows.querySelectorAll(".logfmt-del").forEach((b) => b.addEventListener("click", () => deleteLogFormat(b.dataset.name)));
-}
-
-async function saveLogFormat(e) {
-  e.preventDefault();
-  const btn = $("#logfmt-save"), out = $("#logfmt-steps");
-  btn.disabled = true;
-  try {
-    const fd = new FormData($("#logfmt-form"));
-    const j = await (await fetch("/api/log-formats", { method: "POST", body: fd })).json();
-    toast(j.ok ? `Saved log format ${fd.get("name")}.` : (j.error || "Could not save it."), j.ok);
-    if (j.steps && j.steps.length) {
-      out.classList.remove("hidden");
-      out.textContent = j.steps.map((st) => `${st.ok ? "✔" : "✘"} ${st.name}\n   ${st.detail || ""}`).join("\n");
-    }
-    if (j.ok) { resetLogFormatForm(); if (j.steps && j.steps.length) { out.classList.remove("hidden"); } }
-    loadLogFormats();
-  } catch (err) {
-    toast("Request failed: " + err.message, false);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function deleteLogFormat(name) {
-  const r = LOG_FORMATS.find((x) => x.name === name);
-  if (r && (r.in_use || []).length) { toast(`"${name}" is used by ${r.in_use.join(", ")} — switch those mappings first.`, false); return; }
-  if (!confirm(`Delete log format "${name}"?`)) return;
-  const j = await (await fetch(`/api/log-formats/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
-  toast(j.ok ? `Deleted ${name}.` : (j.error || "Could not delete it."), j.ok);
-  loadLogFormats();
-}
-
-// --- Config snippets (raw nginx include blocks) ------------------------------
-let CONFIG_SNIPPETS = [];
-let CFGSNIP_PRESETS = [];
-let CFGSNIP_DIR = "";
-
-async function loadConfigSnippets() {
-  try {
-    const j = await (await fetch("/api/config-snippets")).json();
-    if (!j.ok) return;
-    CONFIG_SNIPPETS = j.snippets || [];
-    CFGSNIP_PRESETS = j.presets || [];
-    CFGSNIP_DIR = j.dir || "";
-    renderConfigSnippetsList();
-    $$(".snippet-pick").forEach(fillSnippetPicker);
-    const badge = $("#snip-config-count"); if (badge) badge.textContent = CONFIG_SNIPPETS.length;
-    const dir = $("#cfgsnip-dir"); if (dir) dir.textContent = CFGSNIP_DIR;
-    const presetSel = $("#cfgsnip-preset");
-    if (presetSel && presetSel.options.length <= 1) {
-      CFGSNIP_PRESETS.forEach((p) => {
-        const o = document.createElement("option"); o.value = p.name; o.textContent = p.label; presetSel.appendChild(o);
-      });
-    }
-    renderConfigSnippetPreview();
-  } catch (_) { /* non-fatal */ }
-}
-
-function renderConfigSnippetPreview() {
-  const pre = $("#cfgsnip-preview"); if (!pre) return;
-  const name = ($("#cfgsnip-name").value || "").trim();
-  pre.textContent = name ? `include ${CFGSNIP_DIR || "<snippet dir>"}/${name}.inc;   # snippet: ${name}` : "include …";
-}
-
-function applyConfigSnippetPreset() {
-  const p = CFGSNIP_PRESETS.find((x) => x.name === $("#cfgsnip-preset").value);
-  if (!p) return;
-  $("#cfgsnip-scope").value = p.scope;
-  $("#cfgsnip-content").value = p.content;
-  if (!$("#cfgsnip-name").value.trim()) $("#cfgsnip-name").value = p.name;
-  if (!$("#cfgsnip-description").value.trim()) $("#cfgsnip-description").value = p.description || "";
-  renderConfigSnippetPreview();
-}
-
-function resetConfigSnippetForm() {
-  $("#cfgsnip-form").reset();
-  $("#cfgsnip-name").readOnly = false;
-  $("#cfgsnip-form-title").textContent = "New config snippet";
-  $("#cfgsnip-cancel").classList.add("hidden");
-  $("#cfgsnip-steps").classList.add("hidden");
-  renderConfigSnippetPreview();
-}
-
-function editConfigSnippet(name) {
-  const r = CONFIG_SNIPPETS.find((x) => x.name === name); if (!r) return;
-  $("#cfgsnip-name").value = r.name; $("#cfgsnip-name").readOnly = true;
-  $("#cfgsnip-scope").value = r.scope || "any";
-  $("#cfgsnip-content").value = r.content;
-  $("#cfgsnip-description").value = r.description || "";
-  $("#cfgsnip-form-title").textContent = `Edit config snippet: ${r.name}`;
-  $("#cfgsnip-cancel").classList.remove("hidden");
-  renderConfigSnippetPreview();
-  $("#cfgsnip-form").scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function renderConfigSnippetsList() {
-  const rows = $("#cfgsnip-rows"); if (!rows) return;
-  rows.innerHTML = "";
-  $("#cfgsnip-empty").classList.toggle("hidden", CONFIG_SNIPPETS.length > 0);
-  const scopeCls = { server: "bg-sky-50 text-sky-700", location: "bg-violet-50 text-violet-700", any: "bg-slate-100 text-slate-600" };
-  CONFIG_SNIPPETS.forEach((r) => {
-    const tr = document.createElement("tr");
-    tr.className = "hover:bg-slate-50 align-top";
-    const used = r.in_use || [];
-    tr.innerHTML = `
-      <td class="px-6 py-3 whitespace-nowrap"><div class="font-mono font-semibold text-slate-800">${escapeHtml(r.name)}</div>${r.description ? `<div class="text-xs text-slate-400 mt-0.5">${escapeHtml(r.description)}</div>` : ""}</td>
-      <td class="px-6 py-3 whitespace-nowrap"><span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${scopeCls[r.scope] || scopeCls.any}">${escapeHtml(r.scope || "any")}</span></td>
-      <td class="px-6 py-3"><pre class="font-mono text-[11px] text-slate-600 whitespace-pre-wrap break-all max-w-md max-h-32 overflow-auto">${escapeHtml(r.content)}</pre></td>
-      <td class="px-6 py-3 text-xs text-slate-500">${used.length ? used.map((u) => `<div class="font-mono">${escapeHtml(u)}</div>`).join("") : '<span class="text-slate-300">—</span>'}</td>
-      <td class="px-6 py-3 text-right whitespace-nowrap">
-        <button data-name="${escapeHtml(r.name)}" class="cfgsnip-copy text-xs font-medium text-slate-500 hover:text-slate-800 mr-3" title="Copy the include line">Copy include</button>
-        <button data-name="${escapeHtml(r.name)}" class="cfgsnip-edit text-xs font-medium text-emerald-700 hover:text-emerald-900 mr-3">Edit</button>
-        <button data-name="${escapeHtml(r.name)}" class="cfgsnip-del text-xs font-medium text-red-600 hover:text-red-800 ${used.length ? "opacity-40 cursor-not-allowed" : ""}" ${used.length ? 'title="Included by a mapping"' : ""}>Delete</button>
-      </td>`;
-    rows.appendChild(tr);
-  });
-  rows.querySelectorAll(".cfgsnip-copy").forEach((b) => b.addEventListener("click", () => {
-    const r = CONFIG_SNIPPETS.find((x) => x.name === b.dataset.name);
-    if (r) navigator.clipboard.writeText(r.include).then(() => toast("Include line copied")).catch(() => {});
-  }));
-  rows.querySelectorAll(".cfgsnip-edit").forEach((b) => b.addEventListener("click", () => editConfigSnippet(b.dataset.name)));
-  rows.querySelectorAll(".cfgsnip-del").forEach((b) => b.addEventListener("click", () => deleteConfigSnippet(b.dataset.name)));
-}
-
-async function saveConfigSnippet(e) {
-  e.preventDefault();
-  const btn = $("#cfgsnip-save"), out = $("#cfgsnip-steps");
-  btn.disabled = true;
-  try {
-    const fd = new FormData($("#cfgsnip-form"));
-    const j = await (await fetch("/api/config-snippets", { method: "POST", body: fd })).json();
-    toast(j.ok ? `Saved snippet ${fd.get("name")}.` : (j.error || "Could not save it."), j.ok);
-    if (j.steps && j.steps.length) {
-      out.classList.remove("hidden");
-      out.textContent = j.steps.map((st) => `${st.ok ? "✔" : "✘"} ${st.name}\n   ${st.detail || ""}`).join("\n");
-    }
-    if (j.ok) { const keep = out.textContent; resetConfigSnippetForm(); if (j.steps && j.steps.length) { out.textContent = keep; out.classList.remove("hidden"); } }
-    loadConfigSnippets();
-  } catch (err) {
-    toast("Request failed: " + err.message, false);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function deleteConfigSnippet(name) {
-  const r = CONFIG_SNIPPETS.find((x) => x.name === name);
-  if (r && (r.in_use || []).length) { toast(`"${name}" is included by ${r.in_use.join(", ")} — remove those include lines first.`, false); return; }
-  if (!confirm(`Delete config snippet "${name}"? Its include file is removed too.`)) return;
-  const j = await (await fetch(`/api/config-snippets/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
-  toast(j.ok ? `Deleted ${name}.` : (j.error || "Could not delete it."), j.ok);
-  loadConfigSnippets();
-}
-
-// "Insert snippet…" pickers on the mapping form (Advanced config + each custom
-// location). Filtered by scope: server pickers hide location-only snippets and
-// vice versa; "any" shows everywhere. Choosing one appends the include line.
 function fillSnippetPicker(sel) {
   if (!sel) return;
   const scope = sel.dataset.snippetScope || "any";
-  sel.innerHTML = '<option value="">Insert snippet…</option>';
-  CONFIG_SNIPPETS
-    .filter((r) => scope === "any" || !r.scope || r.scope === "any" || r.scope === scope)
-    .forEach((r) => {
-      const o = document.createElement("option"); o.value = r.name; o.textContent = `${r.name}${r.description ? " — " + r.description : ""}`;
-      sel.appendChild(o);
-    });
-  sel.disabled = sel.options.length <= 1;
-  if (sel.disabled) sel.options[0].textContent = "No snippets yet";
+  const fits = (r) => !r.scope || r.scope === "any" || r.scope === scope;
+  const items = [...CFGSNIP.items].sort((a, b) => Number(fits(b)) - Number(fits(a)) || a.name.localeCompare(b.name));
+  sel.innerHTML = "";
+  sel.add(new Option(items.length ? "Insert snippet…" : "No config snippets yet", ""));
+  for (const r of items) sel.add(new Option(`${r.name}${fits(r) ? "" : ` [${r.scope}]`}${r.description ? " — " + r.description : ""}`, r.name));
+  sel.add(new Option("＋ Manage snippets…", SNIPPET_PICK_MANAGE));
+  sel.disabled = false;
 }
 
 function insertSnippetInto(textarea, sel) {
-  const r = CONFIG_SNIPPETS.find((x) => x.name === sel.value);
+  const choice = sel.value;
   sel.value = "";
+  if (choice === SNIPPET_PICK_MANAGE) { SNIP_TAB = "config"; showPage("snippets"); return; }
+  const r = CFGSNIP.items.find((x) => x.name === choice);
   if (!r || !textarea) return;
   if (textarea.value.includes(r.path)) { toast(`${r.name} is already included here.`, false); return; }
   const cur = textarea.value.replace(/\s+$/, "");
@@ -4770,11 +4713,8 @@ function populateLogFormatDropdown() {
   const sel = $("#log_format"); if (!sel) return;
   const cur = sel.value || "";
   sel.innerHTML = "";
-  const opts = [["", "Built-in default"]];
-  for (const r of LOG_FORMATS) opts.push([r.name, `${r.name} (${r.context}${r.escape && r.escape !== "default" ? ", " + r.escape : ""})`]);
-  for (const [v, label] of opts) {
-    const o = document.createElement("option"); o.value = v; o.textContent = label; sel.appendChild(o);
-  }
+  sel.add(new Option("Built-in default", ""));
+  for (const r of LOGFMT.items) sel.add(new Option(`${r.name} (${r.context}${r.escape && r.escape !== "default" ? ", " + r.escape : ""})`, r.name));
   sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "";
 }
 
