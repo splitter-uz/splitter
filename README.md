@@ -502,7 +502,10 @@ then set `User=splitter` in the unit and `SPLITTER_SUDO=sudo`.
 
 Every UI action is a JSON endpoint under `/api/`, session‑authenticated with
 the same admin / creator / viewer roles as the dashboard (`viewer` is read‑only
-and gets `403` on any write).
+and gets `403` on any write). **Interactive docs:** open **`/api/docs`** on your
+instance (Swagger UI, generated from the live route table — every endpoint, its
+roles, form fields and query parameters, with *Try it out* against your own
+session); the raw spec is at `/api/openapi.json`.
 
 <details>
 <summary>Full endpoint reference</summary>

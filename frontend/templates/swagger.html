@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Splitter API — docs</title>
+  <link rel="icon" href="/static/favicon.png">
+  <link rel="stylesheet" href="/static/swagger/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f8fafc; }
+    .topbar { display: none; }
+    .sp-head { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: #0f172a; color: #e2e8f0; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; }
+    .sp-head img { height: 26px; }
+    .sp-head a { color: #6ee7b7; text-decoration: none; margin-left: auto; }
+    .sp-head a:hover { text-decoration: underline; }
+    .swagger-ui .info { margin: 24px 0; }
+  </style>
+</head>
+<body>
+  <div class="sp-head">
+    <img src="/static/logo.svg" alt="">
+    <strong>Splitter API</strong>
+    <span style="color:#94a3b8">— every call uses your current dashboard session, so "Try it out" works right here.</span>
+    <a href="/">← Back to the dashboard</a>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="/static/swagger/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: "/api/openapi.json",
+      dom_id: "#swagger-ui",
+      deepLinking: true,
+      docExpansion: "list",
+      defaultModelsExpandDepth: 0,
+      displayRequestDuration: true,
+      tryItOutEnabled: false,
+      requestInterceptor: (req) => { req.credentials = "same-origin"; return req; },
+    });
+  </script>
+</body>
+</html>

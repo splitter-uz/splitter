@@ -37,6 +37,7 @@ import net_detect
 import net_settings
 import nginx_manager as nm
 import nginx_status
+import openapi
 import config_snippets
 import logrotate
 import snippets
@@ -404,7 +405,9 @@ def _require_login():
     if ep is None or ep in _PUBLIC_ENDPOINTS:
         return
     if not session.get("user"):
-        if request.path.startswith("/api/"):
+        # /api/docs is an HTML page (Swagger UI), so send a browser to the
+        # login page like any other page; real API calls get a JSON 401.
+        if request.path.startswith("/api/") and ep != "api_docs":
             return _err("Authentication required.", code=401)
         return redirect("/login")
 
@@ -425,6 +428,7 @@ def require_role(*roles):
             if roles and user.get("role") not in roles:
                 return _err("You do not have permission for this action.", code=403)
             return fn(*args, **kwargs)
+        wrapper._roles = roles   # read by openapi.build()
         return wrapper
     return decorator
 
@@ -490,6 +494,19 @@ def auth_status():
         "authenticated": bool(session.get("user")),
         "user": session.get("user"),
     })
+
+
+@app.get("/api/openapi.json")
+@require_role(*ANY_ROLE)
+def openapi_spec():
+    """OpenAPI 3 description of this API, generated from the live route table."""
+    return jsonify(openapi.build(app))
+
+
+@app.get("/api/docs")
+def api_docs():
+    """Interactive API documentation (Swagger UI, served from bundled assets)."""
+    return render_template("swagger.html")
 
 
 @app.post("/api/setup")
